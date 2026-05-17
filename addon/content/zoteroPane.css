@@ -438,8 +438,23 @@
 .llm-codex-system-toggle-icon {
   display: inline-block;
   flex: none;
+  position: relative;
   width: 16px;
   height: 16px;
+}
+
+.llm-codex-system-toggle-icon::before,
+.llm-codex-system-toggle-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  transition: opacity 0.15s;
+}
+
+.llm-codex-system-toggle-icon::before {
   background-color: var(--fill-primary, #0d0d0d);
   mask-image: url("icons/codex-app-server.svg");
   mask-repeat: no-repeat;
@@ -450,14 +465,22 @@
   -webkit-mask-position: center;
   -webkit-mask-size: contain;
   opacity: 0.62;
-  transition:
-    background-color 0.15s,
-    opacity 0.15s;
 }
 
-.llm-claude-system-toggle[data-active="true"] .llm-codex-system-toggle-icon,
-.llm-standalone-claude-toggle[data-active="true"] .llm-codex-system-toggle-icon {
-  background-color: var(--fill-primary, #0d0d0d);
+.llm-codex-system-toggle-icon::after {
+  background-image: url("icons/codex-logo.svg");
+  opacity: 0;
+}
+
+.llm-claude-system-toggle[data-active="true"] .llm-codex-system-toggle-icon::before,
+.llm-standalone-claude-toggle[data-active="true"]
+  .llm-codex-system-toggle-icon::before {
+  opacity: 0;
+}
+
+.llm-claude-system-toggle[data-active="true"] .llm-codex-system-toggle-icon::after,
+.llm-standalone-claude-toggle[data-active="true"]
+  .llm-codex-system-toggle-icon::after {
   opacity: 1;
 }
 

@@ -142,9 +142,7 @@ import {
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
 } from "../codexAppServer/prefs";
-import {
-  getConfiguredCodexAppServerBinaryPath,
-} from "../codexAppServer/binaryPath";
+import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
   installOrUpdateCodexZoteroMcpConfig,
   readCodexNativeMcpSetupStatus,
@@ -260,7 +258,7 @@ function getPresetSelectHelperText(presetId: ProviderPresetId): string {
   if (presetId === "customized") {
     return t(CUSTOMIZED_API_HELPER_TEXT);
   }
-  return `${getProviderPreset(presetId).helperText} ${t("Switch to Customized to edit the URL manually.")}`;
+  return `${t(getProviderPreset(presetId).helperText)} ${t("Switch to Customized to edit the URL manually.")}`;
 }
 
 function getProtocolOptions(
@@ -297,7 +295,9 @@ function resolveSelectedProtocol(
     presetId === "customized" &&
     group.providerProtocol === "openai_chat_compat";
   const normalized = normalizeProviderProtocolForAuthMode({
-    protocol: shouldInferCustomizedProtocol ? undefined : group.providerProtocol,
+    protocol: shouldInferCustomizedProtocol
+      ? undefined
+      : group.providerProtocol,
     authMode: group.authMode,
     apiBase: group.apiBase,
     ...(fallback ? { fallback } : {}),
@@ -449,7 +449,11 @@ function resolveCodexAuthPath(): string {
 async function readCodexAccessToken(): Promise<string> {
   const authPath = resolveCodexAuthPath();
   const io = ztoolkit.getGlobal("IOUtils") as
-    | { read?: (path: string) => Promise<Uint8Array<ArrayBufferLike> | ArrayBuffer> }
+    | {
+        read?: (
+          path: string,
+        ) => Promise<Uint8Array<ArrayBufferLike> | ArrayBuffer>;
+      }
     | undefined;
   if (!io?.read) {
     throw new Error("IOUtils is unavailable; cannot read Codex auth file");
@@ -590,7 +594,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const normalizeWs = (s: string): string => s.replace(/\s+/g, " ").trim();
 
   const translateTextNodes = (container: Element) => {
-    const elements = container.querySelectorAll("label, span, div, summary");
+    const elements = container.querySelectorAll(
+      "label, span, div, summary, button, option, a",
+    );
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i] as HTMLElement;
       // For labels with inputs, translate the text node after the input
@@ -640,9 +646,25 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       }
     }
   };
+  const translateAttributes = (container: Element) => {
+    const elements = container.querySelectorAll(
+      "[placeholder], [title], [aria-label]",
+    );
+    const attrs = ["placeholder", "title", "aria-label"] as const;
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      for (const attr of attrs) {
+        const value = el.getAttribute(attr);
+        if (!value?.trim()) continue;
+        const translated = t(normalizeWs(value));
+        if (translated !== value) el.setAttribute(attr, translated);
+      }
+    }
+  };
   const prefPanels = doc.querySelectorAll("[data-pref-panel]");
   for (let i = 0; i < prefPanels.length; i++) {
     translateTextNodes(prefPanels[i]);
+    translateAttributes(prefPanels[i]);
   }
   // Translate textarea placeholder
   const systemPrompt = doc.querySelector(
@@ -873,7 +895,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiKeyOption.selected = group.authMode === "api_key";
       const codexAppServerOption = el(doc, "option") as HTMLOptionElement;
       codexAppServerOption.value = "codex_app_server";
-      codexAppServerOption.textContent = t("Codex App Server (native runtime settings)");
+      codexAppServerOption.textContent = t(
+        "Codex App Server (native runtime settings)",
+      );
       codexAppServerOption.selected = group.authMode === "codex_app_server";
       const codexOption = el(doc, "option") as HTMLOptionElement;
       codexOption.value = "codex_auth";
@@ -940,10 +964,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const authModeHelperText =
         group.authMode === "webchat"
           ? t(
-              `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. ` +
-                "Download extension: github.com/yilewang/sync-for-zotero → Releases. " +
-                'Unzip, open chrome://extensions, enable Developer Mode, click "Load unpacked", select the extension folder. ' +
-                "Keep the corresponding chat tab open while using WebChat mode.",
+              'Relay questions to %targets% via the Sync for Zotero browser extension. Download extension: github.com/yilewang/sync-for-zotero → Releases. Unzip, open chrome://extensions, enable Developer Mode, click "Load unpacked", select the extension folder. Keep the corresponding chat tab open while using WebChat mode.',
+            ).replace(
+              "%targets%",
+              WEBCHAT_TARGETS.map((wt) => wt.label).join(" / "),
             )
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
@@ -1058,7 +1082,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.authMode === "codex_auth"
           ? DEFAULT_CODEX_API_BASE
           : group.authMode === "codex_app_server"
-            ? "Optional absolute path to codex executable"
+            ? t("Optional absolute path to codex executable")
             : group.authMode === "copilot_auth"
               ? DEFAULT_COPILOT_API_BASE
               : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
@@ -1628,7 +1652,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const input = el(doc, "input", INPUT_SM_STYLE) as HTMLInputElement;
           input.type = "text";
           input.value = value;
-          input.placeholder = placeholder;
+          input.placeholder = t(placeholder);
           fieldWrap.append(lbl, input);
           return { wrap: fieldWrap, input };
         };
@@ -1868,12 +1892,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           modelsWrap,
         );
       } else if (group.authMode === "codex_app_server") {
-        cardBody.append(
-          authModeWrap,
-          apiUrlWrap,
-          divider,
-          modelsWrap,
-        );
+        cardBody.append(authModeWrap, apiUrlWrap, divider, modelsWrap);
       } else if (group.authMode === "codex_auth") {
         cardBody.append(
           authModeWrap,
@@ -1987,9 +2006,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         seen.add(el);
         targets.push(el);
       };
-      const wins =
-        ((Zotero as unknown as { getMainWindows?: () => Window[] })
-          .getMainWindows?.() || []) as Window[];
+      const wins = ((
+        Zotero as unknown as { getMainWindows?: () => Window[] }
+      ).getMainWindows?.() || []) as Window[];
       for (const w of wins) {
         const d = w?.document;
         if (!d) continue;
@@ -2002,9 +2021,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ) as HTMLElement | null,
         );
       }
-      const standaloneWin = addon?.data?.standaloneWindow as
-        | Window
-        | undefined;
+      const standaloneWin = addon?.data?.standaloneWindow as Window | undefined;
       if (standaloneWin && standaloneWin.document) {
         push(
           standaloneWin.document.getElementById(
@@ -2195,8 +2212,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
             codexPath: getConfiguredCodexAppServerBinaryPath(),
           });
-          codexAppServerStatus.textContent =
-            `${t("✓ Success — model says: ")}"${result.reply}"`;
+          codexAppServerStatus.textContent = `${t("✓ Success — model says: ")}"${result.reply}"`;
           codexAppServerStatus.style.color = "green";
         } catch (err) {
           codexAppServerStatus.textContent = `${t("Test failed: ")}${
@@ -2248,7 +2264,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const toolCount = status.toolNames.length;
           renderCodexMcpStatus(
             toolCount > 0
-              ? t(`Zotero MCP connected with ${toolCount} tools.`)
+              ? t("Zotero MCP connected with %n tools.").replace(
+                  "%n",
+                  String(toolCount),
+                )
               : t("Zotero MCP config written. Codex is reloading tools."),
             "green",
           );
@@ -2274,7 +2293,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       .then((status) => {
         renderCodexMcpStatus(
           status.connected === true
-            ? t(`Zotero MCP connected with ${status.toolNames.length} tools.`)
+            ? t("Zotero MCP connected with %n tools.").replace(
+                "%n",
+                String(status.toolNames.length),
+              )
             : status.configured
               ? t("Zotero MCP configured. Use setup if tools do not appear.")
               : t("Zotero MCP tools enabled but not configured yet."),
@@ -2329,10 +2351,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       agentBackendModeSelect.disabled = claudeShouldDisable;
       codexAppServerEnableSelect.disabled = codexShouldDisable;
       agentBackendModeSelect.title = claudeShouldDisable
-        ? "Disable Codex App Server first to switch on Claude Code."
+        ? t("Disable Codex App Server first to switch on Claude Code.")
         : "";
       codexAppServerEnableSelect.title = codexShouldDisable
-        ? "Disable Claude Code first to switch on Codex App Server."
+        ? t("Disable Claude Code first to switch on Codex App Server.")
         : "";
       applyDisabledStyling(
         claudeEnableCard,
@@ -2350,14 +2372,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       "change",
       syncModeMutualExclusion,
     );
-    agentBackendModeSelect.addEventListener(
-      "change",
-      syncModeMutualExclusion,
-    );
+    agentBackendModeSelect.addEventListener("change", syncModeMutualExclusion);
   }
 
   if (agentBridgeUrlInput) {
-    agentBridgeUrlInput.value = getClaudeBridgeUrl() || DEFAULT_AGENT_BRIDGE_URL;
+    agentBridgeUrlInput.value =
+      getClaudeBridgeUrl() || DEFAULT_AGENT_BRIDGE_URL;
     const commitBridgeUrl = () => {
       setClaudeBridgeUrl(agentBridgeUrlInput.value);
     };
@@ -2415,7 +2435,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const IOUtils = (globalThis as any).IOUtils as
       | {
           exists?: (path: string) => Promise<boolean>;
-          write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<unknown>;
+          write?: (
+            path: string,
+            data: Uint8Array<ArrayBufferLike>,
+          ) => Promise<unknown>;
         }
       | undefined;
     if (!IOUtils?.exists || !IOUtils?.write) return;
@@ -2428,12 +2451,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     await ensureDirectory(dirPath);
     try {
       const Cc = (
-        globalThis as unknown as { Components?: { classes?: Record<string, { createInstance?: (iface: unknown) => unknown }>; interfaces?: Record<string, unknown> } }
+        globalThis as unknown as {
+          Components?: {
+            classes?: Record<
+              string,
+              { createInstance?: (iface: unknown) => unknown }
+            >;
+            interfaces?: Record<string, unknown>;
+          };
+        }
       ).Components?.classes;
       const Ci = (
-        globalThis as unknown as { Components?: { interfaces?: Record<string, unknown> } }
+        globalThis as unknown as {
+          Components?: { interfaces?: Record<string, unknown> };
+        }
       ).Components?.interfaces;
-      if (Cc && Ci && typeof Cc["@mozilla.org/file/local;1"]?.createInstance === "function") {
+      if (
+        Cc &&
+        Ci &&
+        typeof Cc["@mozilla.org/file/local;1"]?.createInstance === "function"
+      ) {
         const f = Cc["@mozilla.org/file/local;1"].createInstance(
           Ci.nsIFile as unknown,
         ) as
@@ -2449,7 +2486,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       /* ignore */
     }
     try {
-      (Zotero as unknown as { launchFile?: (p: string) => void }).launchFile?.(dirPath);
+      (Zotero as unknown as { launchFile?: (p: string) => void }).launchFile?.(
+        dirPath,
+      );
     } catch {
       /* ignore */
     }
@@ -2468,14 +2507,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const itemID = Number(paneItem?.id);
     const isPaper = Number.isFinite(itemID) && itemID > 0;
     const scope = isPaper ? "paper" : "open";
-    const scopeId = isPaper && Number.isFinite(libraryID) && libraryID > 0
-      ? `${Math.floor(libraryID)}:${Math.floor(itemID)}`
-      : `${Number.isFinite(libraryID) && libraryID > 0 ? Math.floor(libraryID) : 1}`;
-    const conversationKey = isPaper && Number.isFinite(libraryID) && libraryID > 0
-      ? getLastUsedClaudePaperConversationKey(Math.floor(libraryID), Math.floor(itemID))
-      : Number.isFinite(libraryID) && libraryID > 0
-        ? getLastUsedClaudeGlobalConversationKey(Math.floor(libraryID))
-        : null;
+    const scopeId =
+      isPaper && Number.isFinite(libraryID) && libraryID > 0
+        ? `${Math.floor(libraryID)}:${Math.floor(itemID)}`
+        : `${Number.isFinite(libraryID) && libraryID > 0 ? Math.floor(libraryID) : 1}`;
+    const conversationKey =
+      isPaper && Number.isFinite(libraryID) && libraryID > 0
+        ? getLastUsedClaudePaperConversationKey(
+            Math.floor(libraryID),
+            Math.floor(itemID),
+          )
+        : Number.isFinite(libraryID) && libraryID > 0
+          ? getLastUsedClaudeGlobalConversationKey(Math.floor(libraryID))
+          : null;
     if (!conversationKey) {
       return joinLocalPath(scopesRoot, scope, scopeId);
     }
@@ -2516,22 +2560,31 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     );
     const rows = [
       {
-        label: "User",
+        id: "user",
+        label: t("User"),
         path: home ? joinLocalPath(home, ".claude") : "~/.claude",
         openPath: home ? joinLocalPath(home, ".claude") : "~/.claude",
-        description: "Global defaults shared across Claude Code on this machine.",
+        description: t(
+          "Global defaults shared across Claude Code on this machine.",
+        ),
       },
       {
-        label: "Project",
+        id: "project",
+        label: t("Project"),
         path: projectClaudeDir,
         openPath: projectClaudeDir,
-        description: "Shared settings for all Claude runtimes launched by Zotero.",
+        description: t(
+          "Shared settings for all Claude runtimes launched by Zotero.",
+        ),
       },
       {
-        label: "Local",
+        id: "local",
+        label: t("Local"),
         path: localConversationDir,
         openPath: localConversationDir,
-        description: "Each conversation stores its own override folder under the scopes tree.",
+        description: t(
+          "Each conversation stores its own override folder under the scopes tree.",
+        ),
       },
     ];
     for (const row of rows) {
@@ -2567,14 +2620,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         doc,
         "button",
         "padding:4px 10px; font-size:11px; border:1px solid var(--stroke-secondary, #c8c8c8); border-radius:6px; background: Field; color: FieldText; cursor:pointer; flex:0 0 auto;",
-        "Open folder",
+        t("Open folder"),
       ) as HTMLButtonElement;
       openBtn.type = "button";
       openBtn.addEventListener("click", () => {
-        if (row.label === "Local") {
+        if (row.id === "local") {
           void (async () => {
             const localDir = getCurrentClaudeLocalDir();
-            const localSettingsPath = joinLocalPath(localDir, "settings.local.json");
+            const localSettingsPath = joinLocalPath(
+              localDir,
+              "settings.local.json",
+            );
             await ensureDirectory(localDir);
             await ensureFileIfMissing(localSettingsPath, "{}\n");
             await openDirectory(localDir);
@@ -2597,7 +2653,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         agentClaudeConfigSourceSelect.value === "zotero-only"
           ? agentClaudeConfigSourceSelect.value
           : "default";
-      Zotero.Prefs.set(`${config.prefsPrefix}.agentClaudeConfigSource`, next, true);
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.agentClaudeConfigSource`,
+        next,
+        true,
+      );
       renderClaudeConfigPaths();
     });
   }
@@ -2606,17 +2666,25 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (claudeConfigDocLink) {
     claudeConfigDocLink.addEventListener("click", (event) => {
       event.preventDefault();
-      const launch = (Zotero as unknown as { launchURL?: (url: string) => void }).launchURL;
+      const launch = (
+        Zotero as unknown as { launchURL?: (url: string) => void }
+      ).launchURL;
       launch?.("https://code.claude.com/docs/en/settings");
     });
   }
 
   if (claudeTracePathEl) {
-    claudeTracePathEl.textContent = getAgentTraceExportPath("latest-run").replace(/[\\/]latest-run\.json$/i, "");
+    claudeTracePathEl.textContent = getAgentTraceExportPath(
+      "latest-run",
+    ).replace(/[\\/]latest-run\.json$/i, "");
   }
   if (claudeTraceEnabledInput) {
-    const raw = Zotero.Prefs.get(`${config.prefsPrefix}.agentTraceExportEnabled`, true);
-    claudeTraceEnabledInput.checked = raw === true || `${raw || ""}`.toLowerCase() === "true";
+    const raw = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentTraceExportEnabled`,
+      true,
+    );
+    claudeTraceEnabledInput.checked =
+      raw === true || `${raw || ""}`.toLowerCase() === "true";
     claudeTraceEnabledInput.addEventListener("change", () => {
       Zotero.Prefs.set(
         `${config.prefsPrefix}.agentTraceExportEnabled`,
@@ -2628,7 +2696,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (claudeTraceCopyBtn) {
     claudeTraceCopyBtn.addEventListener("click", () => {
       void copyTextToClipboard(
-        getAgentTraceExportPath("latest-run").replace(/[\\/]latest-run\.json$/i, ""),
+        getAgentTraceExportPath("latest-run").replace(
+          /[\\/]latest-run\.json$/i,
+          "",
+        ),
       );
     });
   }
@@ -2643,7 +2714,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     };
     const loadManagedInstructionTemplate = () => {
       const saved = getClaudeManagedInstructionTemplatePref();
-      claudeManagedInstructionTemplateInput.value = saved || defaultManagedBlock;
+      claudeManagedInstructionTemplateInput.value =
+        saved || defaultManagedBlock;
       if (!saved.trim()) {
         void (async () => {
           const onDisk = await readClaudeProjectManagedInstructionBlock();
@@ -2655,25 +2727,37 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     };
     loadManagedInstructionTemplate();
     claudeManagedInstructionTemplateInput.addEventListener("input", () => {
-      setClaudeManagedInstructionTemplatePref(claudeManagedInstructionTemplateInput.value);
+      setClaudeManagedInstructionTemplatePref(
+        claudeManagedInstructionTemplateInput.value,
+      );
       if (claudeManagedInstructionStatus?.style.display !== "none") {
-        syncManagedInstructionStatus(t("Template updated locally"), "var(--fill-secondary, #888)");
+        syncManagedInstructionStatus(
+          t("Template updated locally"),
+          "var(--fill-secondary, #888)",
+        );
       }
     });
     if (claudeManagedInstructionResetBtn) {
       claudeManagedInstructionResetBtn.addEventListener("click", () => {
         claudeManagedInstructionTemplateInput.value = defaultManagedBlock;
         setClaudeManagedInstructionTemplatePref(defaultManagedBlock);
-        syncManagedInstructionStatus(t("Reset to default template"), "var(--fill-secondary, #888)");
+        syncManagedInstructionStatus(
+          t("Reset to default template"),
+          "var(--fill-secondary, #888)",
+        );
       });
     }
     if (claudeManagedInstructionUpdateBtn) {
       claudeManagedInstructionUpdateBtn.addEventListener("click", async () => {
-        const template = setClaudeManagedInstructionTemplatePref(
-          claudeManagedInstructionTemplateInput.value,
-        ) || defaultManagedBlock;
+        const template =
+          setClaudeManagedInstructionTemplatePref(
+            claudeManagedInstructionTemplateInput.value,
+          ) || defaultManagedBlock;
         claudeManagedInstructionUpdateBtn.disabled = true;
-        syncManagedInstructionStatus(t("Updating CLAUDE.md…"), "var(--fill-secondary, #888)");
+        syncManagedInstructionStatus(
+          t("Updating CLAUDE.md…"),
+          "var(--fill-secondary, #888)",
+        );
         try {
           await updateClaudeProjectManagedInstructionBlock(template);
           syncManagedInstructionStatus(t("Managed block updated"), "green");
@@ -2818,7 +2902,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         notesDirTestBtn.disabled = true;
         notesDirTestStatus.style.display = "inline";
         notesDirTestStatus.style.color = "var(--fill-secondary, #888)";
-        notesDirTestStatus.textContent = "Testing...";
+        notesDirTestStatus.textContent = t("Testing…");
 
         try {
           const IOUtils = (globalThis as any).IOUtils;
@@ -3326,8 +3410,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       mineruCloudInfo.style.display = mode === "cloud" ? "block" : "none";
     }
     if (mineruApiKeySection) {
-      mineruApiKeySection.style.display =
-        mode === "cloud" ? "flex" : "none";
+      mineruApiKeySection.style.display = mode === "cloud" ? "flex" : "none";
     }
     if (mineruLocalSection) {
       mineruLocalSection.style.display = mode === "local" ? "flex" : "none";
@@ -3445,9 +3528,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (mineruSyncCleanBtn && mineruSyncStatus) {
     const runMineruSyncCleanup = async () => {
       const shouldDisableSync = isMineruSyncChecked();
-      const confirmed = await confirmMineruSyncPackageDeletion(
-        shouldDisableSync,
-      );
+      const confirmed =
+        await confirmMineruSyncPackageDeletion(shouldDisableSync);
       if (!confirmed) return;
 
       mineruSyncCleanBtn.disabled = true;
@@ -3483,11 +3565,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         syncMineruSyncControls();
       }
     };
-    mineruSyncCleanBtn.addEventListener("click", () =>
-      void runMineruSyncCleanup(),
+    mineruSyncCleanBtn.addEventListener(
+      "click",
+      () => void runMineruSyncCleanup(),
     );
-    mineruSyncCleanBtn.addEventListener("command", () =>
-      void runMineruSyncCleanup(),
+    mineruSyncCleanBtn.addEventListener(
+      "command",
+      () => void runMineruSyncCleanup(),
     );
   }
 
@@ -3526,7 +3610,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       setMineruLocalApiBase(mineruLocalApiBaseInput.value);
       mineruLocalApiBaseInput.value = getMineruLocalApiBase();
     };
-    mineruLocalApiBaseInput.addEventListener("change", commitMineruLocalApiBase);
+    mineruLocalApiBaseInput.addEventListener(
+      "change",
+      commitMineruLocalApiBase,
+    );
     mineruLocalApiBaseInput.addEventListener("blur", commitMineruLocalApiBase);
   }
 

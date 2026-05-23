@@ -3,8 +3,6 @@ import {
   ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX,
   ACTION_LAYOUT_MODEL_FULL_MAX_LINES,
   ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS,
-  getScreenshotExpandedLabel,
-  getSelectTextExpandedLabel,
   REASONING_COMPACT_LABEL,
   SCREENSHOT_COMPACT_LABEL,
   SELECT_TEXT_COMPACT_LABEL,
@@ -19,8 +17,6 @@ type ActionRevealState = {
   send: ActionLabelMode;
   reasoning: ActionLabelMode;
   model: ModelLabelMode;
-  screenshot: ActionLabelMode;
-  selectText: ActionLabelMode;
 };
 
 type ActionLayoutControllerDeps = {
@@ -267,8 +263,6 @@ export function createActionLayoutController(
     };
 
     const uploadSlot = uploadBtn?.parentElement as HTMLElement | null;
-    const selectTextSlot = selectTextBtn?.parentElement as HTMLElement | null;
-    const screenshotSlot = screenshotBtn?.parentElement as HTMLElement | null;
     const sendSlot = sendBtn?.parentElement as HTMLElement | null;
 
     const getModelWidth = (mode: ModelLabelMode) => {
@@ -289,18 +283,6 @@ export function createActionLayoutController(
       return mode === "full"
         ? getFullSlotRequiredWidth(reasoningSlot, reasoningBtn, reasoningLabel)
         : ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX;
-    };
-
-    const getContextButtonWidth = (
-      slot: HTMLElement | null,
-      button: HTMLButtonElement | null,
-      expandedLabel: string,
-      mode: ActionLabelMode,
-    ) => {
-      if (!button) return 0;
-      return mode === "full"
-        ? getFullSlotRequiredWidth(slot, button, expandedLabel)
-        : ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX;
     };
 
     const getSendWidth = (mode: ActionLabelMode) => {
@@ -328,18 +310,8 @@ export function createActionLayoutController(
               ),
             )
           : 0,
-        getContextButtonWidth(
-          selectTextSlot,
-          selectTextBtn,
-          getSelectTextExpandedLabel(),
-          state.selectText,
-        ),
-        getContextButtonWidth(
-          screenshotSlot,
-          screenshotBtn,
-          getScreenshotExpandedLabel(),
-          state.screenshot,
-        ),
+        selectTextBtn ? ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX : 0,
+        screenshotBtn ? ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX : 0,
         getModelWidth(state.model),
         getReasoningWidth(state.reasoning),
       ].filter((width) => width > 0);
@@ -356,13 +328,16 @@ export function createActionLayoutController(
       getAvailableRowWidth() + 1 >= getRequiredWidth(state);
 
     const getPanelLayoutMode = (state: ActionRevealState): ActionLayoutMode => {
-      if (state.selectText === "full") {
+      if (
+        state.send === "full" &&
+        state.model !== "icon" &&
+        state.reasoning === "full"
+      ) {
         return "full";
       }
       if (
-        state.screenshot === "full" ||
-        state.model !== "icon" ||
-        state.reasoning === "full"
+        state.send === "full" &&
+        (state.model !== "icon" || state.reasoning === "full")
       ) {
         return "half";
       }
@@ -378,15 +353,15 @@ export function createActionLayoutController(
       );
       setActionButtonLabel(
         selectTextBtn,
-        getSelectTextExpandedLabel(),
         SELECT_TEXT_COMPACT_LABEL,
-        "full",
+        SELECT_TEXT_COMPACT_LABEL,
+        "icon",
       );
       setActionButtonLabel(
         screenshotBtn,
-        getScreenshotExpandedLabel(),
         SCREENSHOT_COMPACT_LABEL,
-        "full",
+        SCREENSHOT_COMPACT_LABEL,
+        "icon",
       );
       setSendButtonLabel("full");
 
@@ -416,15 +391,15 @@ export function createActionLayoutController(
       );
       setActionButtonLabel(
         selectTextBtn,
-        getSelectTextExpandedLabel(),
         SELECT_TEXT_COMPACT_LABEL,
-        state.selectText,
+        SELECT_TEXT_COMPACT_LABEL,
+        "icon",
       );
       setActionButtonLabel(
         screenshotBtn,
-        getScreenshotExpandedLabel(),
         SCREENSHOT_COMPACT_LABEL,
-        state.screenshot,
+        SCREENSHOT_COMPACT_LABEL,
+        "icon",
       );
       setSendButtonLabel(state.send);
 
@@ -470,53 +445,29 @@ export function createActionLayoutController(
       setPanelActionLayoutMode(getPanelLayoutMode(state));
     };
 
-    const widestState: ActionRevealState = {
+    const fullState: ActionRevealState = {
       send: "full",
       reasoning: "full",
       model: "full-single",
-      screenshot: "full",
-      selectText: "full",
-    };
-    const screenshotState: ActionRevealState = {
-      send: "full",
-      reasoning: "full",
-      model: "full-single",
-      screenshot: "full",
-      selectText: "icon",
-    };
-    const modelState: ActionRevealState = {
-      send: "full",
-      reasoning: "full",
-      model: "full-single",
-      screenshot: "icon",
-      selectText: "icon",
     };
     const reasoningState: ActionRevealState = {
       send: "full",
       reasoning: "full",
       model: "icon",
-      screenshot: "icon",
-      selectText: "icon",
     };
     const sendState: ActionRevealState = {
       send: "full",
       reasoning: "icon",
       model: "icon",
-      screenshot: "icon",
-      selectText: "icon",
     };
     const iconOnlyState: ActionRevealState = {
       send: "icon",
       reasoning: "icon",
       model: "icon",
-      screenshot: "icon",
-      selectText: "icon",
     };
 
     const candidateStates: ActionRevealState[] = [
-      widestState,
-      screenshotState,
-      modelState,
+      fullState,
       reasoningState,
       sendState,
       iconOnlyState,
@@ -526,9 +477,7 @@ export function createActionLayoutController(
       candidateStates.splice(
         1,
         0,
-        { ...widestState, model: "full-wrap2" },
-        { ...screenshotState, model: "full-wrap2" },
-        { ...modelState, model: "full-wrap2" },
+        { ...fullState, model: "full-wrap2" },
       );
     }
 

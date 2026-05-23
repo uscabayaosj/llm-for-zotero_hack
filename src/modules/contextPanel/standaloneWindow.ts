@@ -200,6 +200,34 @@ const standaloneSessionState: StandaloneSessionState = {
   window: null,
 };
 
+const STANDALONE_MIN_WIDTH_PX = 500;
+const STANDALONE_MIN_HEIGHT_PX = 500;
+const STANDALONE_SIDEBAR_PANEL_WIDTH_PX = 220;
+const STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX =
+  STANDALONE_MIN_WIDTH_PX + STANDALONE_SIDEBAR_PANEL_WIDTH_PX;
+const STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX = 600;
+
+function clampStandaloneWindowSize(win: Window): void {
+  try {
+    const currentWidth = Math.ceil(
+      Number(win.outerWidth || win.innerWidth || 0),
+    );
+    const currentHeight = Math.ceil(
+      Number(win.outerHeight || win.innerHeight || 0),
+    );
+    if (!Number.isFinite(currentWidth) || !Number.isFinite(currentHeight)) {
+      return;
+    }
+    const nextWidth = Math.max(currentWidth, STANDALONE_MIN_WIDTH_PX);
+    const nextHeight = Math.max(currentHeight, STANDALONE_MIN_HEIGHT_PX);
+    if (nextWidth !== currentWidth || nextHeight !== currentHeight) {
+      win.resizeTo(nextWidth, nextHeight);
+    }
+  } catch (err) {
+    ztoolkit.log("LLM: standalone minimum size fallback failed", err);
+  }
+}
+
 function getStandaloneSessionWindow(): Window | null {
   const candidate =
     standaloneSessionState.window || addon.data.standaloneWindow || null;
@@ -607,6 +635,7 @@ export function openStandaloneChat(options?: {
   let darkMQ: MediaQueryList | null = null;
   let onSchemeChange: (() => void) | null = null;
   let cleanupStandalonePrefObserver: (() => void) | null = null;
+  let enforceStandaloneMinimumSize: (() => void) | null = null;
 
   const initWindow = () => {
     // Now the window is loaded — safe to clear the pending flag.
@@ -624,6 +653,21 @@ export function openStandaloneChat(options?: {
 
     try {
       const doc = newWin.document;
+      doc.documentElement?.setAttribute(
+        "minwidth",
+        `${STANDALONE_MIN_WIDTH_PX}`,
+      );
+      doc.documentElement?.setAttribute(
+        "minheight",
+        `${STANDALONE_MIN_HEIGHT_PX}`,
+      );
+      if (doc.documentElement) {
+        doc.documentElement.style.minWidth = `${STANDALONE_MIN_WIDTH_PX}px`;
+        doc.documentElement.style.minHeight = `${STANDALONE_MIN_HEIGHT_PX}px`;
+      }
+      enforceStandaloneMinimumSize = () => clampStandaloneWindowSize(newWin);
+      newWin.addEventListener("resize", enforceStandaloneMinimumSize);
+      newWin.setTimeout(enforceStandaloneMinimumSize, 0);
 
       // Inject Zotero CSS variables that the standalone window doesn't inherit.
       const zoteroVars = [
@@ -3946,12 +3990,37 @@ export function openStandaloneChat(options?: {
       // Auto-collapse sidebar when window is narrow, respecting manual override.
       // ResizeObserver is unavailable in some Gecko/XUL window contexts —
       // fall back to a simple resize event listener.
-      const SIDEBAR_AUTO_THRESHOLD = 700;
       let lastAutoState: "expanded" | "collapsed" | null = null;
-      const handleResize = () => {
-        const width = root.clientWidth || 0;
-        const autoState =
-          width < SIDEBAR_AUTO_THRESHOLD ? "collapsed" : "expanded";
+      let lastAutoWidth: number | null = null;
+      const resolveAutoSidebarState = (width: number) => {
+        let autoState: "expanded" | "collapsed" =
+          lastAutoState ||
+          (width < STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX
+            ? "collapsed"
+            : "expanded");
+        if (
+          lastAutoWidth !== null &&
+          width < lastAutoWidth &&
+          width < STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX
+        ) {
+          autoState = "collapsed";
+        } else if (
+          lastAutoWidth !== null &&
+          width > lastAutoWidth &&
+          width > STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX
+        ) {
+          autoState = "expanded";
+        } else if (
+          lastAutoWidth === null &&
+          width >= STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX
+        ) {
+          autoState = "expanded";
+        }
+        lastAutoWidth = width;
+        return autoState;
+      };
+      const applyAutoSidebarState = (width: number) => {
+        const autoState = resolveAutoSidebarState(width);
         if (userManualSidebarState !== null) {
           if (lastAutoState !== null && autoState !== lastAutoState) {
             userManualSidebarState = null;
@@ -3962,22 +4031,15 @@ export function openStandaloneChat(options?: {
         }
         lastAutoState = autoState;
       };
+      const handleResize = () => {
+        applyAutoSidebarState(root.clientWidth || 0);
+      };
       const RO =
         (newWin as any).ResizeObserver || (globalThis as any).ResizeObserver;
       if (RO) {
         const resizeObserver = new RO((entries: any[]) => {
           const width = entries[0]?.contentRect?.width || root.clientWidth || 0;
-          const autoState =
-            width < SIDEBAR_AUTO_THRESHOLD ? "collapsed" : "expanded";
-          if (userManualSidebarState !== null) {
-            if (lastAutoState !== null && autoState !== lastAutoState) {
-              userManualSidebarState = null;
-              setSidebarState(autoState);
-            }
-          } else {
-            setSidebarState(autoState);
-          }
-          lastAutoState = autoState;
+          applyAutoSidebarState(width);
         });
         resizeObserver.observe(root);
       } else {
@@ -4065,6 +4127,10 @@ export function openStandaloneChat(options?: {
     standaloneItemChangeHandler = null;
     themeObserver?.disconnect();
     themeObserver = null;
+    if (enforceStandaloneMinimumSize) {
+      newWin.removeEventListener("resize", enforceStandaloneMinimumSize);
+    }
+    enforceStandaloneMinimumSize = null;
     if (darkMQ && onSchemeChange) {
       darkMQ.removeEventListener("change", onSchemeChange);
     }

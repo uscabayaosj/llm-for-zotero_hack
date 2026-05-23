@@ -4635,58 +4635,58 @@ label.llm-search-results-item:hover {
 }
 
 /* Markdown Styles in Messages */
-.llm-bubble.assistant h2,
-.llm-bubble.assistant h3,
-.llm-bubble.assistant h4 {
+.llm-rendered-markdown h2,
+.llm-rendered-markdown h3,
+.llm-rendered-markdown h4 {
   margin: 12px 0 8px 0;
   font-weight: 600;
   line-height: 1.3;
 }
 
-.llm-bubble.assistant h2:first-child,
-.llm-bubble.assistant h3:first-child,
-.llm-bubble.assistant h4:first-child {
+.llm-rendered-markdown h2:first-child,
+.llm-rendered-markdown h3:first-child,
+.llm-rendered-markdown h4:first-child {
   margin-top: 0;
 }
 
-.llm-bubble.assistant h2 {
+.llm-rendered-markdown h2 {
   font-size: var(--llm-fs-14);
 }
 
-.llm-bubble.assistant h3 {
+.llm-rendered-markdown h3 {
   font-size: var(--llm-fs-13);
 }
 
-.llm-bubble.assistant h4 {
+.llm-rendered-markdown h4 {
   font-size: var(--llm-fs-12);
 }
 
-.llm-bubble.assistant p {
+.llm-rendered-markdown p {
   margin: 0 0 8px 0;
 }
 
-.llm-bubble.assistant p:last-child {
+.llm-rendered-markdown p:last-child {
   margin-bottom: 0;
 }
 
-.llm-bubble.assistant ul,
-.llm-bubble.assistant ol {
+.llm-rendered-markdown ul,
+.llm-rendered-markdown ol {
   margin: 8px 0;
 }
 
-.llm-bubble.assistant ul {
+.llm-rendered-markdown ul {
   padding-left: 1.6em;
 }
 
-.llm-bubble.assistant ol {
+.llm-rendered-markdown ol {
   padding-left: 2.35em;
 }
 
-.llm-bubble.assistant li {
+.llm-rendered-markdown li {
   margin: 4px 0;
 }
 
-.llm-bubble.assistant code {
+.llm-rendered-markdown code {
   background: rgba(0, 0, 0, 0.1);
   padding: 2px 5px;
   border-radius: 4px;
@@ -4696,26 +4696,26 @@ label.llm-search-results-item:hover {
   word-break: normal;
 }
 
-.llm-bubble.assistant .llm-copyable {
+.llm-rendered-markdown .llm-copyable {
   position: relative;
   display: block;
   width: 100%;
   max-width: 100%;
 }
 
-.llm-bubble.assistant .llm-copyable-inline {
+.llm-rendered-markdown .llm-copyable-inline {
   display: inline-flex;
   width: auto;
   max-width: 100%;
   vertical-align: middle;
 }
 
-.llm-bubble.assistant .llm-copyable-code {
+.llm-rendered-markdown .llm-copyable-code {
   margin: 8px 0;
   border-radius: 8px;
 }
 
-.llm-bubble.assistant .llm-render-copy-btn {
+.llm-rendered-markdown .llm-render-copy-btn {
   appearance: none;
   -moz-appearance: none;
   position: absolute;
@@ -4743,35 +4743,35 @@ label.llm-search-results-item:hover {
   backdrop-filter: blur(8px);
 }
 
-.llm-bubble.assistant .llm-render-copy-btn {
+.llm-rendered-markdown .llm-render-copy-btn {
   box-shadow: 0 1px 4px color-mix(in srgb, #000 16%, transparent);
 }
 
-.llm-bubble.assistant .llm-copyable:hover > .llm-render-copy-btn,
-.llm-bubble.assistant .llm-copyable:focus-within > .llm-render-copy-btn {
+.llm-rendered-markdown .llm-copyable:hover > .llm-render-copy-btn,
+.llm-rendered-markdown .llm-copyable:focus-within > .llm-render-copy-btn {
   opacity: 1;
   transform: translateY(0);
 }
 
-.llm-bubble.assistant .llm-copyable[data-copy-feedback="copied"] > .llm-render-copy-btn {
+.llm-rendered-markdown .llm-copyable[data-copy-feedback="copied"] > .llm-render-copy-btn {
   opacity: 0;
   transform: translateY(-2px);
   pointer-events: none;
 }
 
-.llm-bubble.assistant .llm-render-copy-btn:hover {
+.llm-rendered-markdown .llm-render-copy-btn:hover {
   background: color-mix(in srgb, var(--material-background) 86%, var(--color-accent) 14%);
   color: var(--fill-primary);
 }
 
-.llm-bubble.assistant .llm-render-copy-btn:focus-visible {
+.llm-rendered-markdown .llm-render-copy-btn:focus-visible {
   opacity: 1;
   transform: translateY(0);
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
 
-.llm-bubble.assistant .llm-copyable-inline > .llm-render-copy-btn {
+.llm-rendered-markdown .llm-copyable-inline > .llm-render-copy-btn {
   top: -10px;
   right: -10px;
   min-width: 24px;
@@ -4780,7 +4780,7 @@ label.llm-search-results-item:hover {
   font-size: 9px;
 }
 
-.llm-bubble.assistant .llm-copyable-code > .llm-render-copy-btn {
+.llm-rendered-markdown .llm-copyable-code > .llm-render-copy-btn {
   top: 5px;
   right: 14px;
   min-width: 24px;
@@ -4800,12 +4800,12 @@ label.llm-search-results-item:hover {
   backdrop-filter: none;
 }
 
-.llm-bubble.assistant .llm-copyable-code > .llm-render-copy-btn:hover {
+.llm-rendered-markdown .llm-copyable-code > .llm-render-copy-btn:hover {
   background: transparent;
   color: #f3f4f6;
 }
 
-.llm-bubble.assistant
+.llm-rendered-markdown
   .llm-copyable-code[data-copy-feedback="copied"]
   > .llm-render-code-copy-btn {
   opacity: 1;
@@ -4814,7 +4814,7 @@ label.llm-search-results-item:hover {
   color: #7dd3a8;
 }
 
-.llm-bubble.assistant pre {
+.llm-rendered-markdown pre {
   background: rgba(0, 0, 0, 0.15);
   padding: 10px 12px;
   border-radius: 6px;
@@ -4822,7 +4822,7 @@ label.llm-search-results-item:hover {
   margin: 8px 0;
 }
 
-.llm-bubble.assistant pre code {
+.llm-rendered-markdown pre code {
   background: none;
   padding: 0;
   font-size: var(--llm-fs-11);
@@ -4831,7 +4831,7 @@ label.llm-search-results-item:hover {
   word-break: normal;
 }
 
-.llm-bubble.assistant .llm-codeblock-shell {
+.llm-rendered-markdown .llm-codeblock-shell {
   overflow: hidden;
   border: 1px solid color-mix(in srgb, #fff 8%, transparent);
   border-radius: 8px;
@@ -4839,7 +4839,7 @@ label.llm-search-results-item:hover {
   box-shadow: none;
 }
 
-.llm-bubble.assistant .llm-codeblock-header {
+.llm-rendered-markdown .llm-codeblock-header {
   display: flex;
   align-items: center;
   box-sizing: border-box;
@@ -4848,7 +4848,7 @@ label.llm-search-results-item:hover {
   padding: 0 48px 0 18px;
 }
 
-.llm-bubble.assistant .llm-codeblock-lang {
+.llm-rendered-markdown .llm-codeblock-lang {
   color: color-mix(in srgb, #fff 68%, transparent);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
@@ -4856,14 +4856,14 @@ label.llm-search-results-item:hover {
   line-height: 1;
 }
 
-.llm-bubble.assistant .llm-codeblock-body pre {
+.llm-rendered-markdown .llm-codeblock-body pre {
   margin: 0;
   border-radius: 0;
   background: transparent;
   padding: 0 22px 18px 24px;
 }
 
-.llm-bubble.assistant .llm-codeblock-body pre code {
+.llm-rendered-markdown .llm-codeblock-body pre code {
   display: block;
   min-width: max-content;
   color: #d8d8d8;
@@ -4872,50 +4872,50 @@ label.llm-search-results-item:hover {
   line-height: 1.48;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs {
+.llm-rendered-markdown .llm-codeblock-body .hljs {
   background: transparent;
   color: #d8d8d8;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs-keyword,
-.llm-bubble.assistant .llm-codeblock-body .hljs-selector-tag,
-.llm-bubble.assistant .llm-codeblock-body .hljs-built_in {
+.llm-rendered-markdown .llm-codeblock-body .hljs-keyword,
+.llm-rendered-markdown .llm-codeblock-body .hljs-selector-tag,
+.llm-rendered-markdown .llm-codeblock-body .hljs-built_in {
   color: #ff8ac9;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs-title,
-.llm-bubble.assistant .llm-codeblock-body .hljs-title.function_,
-.llm-bubble.assistant .llm-codeblock-body .hljs-name,
-.llm-bubble.assistant .llm-codeblock-body .hljs-tag {
+.llm-rendered-markdown .llm-codeblock-body .hljs-title,
+.llm-rendered-markdown .llm-codeblock-body .hljs-title.function_,
+.llm-rendered-markdown .llm-codeblock-body .hljs-name,
+.llm-rendered-markdown .llm-codeblock-body .hljs-tag {
   color: #52e3e6;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs-string,
-.llm-bubble.assistant .llm-codeblock-body .hljs-attr,
-.llm-bubble.assistant .llm-codeblock-body .hljs-attribute {
+.llm-rendered-markdown .llm-codeblock-body .hljs-string,
+.llm-rendered-markdown .llm-codeblock-body .hljs-attr,
+.llm-rendered-markdown .llm-codeblock-body .hljs-attribute {
   color: #f3e77b;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs-number,
-.llm-bubble.assistant .llm-codeblock-body .hljs-literal,
-.llm-bubble.assistant .llm-codeblock-body .hljs-variable,
-.llm-bubble.assistant .llm-codeblock-body .hljs-symbol {
+.llm-rendered-markdown .llm-codeblock-body .hljs-number,
+.llm-rendered-markdown .llm-codeblock-body .hljs-literal,
+.llm-rendered-markdown .llm-codeblock-body .hljs-variable,
+.llm-rendered-markdown .llm-codeblock-body .hljs-symbol {
   color: #9b8cff;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs-comment,
-.llm-bubble.assistant .llm-codeblock-body .hljs-quote {
+.llm-rendered-markdown .llm-codeblock-body .hljs-comment,
+.llm-rendered-markdown .llm-codeblock-body .hljs-quote {
   color: #8a8f98;
   font-style: italic;
 }
 
-.llm-bubble.assistant .llm-codeblock-body .hljs-meta,
-.llm-bubble.assistant .llm-codeblock-body .hljs-doctag,
-.llm-bubble.assistant .llm-codeblock-body .hljs-section {
+.llm-rendered-markdown .llm-codeblock-body .hljs-meta,
+.llm-rendered-markdown .llm-codeblock-body .hljs-doctag,
+.llm-rendered-markdown .llm-codeblock-body .hljs-section {
   color: #7dd3a8;
 }
 
-.llm-bubble.assistant .llm-svg-preview {
+.llm-rendered-markdown .llm-svg-preview {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4928,14 +4928,14 @@ label.llm-search-results-item:hover {
   background: #f4f5f7;
 }
 
-.llm-bubble.assistant .llm-svg-preview img {
+.llm-rendered-markdown .llm-svg-preview img {
   display: block;
   max-width: 100%;
   max-height: 230px;
   object-fit: contain;
 }
 
-.llm-bubble.assistant blockquote {
+.llm-rendered-markdown blockquote {
   border-left: 3px solid var(--color-accent);
   margin: 8px 0;
   padding-left: 12px;
@@ -4957,20 +4957,20 @@ label.llm-search-results-item:hover {
   font-style: italic;
 }
 
-.llm-bubble.assistant strong {
+.llm-rendered-markdown strong {
   font-weight: 600;
 }
 
-.llm-bubble.assistant em {
+.llm-rendered-markdown em {
   font-style: italic;
 }
 
-.llm-bubble.assistant a {
+.llm-rendered-markdown a {
   color: var(--color-accent);
   text-decoration: underline;
 }
 
-.llm-bubble.assistant .llm-citation-row-container {
+.llm-rendered-markdown .llm-citation-row-container {
   margin-top: 4px;
   display: block;
   max-width: 100%;
@@ -5066,7 +5066,7 @@ label.llm-search-results-item:hover {
   height: 10px;
 }
 
-.llm-bubble.assistant hr {
+.llm-rendered-markdown hr {
   border: none;
   border-top: 1px solid var(--stroke-secondary);
   margin: 12px 0;
@@ -5075,7 +5075,7 @@ label.llm-search-results-item:hover {
 /* Math Rendering Styles (KaTeX) */
 
 /* Display math block */
-.llm-bubble.assistant .math-display {
+.llm-rendered-markdown .math-display {
   display: block;
   text-align: left;
   width: auto;
@@ -5093,43 +5093,60 @@ label.llm-search-results-item:hover {
 }
 
 /* Inline math */
-.llm-bubble.assistant .math-inline {
+.llm-rendered-markdown .math-inline {
   display: inline;
   vertical-align: baseline;
 }
 
 /* KaTeX specific styling */
-.llm-bubble.assistant .katex {
+.llm-rendered-markdown .katex {
   font-size: 1.1em;
 }
 
-.llm-bubble.assistant .math-display .katex {
+.llm-rendered-markdown .math-display .katex {
   font-size: 1.2em;
 }
 
-.llm-bubble.assistant .katex-display {
+.llm-rendered-markdown .katex-display {
   margin: 0 !important;
   width: auto;
   max-width: 100%;
   min-width: 0;
 }
 
-.llm-bubble.assistant .math-display > .katex-display {
+.llm-rendered-markdown .math-display > .katex-display {
   min-width: 0;
 }
 
-.llm-bubble.assistant .math-display > .katex-display > .katex {
-  display: inline-block;
-  max-width: 100%;
+.llm-rendered-markdown .math-display > .katex-display > .katex {
+  display: block;
+  max-width: none;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  text-align: left;
+  overflow: visible;
+  text-align: center;
+  white-space: nowrap;
   -webkit-overflow-scrolling: touch;
 }
 
+.llm-rendered-markdown .math-display
+  > .katex-display
+  > .katex
+  > .katex-html {
+  box-sizing: border-box;
+  min-width: 100%;
+  padding-right: 3.25em;
+}
+
+.llm-rendered-markdown .math-display
+  > .katex-display
+  > .katex
+  > .katex-html
+  > .tag {
+  right: 0;
+}
+
 /* Math error styling */
-.llm-bubble.assistant .math-error {
+.llm-rendered-markdown .math-error {
   font-family: "Cambria Math", "Times New Roman", Georgia, serif;
   font-style: italic;
   color: #cc0000;
@@ -5139,7 +5156,7 @@ label.llm-search-results-item:hover {
 }
 
 /* Fallback for blocks that failed to render */
-.llm-bubble.assistant .render-fallback {
+.llm-rendered-markdown .render-fallback {
   font-family: ui-monospace, "SF Mono", Monaco, "Cascadia Code", monospace;
   font-size: 0.9em;
   white-space: pre-wrap;
@@ -5151,7 +5168,7 @@ label.llm-search-results-item:hover {
 }
 
 /* Inline display math (within paragraphs) */
-.llm-bubble.assistant .math-display-inline {
+.llm-rendered-markdown .math-display-inline {
   display: inline-block;
   vertical-align: middle;
   max-width: 100%;
@@ -5161,7 +5178,7 @@ label.llm-search-results-item:hover {
   -webkit-overflow-scrolling: touch;
 }
 
-.llm-bubble.assistant .math-display-inline > .katex-display > .katex {
+.llm-rendered-markdown .math-display-inline > .katex-display > .katex {
   display: inline-block;
   max-width: 100%;
   min-width: 0;
@@ -5170,29 +5187,29 @@ label.llm-search-results-item:hover {
   -webkit-overflow-scrolling: touch;
 }
 
-.llm-bubble.assistant .llm-table-scroll {
+.llm-rendered-markdown .llm-table-scroll {
   width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
 }
 
-.llm-bubble.assistant table {
+.llm-rendered-markdown table {
   width: 100%;
   border-collapse: collapse;
   margin: 8px 0;
   font-size: var(--llm-fs-11);
 }
 
-.llm-bubble.assistant th,
-.llm-bubble.assistant td {
+.llm-rendered-markdown th,
+.llm-rendered-markdown td {
   border: 1px solid var(--stroke-secondary);
   padding: 6px 8px;
   text-align: left;
   vertical-align: top;
 }
 
-.llm-bubble.assistant thead th {
+.llm-rendered-markdown thead th {
   background: var(--fill-quinary);
   font-weight: 600;
 }

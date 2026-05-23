@@ -4,6 +4,8 @@ import {
   PREFERENCES_PANE_ID,
   getSelectTextExpandedLabel,
   getScreenshotExpandedLabel,
+  SCREENSHOT_COMPACT_LABEL,
+  SELECT_TEXT_COMPACT_LABEL,
   UPLOAD_FILE_EXPANDED_LABEL,
   formatFigureCountLabel,
   formatFileCountLabel,
@@ -750,14 +752,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const selectTextBtn = createElement(
     doc,
     "button",
-    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-select-text-btn",
+    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-select-text-btn llm-action-icon-only",
     {
       id: "llm-select-text",
-      textContent: getSelectTextExpandedLabel(),
+      textContent: SELECT_TEXT_COMPACT_LABEL,
       title: t("Include selected reader text"),
       disabled: !hasItem,
     },
   );
+  selectTextBtn.setAttribute("aria-label", getSelectTextExpandedLabel());
   const selectTextSlot = createElement(doc, "div", "llm-action-slot");
   selectTextSlot.appendChild(selectTextBtn);
 
@@ -765,14 +768,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const screenshotBtn = createElement(
     doc,
     "button",
-    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-screenshot-btn",
+    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-screenshot-btn llm-action-icon-only",
     {
       id: "llm-screenshot",
-      textContent: getScreenshotExpandedLabel(),
+      textContent: SCREENSHOT_COMPACT_LABEL,
       title: t("Select figure screenshot"),
       disabled: !hasItem,
     },
   );
+  screenshotBtn.setAttribute("aria-label", getScreenshotExpandedLabel());
   const screenshotSlot = createElement(doc, "div", "llm-action-slot");
   screenshotSlot.appendChild(screenshotBtn);
 

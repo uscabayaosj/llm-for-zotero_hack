@@ -10,7 +10,7 @@ import type {
 } from "../../../agent/types";
 import type { Message, PaperContextRef } from "../types";
 import { sanitizeText, getSelectedTextSourceIcon } from "../textUtils";
-import { renderMarkdown } from "../../../utils/markdown";
+import { renderRenderedMarkdownInto } from "../renderedMarkdown";
 import { toFileUrl } from "../../../utils/pathFileUrl";
 import {
   normalizePaperContextRefs,
@@ -2593,11 +2593,324 @@ function appendInterleavedInlineText(
   items.push({ type: "inline_text", text });
 }
 
+function getFinalTraceText(events: AgentRunEventRecord[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const entry = events[index];
+    if (entry?.payload.type === "final") {
+      return sanitizeText(entry.payload.text || "").trim();
+    }
+  }
+  return "";
+}
+
+function shouldSuppressInlineFinalAnswer(
+  item: AgentTraceDisplayItem,
+  finalText: string,
+): boolean {
+  if (item.type !== "inline_text") return false;
+  const finalKey = normalizeInlineTextForDedupe(finalText);
+  const itemKey = normalizeInlineTextForDedupe(item.text);
+  return Boolean(finalKey && itemKey && finalKey === itemKey);
+}
+
+type AgentTraceAdapterContext = {
+  items: AgentTraceDisplayItem[];
+  isCodexTrace: boolean;
+  isInterleaved: boolean;
+  requestSummary: AgentTraceRequestSummary;
+  userMessage: Message | null | undefined;
+  pendingActions: Map<string, AgentPendingAction>;
+  announcedWriting: boolean;
+  lastMeaningfulStatus: string | null;
+  reasoningLabels: Map<string, string>;
+  reasoningStepCounter: number;
+  fallbackReasoningStep: number;
+  visibleInlineText: Set<string>;
+};
+
+function appendReasoningTraceItem(
+  ctx: AgentTraceAdapterContext,
+  payload: Extract<AgentRunEventRecord["payload"], { type: "reasoning" }>,
+): void {
+  const text =
+    readAgentTraceText(payload.details) ||
+    readAgentTraceText(payload.summary) ||
+    undefined;
+  if (!text) return;
+  const hasExplicitStepId = Boolean(
+    typeof payload.stepId === "string" && payload.stepId.trim(),
+  );
+  const reasoningKey = hasExplicitStepId
+    ? getReasoningTraceKey(payload)
+    : `step:${ctx.fallbackReasoningStep}`;
+  let existing: Extract<AgentTraceDisplayItem, { type: "reasoning" }> | null =
+    null;
+  for (let itemIndex = ctx.items.length - 1; itemIndex >= 0; itemIndex -= 1) {
+    const candidate = ctx.items[itemIndex];
+    if (candidate.type === "reasoning" && candidate.key === reasoningKey) {
+      existing = candidate;
+      break;
+    }
+  }
+  if (existing && existing.type === "reasoning") {
+    const prev = existing.summary || "";
+    if (!prev.includes(text)) {
+      existing.summary = appendAgentTraceText(existing.summary, text);
+    }
+    return;
+  }
+
+  let label = readAgentTraceText(payload.stepLabel) || "";
+  if (!label) {
+    label = ctx.reasoningLabels.get(reasoningKey) || "";
+  }
+  if (!label) {
+    if (hasExplicitStepId) {
+      ctx.reasoningStepCounter += 1;
+      label = ctx.isCodexTrace
+        ? `Codex reasoning ${ctx.reasoningStepCounter}`
+        : `Thinking for step ${ctx.reasoningStepCounter}`;
+    } else {
+      label = ctx.isCodexTrace ? "Codex reasoning" : "Thinking";
+    }
+    ctx.reasoningLabels.set(reasoningKey, label);
+  }
+  ctx.items.push({
+    type: "reasoning",
+    key: reasoningKey,
+    label,
+    summary: text,
+    details: undefined,
+  });
+}
+
+function appendLegacyAgentTraceEvent(
+  ctx: AgentTraceAdapterContext,
+  entry: AgentRunEventRecord,
+): boolean {
+  switch (entry.payload.type) {
+    case "status": {
+      const statusText = readAgentTraceText(entry.payload.text);
+      if (
+        !statusText ||
+        isGenericAgentStatusText(statusText) ||
+        statusText === ctx.lastMeaningfulStatus
+      ) {
+        return true;
+      }
+      const isSessionStartStatus =
+        statusText === "Running SessionStart:resume" ||
+        statusText === "Finished SessionStart:resume" ||
+        statusText === "Running SessionStart:startup" ||
+        statusText === "Finished SessionStart:startup";
+      if (
+        isSessionStartStatus ||
+        statusText === "Compacting context…" ||
+        isHiddenClaudeStartupStatus(statusText)
+      ) {
+        return true;
+      }
+      ctx.lastMeaningfulStatus = statusText;
+      ctx.items.push({
+        type: "action",
+        row: {
+          kind: "plan",
+          icon: "…",
+          text: statusText,
+        },
+      });
+      return true;
+    }
+    case "tool_call":
+      ctx.items.push({
+        type: "action",
+        row: summarizeAgentTraceToolCall(
+          entry.payload.name,
+          entry.payload.args,
+          ctx.requestSummary,
+        ),
+        chips: buildAgentTraceToolChips(
+          entry.payload.name,
+          entry.payload.args,
+          ctx.userMessage,
+        ),
+      });
+      ctx.fallbackReasoningStep += 1;
+      return true;
+    case "reasoning":
+      appendReasoningTraceItem(ctx, entry.payload);
+      return true;
+    case "tool_result": {
+      const row = summarizeAgentTraceToolResult(
+        entry.payload.name,
+        entry.payload.ok,
+        entry.payload.content,
+        ctx.requestSummary,
+      );
+      if (row) {
+        ctx.items.push({
+          type: "action",
+          row,
+        });
+        if (entry.payload.ok) {
+          try {
+            const cards =
+              getToolDefinition(
+                entry.payload.name,
+              )?.presentation?.buildResultCards?.(entry.payload.content) ??
+              null;
+            if (cards && cards.length > 0) {
+              ctx.items.push({ type: "card_list", cards });
+            }
+          } catch {
+            // card generation errors must not crash the trace
+          }
+        }
+      }
+      return true;
+    }
+    case "message_delta":
+      if (ctx.isInterleaved) {
+        appendInterleavedInlineText(
+          ctx.items,
+          entry.payload.text || "",
+          ctx.visibleInlineText,
+        );
+      } else if (!ctx.announcedWriting) {
+        ctx.announcedWriting = true;
+        ctx.items.push({
+          type: "action",
+          row: {
+            kind: "plan",
+            icon: "✎",
+            text: "Drafting answer",
+          },
+        });
+      }
+      return true;
+    case "message_rollback":
+      ctx.announcedWriting = false;
+      return true;
+    default:
+      return false;
+  }
+}
+
+function appendCodexAgentTraceEvent(
+  ctx: AgentTraceAdapterContext,
+  entry: AgentRunEventRecord,
+): boolean {
+  switch (entry.payload.type) {
+    case "codex_tool_activity": {
+      const toolName = readAgentTraceText(entry.payload.toolName) || undefined;
+      ctx.items.push({
+        type: "action",
+        row: summarizeCodexToolActivity({
+          phase: entry.payload.phase,
+          toolName,
+          toolLabel: entry.payload.toolLabel,
+          serverName: entry.payload.serverName,
+          text: entry.payload.text,
+        }),
+        chips: toolName
+          ? buildAgentTraceToolChips(
+              toolName,
+              entry.payload.args,
+              ctx.userMessage,
+            )
+          : undefined,
+      });
+      return true;
+    }
+    case "codex_progress": {
+      const progressText = readAgentTraceText(entry.payload.text);
+      if (progressText) {
+        ctx.items.push({
+          type: "message",
+          tone: "neutral",
+          text: progressText,
+          markdown: true,
+        });
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function appendSharedAgentTraceEvent(
+  ctx: AgentTraceAdapterContext,
+  entry: AgentRunEventRecord,
+): boolean {
+  switch (entry.payload.type) {
+    case "confirmation_required":
+      ctx.pendingActions.set(entry.payload.requestId, entry.payload.action);
+      ctx.items.push({
+        type: "action",
+        row: summarizeAgentTraceConfirmationRequest(
+          entry.payload.action,
+          ctx.requestSummary,
+        ),
+      });
+      return true;
+    case "confirmation_resolved": {
+      const action = ctx.pendingActions.get(entry.payload.requestId) || {
+        toolName: "action",
+        title: "Action",
+        confirmLabel: "Apply",
+        cancelLabel: "Cancel",
+        fields: [],
+      };
+      ctx.pendingActions.delete(entry.payload.requestId);
+      ctx.items.push({
+        type: "action",
+        row: summarizeAgentTraceConfirmationResolved(
+          action,
+          entry.payload.approved,
+          entry.payload.actionId,
+          ctx.requestSummary,
+        ),
+      });
+      return true;
+    }
+    case "final": {
+      const alreadyCompleted = ctx.items.some(
+        (item) => item.type === "action" && item.row.kind === "done",
+      );
+      if (!alreadyCompleted) {
+        ctx.items.push({
+          type: "action",
+          row: {
+            kind: "done",
+            icon: "✓",
+            text: "Response ready",
+          },
+        });
+      }
+      return true;
+    }
+    case "fallback":
+      ctx.items.push({
+        type: "message",
+        tone: "warning",
+        text: entry.payload.reason,
+      });
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function buildAgentTraceDisplayItems(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
   assistantMessage?: Message | null,
-): { items: AgentTraceDisplayItem[]; isInterleaved: boolean } {
+): {
+  items: AgentTraceDisplayItem[];
+  isInterleaved: boolean;
+  inlineTextReplacesAssistantText: boolean;
+} {
   const items: AgentTraceDisplayItem[] = [];
   const isCodexTrace = assistantMessage?.modelProviderLabel === "Codex";
   const isAgentTrace = assistantMessage?.runMode === "agent";
@@ -2607,13 +2920,20 @@ export function buildAgentTraceDisplayItems(
   });
   const requestChips = buildAgentTraceRequestChips(userMessage);
   const requestSummary = buildAgentTraceRequestSummary(userMessage);
-  const pendingActions = new Map<string, AgentPendingAction>();
-  let announcedWriting = false;
-  let lastMeaningfulStatus: string | null = null;
-  const reasoningLabels = new Map<string, string>();
-  let reasoningStepCounter = 0;
-  let fallbackReasoningStep = 1;
-  const visibleInlineText = new Set<string>();
+  const adapterContext: AgentTraceAdapterContext = {
+    items,
+    isCodexTrace,
+    isInterleaved,
+    requestSummary,
+    userMessage,
+    pendingActions: new Map<string, AgentPendingAction>(),
+    announcedWriting: false,
+    lastMeaningfulStatus: null,
+    reasoningLabels: new Map<string, string>(),
+    reasoningStepCounter: 0,
+    fallbackReasoningStep: 1,
+    visibleInlineText: new Set<string>(),
+  };
 
   items.push({
     type: "message",
@@ -2638,261 +2958,18 @@ export function buildAgentTraceDisplayItems(
 
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
-    switch (entry.payload.type) {
-      case "status": {
-        const statusText = readAgentTraceText(entry.payload.text);
-        if (
-          !statusText ||
-          isGenericAgentStatusText(statusText) ||
-          statusText === lastMeaningfulStatus
-        ) {
-          break;
-        }
-        const isSessionStartStatus =
-          statusText === "Running SessionStart:resume" ||
-          statusText === "Finished SessionStart:resume" ||
-          statusText === "Running SessionStart:startup" ||
-          statusText === "Finished SessionStart:startup";
-        if (isSessionStartStatus) {
-          break;
-        }
-        if (statusText === "Compacting context…") {
-          break;
-        }
-        if (isHiddenClaudeStartupStatus(statusText)) {
-          break;
-        }
-        lastMeaningfulStatus = statusText;
-        items.push({
-          type: "action",
-          row: {
-            kind: "plan",
-            icon: "…",
-            text: statusText,
-          },
-        });
-        break;
-      }
-      case "tool_call":
-        items.push({
-          type: "action",
-          row: summarizeAgentTraceToolCall(
-            entry.payload.name,
-            entry.payload.args,
-            requestSummary,
-          ),
-          chips: buildAgentTraceToolChips(
-            entry.payload.name,
-            entry.payload.args,
-            userMessage,
-          ),
-        });
-        fallbackReasoningStep += 1;
-        break;
-      case "reasoning": {
-        const text =
-          readAgentTraceText(entry.payload.details) ||
-          readAgentTraceText(entry.payload.summary) ||
-          undefined;
-        if (!text) break;
-        const hasExplicitStepId = Boolean(
-          typeof entry.payload.stepId === "string" &&
-          entry.payload.stepId.trim(),
-        );
-        const reasoningKey = hasExplicitStepId
-          ? getReasoningTraceKey(entry.payload)
-          : `step:${fallbackReasoningStep}`;
-        let existing: Extract<
-          AgentTraceDisplayItem,
-          { type: "reasoning" }
-        > | null = null;
-        for (let itemIndex = items.length - 1; itemIndex >= 0; itemIndex -= 1) {
-          const candidate = items[itemIndex];
-          if (
-            candidate.type === "reasoning" &&
-            candidate.key === reasoningKey
-          ) {
-            existing = candidate;
-            break;
-          }
-        }
-        if (existing && existing.type === "reasoning") {
-          const prev = existing.summary || "";
-          if (!prev.includes(text)) {
-            existing.summary = appendAgentTraceText(existing.summary, text);
-          }
-        } else {
-          let label = readAgentTraceText(entry.payload.stepLabel) || "";
-          if (!label) {
-            label = reasoningLabels.get(reasoningKey) || "";
-          }
-          if (!label) {
-            if (hasExplicitStepId) {
-              reasoningStepCounter += 1;
-              label = isCodexTrace
-                ? `Codex reasoning ${reasoningStepCounter}`
-                : `Thinking for step ${reasoningStepCounter}`;
-            } else {
-              label = isCodexTrace ? "Codex reasoning" : "Thinking";
-            }
-            reasoningLabels.set(reasoningKey, label);
-          }
-          items.push({
-            type: "reasoning",
-            key: reasoningKey,
-            label,
-            summary: text,
-            details: undefined,
-          });
-        }
-        break;
-      }
-      case "tool_result": {
-        const row = summarizeAgentTraceToolResult(
-          entry.payload.name,
-          entry.payload.ok,
-          entry.payload.content,
-          requestSummary,
-        );
-        if (row) {
-          items.push({
-            type: "action",
-            row,
-          });
-          if (entry.payload.ok) {
-            try {
-              const cards =
-                getToolDefinition(
-                  entry.payload.name,
-                )?.presentation?.buildResultCards?.(entry.payload.content) ??
-                null;
-              if (cards && cards.length > 0) {
-                items.push({ type: "card_list", cards });
-              }
-            } catch {
-              // card generation errors must not crash the trace
-            }
-          }
-        }
-        break;
-      }
-      case "codex_tool_activity": {
-        const toolName =
-          readAgentTraceText(entry.payload.toolName) || undefined;
-        items.push({
-          type: "action",
-          row: summarizeCodexToolActivity({
-            phase: entry.payload.phase,
-            toolName,
-            toolLabel: entry.payload.toolLabel,
-            serverName: entry.payload.serverName,
-            text: entry.payload.text,
-          }),
-          chips: toolName
-            ? buildAgentTraceToolChips(
-                toolName,
-                entry.payload.args,
-                userMessage,
-              )
-            : undefined,
-        });
-        break;
-      }
-      case "confirmation_required":
-        pendingActions.set(entry.payload.requestId, entry.payload.action);
-        items.push({
-          type: "action",
-          row: summarizeAgentTraceConfirmationRequest(
-            entry.payload.action,
-            requestSummary,
-          ),
-        });
-        break;
-      case "confirmation_resolved": {
-        const action = pendingActions.get(entry.payload.requestId) || {
-          toolName: "action",
-          title: "Action",
-          confirmLabel: "Apply",
-          cancelLabel: "Cancel",
-          fields: [],
-        };
-        pendingActions.delete(entry.payload.requestId);
-        items.push({
-          type: "action",
-          row: summarizeAgentTraceConfirmationResolved(
-            action,
-            entry.payload.approved,
-            entry.payload.actionId,
-            requestSummary,
-          ),
-        });
-        break;
-      }
-      case "message_delta": {
-        if (isInterleaved) {
-          appendInterleavedInlineText(
-            items,
-            entry.payload.text || "",
-            visibleInlineText,
-          );
-        } else {
-          if (!announcedWriting) {
-            announcedWriting = true;
-            items.push({
-              type: "action",
-              row: {
-                kind: "plan",
-                icon: "✎",
-                text: "Drafting answer",
-              },
-            });
-          }
-        }
-        break;
-      }
-      case "codex_progress": {
-        const progressText = readAgentTraceText(entry.payload.text);
-        if (progressText) {
-          items.push({
-            type: "message",
-            tone: "neutral",
-            text: progressText,
-            markdown: true,
-          });
-        }
-        break;
-      }
-      case "message_rollback": {
-        announcedWriting = false;
-        break;
-      }
-      case "final": {
-        const alreadyCompleted = items.some(
-          (item) => item.type === "action" && item.row.kind === "done",
-        );
-        if (!alreadyCompleted) {
-          items.push({
-            type: "action",
-            row: {
-              kind: "done",
-              icon: "✓",
-              text: "Response ready",
-            },
-          });
-        }
-        break;
-      }
-      case "fallback":
-        items.push({
-          type: "message",
-          tone: "warning",
-          text: entry.payload.reason,
-        });
-        break;
-    }
+    if (appendCodexAgentTraceEvent(adapterContext, entry)) continue;
+    if (appendLegacyAgentTraceEvent(adapterContext, entry)) continue;
+    appendSharedAgentTraceEvent(adapterContext, entry);
   }
 
-  return { items, isInterleaved };
+  const finalText = getFinalTraceText(compactedEvents);
+  const displayItems = finalText
+    ? items.filter((item) => !shouldSuppressInlineFinalAnswer(item, finalText))
+    : items;
+  const inlineTextReplacesAssistantText = isInterleaved && !finalText;
+
+  return { items: displayItems, isInterleaved, inlineTextReplacesAssistantText };
 }
 
 export function renderAgentTrace({
@@ -2931,12 +3008,12 @@ export function renderAgentTrace({
     wrap.appendChild(list);
     return wrap;
   }
-  const { items: processItems, isInterleaved } = buildAgentTraceDisplayItems(
-    events,
-    userMessage,
-    message,
-  );
-  if (isInterleaved) {
+  const {
+    items: processItems,
+    isInterleaved,
+    inlineTextReplacesAssistantText,
+  } = buildAgentTraceDisplayItems(events, userMessage, message);
+  if (inlineTextReplacesAssistantText) {
     onInterleavedText?.();
   }
   const pending = getPendingConfirmation(events);
@@ -2948,7 +3025,7 @@ export function renderAgentTrace({
       const inlineEl = doc.createElement("div");
       inlineEl.className = "llm-agent-inline-text";
       try {
-        inlineEl.innerHTML = renderMarkdown(itemEntry.text);
+        renderRenderedMarkdownInto(inlineEl, itemEntry.text, doc);
       } catch {
         inlineEl.textContent = itemEntry.text;
       }
@@ -2962,7 +3039,7 @@ export function renderAgentTrace({
       if (itemEntry.markdown) {
         messageEl.classList.add("llm-agent-process-message-markdown");
         try {
-          messageEl.innerHTML = renderMarkdown(itemEntry.text);
+          renderRenderedMarkdownInto(messageEl, itemEntry.text, doc);
         } catch {
           messageEl.textContent = itemEntry.text;
         }

@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   buildAgentTraceDisplayItems,
   getPendingActionButtonLayout,
+  renderAgentTrace,
 } from "../src/modules/contextPanel/agentTrace/render";
 import {
   renderAssistantMarkdownHtmlForChat,
@@ -13,6 +14,139 @@ import type {
   AgentPendingAction,
   AgentRunEventRecord,
 } from "../src/agent/types";
+
+class FakeClassList {
+  private readonly classes = new Set<string>();
+
+  add(...classes: string[]) {
+    for (const cls of classes) {
+      if (cls) this.classes.add(cls);
+    }
+  }
+
+  contains(cls: string): boolean {
+    return this.classes.has(cls);
+  }
+
+  toString(): string {
+    return Array.from(this.classes).join(" ");
+  }
+}
+
+class FakeElement {
+  public readonly classList = new FakeClassList();
+  public readonly dataset: Record<string, string | undefined> = {};
+  public readonly children: FakeElement[] = [];
+  public textContent = "";
+  public type = "";
+  public title = "";
+  public attributes: Record<string, string> = {};
+  private copyableChildren: FakeElement[] = [];
+  private html = "";
+
+  constructor(public readonly tagName = "div") {}
+
+  set className(value: string) {
+    this.classList.add(...value.split(/\s+/).filter(Boolean));
+  }
+
+  get className(): string {
+    return this.classList.toString();
+  }
+
+  set innerHTML(value: string) {
+    this.html = value;
+    this.copyableChildren = value.includes("llm-copyable")
+      ? [new FakeCopyableElement()]
+      : [];
+  }
+
+  get innerHTML(): string {
+    return this.html;
+  }
+
+  get firstChild(): FakeElement | null {
+    return this.children[0] || null;
+  }
+
+  querySelectorAll(selector: string): FakeElement[] {
+    if (selector === ".llm-copyable[data-llm-copy-source]") {
+      return this.copyableChildren;
+    }
+    return [];
+  }
+
+  querySelector(selector: string): FakeElement | null {
+    if (selector === ":scope > .llm-render-copy-btn") {
+      return (
+        this.children.find((child) =>
+          child.classList.contains("llm-render-copy-btn"),
+        ) || null
+      );
+    }
+    return null;
+  }
+
+  addEventListener(): void {
+    // Test fake only records tree mutations.
+  }
+
+  contains(node: unknown): boolean {
+    return this.children.includes(node as FakeElement);
+  }
+
+  insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
+    if (!before) {
+      this.children.unshift(child);
+      return child;
+    }
+    const index = this.children.indexOf(before);
+    if (index < 0) {
+      this.children.unshift(child);
+      return child;
+    }
+    this.children.splice(index, 0, child);
+    return child;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes[name] = value;
+  }
+
+  append(...children: FakeElement[]): void {
+    this.children.push(...children);
+  }
+
+  appendChild(child: FakeElement): FakeElement {
+    this.children.push(child);
+    return child;
+  }
+
+  findByClass(className: string): FakeElement | null {
+    if (this.classList.contains(className)) return this;
+    for (const child of this.children) {
+      const match = child.findByClass(className);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  getCopyableChildren(): FakeElement[] {
+    return this.copyableChildren;
+  }
+}
+
+class FakeCopyableElement extends FakeElement {
+  constructor() {
+    super("span");
+    this.className = "llm-copyable llm-copyable-math";
+    this.dataset.llmCopySource = "$$r(x)=g(Vx)$$";
+  }
+}
+
+const fakeDocument = {
+  createElement: (tagName: string) => new FakeElement(tagName),
+} as unknown as Document;
 
 describe("agentTrace render", function () {
   it("uses rendered Markdown HTML for streaming assistant text", function () {
@@ -38,6 +172,78 @@ describe("agentTrace render", function () {
       "| A | B |\n|---|---|\n| 1 | 2 |",
     );
     assert.include(tableHtml, "<table");
+  });
+
+  it("renders trace inline math through the shared Markdown surface", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "$$r(x)=g(Vx)$$",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "front_matter" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: "Done.",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "Done.",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "deepseek-v4-flash",
+      },
+      events,
+    }) as unknown as FakeElement;
+    const inline = trace.findByClass("llm-agent-inline-text");
+    assert.exists(inline);
+    assert.isTrue(inline?.classList.contains("llm-rendered-markdown"));
+    assert.include(inline?.innerHTML || "", "math-display");
+    assert.include(inline?.innerHTML || "", "katex");
+    const copyable = inline?.getCopyableChildren()[0];
+    const copyButton = copyable?.children.find((child) =>
+      child.classList.contains("llm-render-copy-btn"),
+    );
+
+    assert.exists(copyable);
+    assert.exists(copyButton);
+    assert.equal(copyButton?.attributes["aria-label"], "Copy original markdown");
+  });
+
+  it("renders tagged display math as KaTeX tag markup", function () {
+    const html = renderAssistantMarkdownHtmlForChat(
+      String.raw`$$ r(x)=g(Vx) \tag{1} $$`,
+    );
+
+    assert.include(html, "math-display");
+    assert.include(html, 'class="tag"');
+    assert.notInclude(html, "math-error");
   });
 
   it("preserves whitespace when compacting reasoning deltas", function () {
@@ -580,6 +786,181 @@ describe("agentTrace render", function () {
     assert.include(actionTexts, "Drafting answer");
   });
 
+  it("keeps original-agent tool then final answer owned by the assistant bubble", function () {
+    const finalText = "The final answer has $r(x)=g(Vx)$.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "front_matter" },
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: finalText,
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: finalText,
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: finalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "deepseek-v4-flash",
+      });
+
+    assert.isFalse(isInterleaved);
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.isFalse(items.some((item) => item.type === "inline_text"));
+    assert.isTrue(shouldAttachAssistantResponseContextMenu({ text: finalText }));
+  });
+
+  it("keeps unique original-agent interleaved text in trace and final answer in the assistant bubble", function () {
+    const scratchText = "I need to read the theoretical section first.";
+    const finalText = "The final answer has $r(x)=g(Vx)$.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: scratchText,
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "full_text" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: finalText,
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: finalText,
+        },
+        createdAt: 4,
+      },
+    ];
+
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: finalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "deepseek-v4-flash",
+      });
+    const inlineTexts = items
+      .filter(
+        (
+          item,
+        ): item is Extract<(typeof items)[number], { type: "inline_text" }> =>
+          item.type === "inline_text",
+      )
+      .map((item) => item.text);
+
+    assert.isTrue(isInterleaved);
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.deepEqual(inlineTexts, [scratchText]);
+    assert.isTrue(shouldAttachAssistantResponseContextMenu({ text: finalText }));
+  });
+
+  it("suppresses original-agent duplicate inline final text without suppressing the assistant bubble", function () {
+    const finalText = "The final answer has $r(x)=g(Vx)$.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: finalText,
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "full_text" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: finalText,
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: finalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "deepseek-v4-flash",
+      });
+
+    assert.isTrue(isInterleaved);
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.isFalse(items.some((item) => item.type === "inline_text"));
+    assert.isTrue(shouldAttachAssistantResponseContextMenu({ text: finalText }));
+  });
+
   it("does not mark rolled-back scratch text as interleaved", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -700,13 +1081,14 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null, {
-      role: "assistant",
-      text: "This paper is about working memory.",
-      timestamp: 1,
-      runMode: "agent",
-      modelProviderLabel: "Codex",
-    });
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: "This paper is about working memory.",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Codex",
+      });
     const inlineTexts = items
       .filter(
         (
@@ -739,15 +1121,12 @@ describe("agentTrace render", function () {
     );
 
     assert.isTrue(isInterleaved);
-    assert.deepEqual(inlineTexts, [
-      "I'm reading the parsed paper text.",
-      "This paper is about working memory.",
-    ]);
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.deepEqual(inlineTexts, ["I'm reading the parsed paper text."]);
     assert.isAtLeast(scratchIndex, 0);
     assert.isAtLeast(toolIndex, 0);
-    assert.isAtLeast(finalIndex, 0);
+    assert.equal(finalIndex, -1);
     assert.isBelow(scratchIndex, toolIndex);
-    assert.isAbove(finalIndex, toolIndex);
     assert.notInclude(messageTexts, "This paper is about working memory.");
     assert.lengthOf(doneActions, 1);
   });
@@ -798,15 +1177,17 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { isInterleaved } = buildAgentTraceDisplayItems(events, null, {
-      role: "assistant",
-      text: "The paper argues that context switching changes recall.",
-      timestamp: 1,
-      runMode: "agent",
-      modelProviderLabel: "Codex",
-    });
+    const { isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: "The paper argues that context switching changes recall.",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Codex",
+      });
 
     assert.isTrue(isInterleaved);
+    assert.isFalse(inlineTextReplacesAssistantText);
     assert.isTrue(
       shouldAttachAssistantResponseContextMenu({
         text: "The paper argues that context switching changes recall.",
@@ -814,7 +1195,7 @@ describe("agentTrace render", function () {
     );
   });
 
-  it("decorates citations for completed interleaved agent trace text", function () {
+  it("uses the normal assistant bubble for completed interleaved final text", function () {
     const finalText =
       "Here is the paper evidence.\n\n" +
       "> The scaffold states can be used for content-addressable memory.\n\n" +
@@ -867,23 +1248,25 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null, {
-      role: "assistant",
-      text: finalText,
-      timestamp: 1,
-      runMode: "agent",
-      modelProviderLabel: "Codex",
-    });
+    const { items, isInterleaved, inlineTextReplacesAssistantText } =
+      buildAgentTraceDisplayItems(events, null, {
+        role: "assistant",
+        text: finalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Codex",
+      });
     const finalInlineText = items.find(
       (item) => item.type === "inline_text" && item.text === finalText,
     );
 
     assert.isTrue(isInterleaved);
-    assert.exists(finalInlineText);
-    assert.isTrue(
+    assert.isFalse(inlineTextReplacesAssistantText);
+    assert.notExists(finalInlineText);
+    assert.isFalse(
       shouldDecorateInterleavedAgentTraceCitations({
         agentTraceEl: {} as Element,
-        agentUsesInterleavedText: isInterleaved,
+        agentUsesInterleavedText: inlineTextReplacesAssistantText,
         streaming: false,
       }),
     );

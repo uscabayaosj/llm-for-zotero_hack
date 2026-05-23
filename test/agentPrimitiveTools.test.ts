@@ -342,6 +342,69 @@ describe("primitive agent tools", function () {
     assert.lengthOf((result as { results: unknown[] }).results, 1);
   });
 
+  it("query_library related mode refuses active-paper fallback in library chat", async function () {
+    let relatedSearchCalled = false;
+    const tool = createQueryLibraryTool({
+      resolveLibraryID: () => 1,
+      listPaperContexts: () => [],
+      getActivePaperContext: () => ({
+        itemId: 77,
+        contextItemId: 2000000001,
+        title: "Reader Context Paper",
+      }),
+      getItem: () => ({ id: 2000000001 }) as any,
+      findRelatedPapersInLibrary: async () => {
+        relatedSearchCalled = true;
+        return {
+          referenceTitle: "Reader Context Paper",
+          relatedPapers: [],
+        };
+      },
+      getEditableArticleMetadata: () => null,
+      listCollectionSummaries: () => [],
+      listLibraryPaperTargets: async () => ({ papers: [], totalCount: 0 }),
+      listUnfiledPaperTargets: async () => ({ papers: [], totalCount: 0 }),
+      listUntaggedPaperTargets: async () => ({ papers: [], totalCount: 0 }),
+      listCollectionPaperTargets: async () => ({
+        collection: { collectionId: 11, name: "Biology", libraryID: 1 },
+        papers: [],
+        totalCount: 0,
+      }),
+      searchLibraryItems: async () => [],
+      detectDuplicatesInLibrary: async () => ({
+        totalGroups: 0,
+        groups: [],
+      }),
+      getCollectionSummary: () => null,
+      getPaperTargetsByItemIds: () => [],
+    } as never);
+
+    const validated = tool.validate({
+      entity: "items",
+      mode: "related",
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    try {
+      await tool.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          conversationKind: "global",
+          activeItemId: 2000000001,
+        },
+      });
+      assert.fail("Expected library chat to require an explicit reference");
+    } catch (error) {
+      assert.include(
+        error instanceof Error ? error.message : String(error),
+        "A reference paper is required",
+      );
+    }
+    assert.equal(relatedSearchCalled, false);
+  });
+
   it("read_library returns item state keyed by itemId", async function () {
     const fakeItem = {
       id: 7,

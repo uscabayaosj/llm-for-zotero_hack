@@ -30,6 +30,7 @@ import type {
 import {
   isGlobalPortalItem,
   resolveActiveNoteSession,
+  resolveDisplayConversationKind,
 } from "./portalScope";
 import { formatPaperCitationLabel } from "./paperAttribution";
 import { resolveTextAttachmentSourceModeFromMetadata } from "./textAttachmentExtraction";
@@ -415,14 +416,6 @@ function getSelectedSupportedAttachmentFromLibraryPane(): Zotero.Item | null {
 export function resolveContextSourceItem(
   panelItem: Zotero.Item,
 ): ResolvedContextSource {
-  if (isGlobalPortalItem(panelItem)) {
-    return {
-      contextItem: null,
-      statusText: "No active paper context. Type / to add papers.",
-      sourceKind: "none",
-    };
-  }
-
   const activeNoteSession = resolveActiveNoteSession(panelItem);
   if (activeNoteSession?.noteKind === "standalone") {
     return {
@@ -454,6 +447,17 @@ export function resolveContextSourceItem(
     return {
       contextItem: null,
       statusText: `Using note: ${activeNoteSession.title}; parent item has no PDF context`,
+      sourceKind: "none",
+    };
+  }
+
+  if (
+    isGlobalPortalItem(panelItem) ||
+    resolveDisplayConversationKind(panelItem) === "global"
+  ) {
+    return {
+      contextItem: null,
+      statusText: "No active paper context. Type / to add papers.",
       sourceKind: "none",
     };
   }
@@ -529,14 +533,6 @@ export function resolveContextSourceItem(
 export async function resolveContextSourceItemAsync(
   panelItem: Zotero.Item,
 ): Promise<ResolvedContextSource> {
-  if (isGlobalPortalItem(panelItem)) {
-    return {
-      contextItem: null,
-      statusText: "No active paper context. Type / to add papers.",
-      sourceKind: "none",
-    };
-  }
-
   const activeNoteSession = resolveActiveNoteSession(panelItem);
   if (activeNoteSession?.noteKind === "standalone") {
     return {
@@ -568,6 +564,17 @@ export async function resolveContextSourceItemAsync(
     return {
       contextItem: null,
       statusText: `Using note: ${activeNoteSession.title}; parent item has no PDF context`,
+      sourceKind: "none",
+    };
+  }
+
+  if (
+    isGlobalPortalItem(panelItem) ||
+    resolveDisplayConversationKind(panelItem) === "global"
+  ) {
+    return {
+      contextItem: null,
+      statusText: "No active paper context. Type / to add papers.",
       sourceKind: "none",
     };
   }

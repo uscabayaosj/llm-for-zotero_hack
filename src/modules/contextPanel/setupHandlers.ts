@@ -2141,12 +2141,10 @@ export function setupHandlers(
     null;
   let requestAutoLoadedPaperContextRefresh: (() => void) | null = null;
 
-  const setAutoLoadedContextSnapshot = (
+  const writeAutoLoadedContextItemId = (
     contextSourceItem: Zotero.Item | null,
     paperContext: PaperContextRef | null,
   ) => {
-    autoLoadedContextSourceItemSnapshot = contextSourceItem;
-    autoLoadedPaperContextSnapshot = paperContext;
     const contextItemId = Math.floor(
       Number(paperContext?.contextItemId || contextSourceItem?.id || 0),
     );
@@ -2154,6 +2152,19 @@ export function setupHandlers(
       Number.isFinite(contextItemId) && contextItemId > 0
         ? `${contextItemId}`
         : "";
+  };
+
+  const setAutoLoadedContextSnapshot = (
+    contextSourceItem: Zotero.Item | null,
+    paperContext: PaperContextRef | null,
+  ) => {
+    if (isGlobalMode()) {
+      panelRoot.dataset.contextItemId = "";
+      return;
+    }
+    autoLoadedContextSourceItemSnapshot = contextSourceItem;
+    autoLoadedPaperContextSnapshot = paperContext;
+    writeAutoLoadedContextItemId(contextSourceItem, paperContext);
     requestAutoLoadedPaperContextRefresh?.();
   };
 
@@ -2184,7 +2195,15 @@ export function setupHandlers(
   };
 
   const resolveAutoLoadedPaperContext = (): PaperContextRef | null => {
+    if (isGlobalMode()) {
+      panelRoot.dataset.contextItemId = "";
+      return null;
+    }
     if (autoLoadedPaperContextSnapshot !== undefined) {
+      writeAutoLoadedContextItemId(
+        autoLoadedContextSourceItemSnapshot ?? null,
+        autoLoadedPaperContextSnapshot,
+      );
       return autoLoadedPaperContextSnapshot;
     }
     return resolvePaperContextRefFromAttachment(
@@ -2195,7 +2214,15 @@ export function setupHandlers(
   const resolveAutoLoadedPaperContextAsync =
     async (): Promise<PaperContextRef | null> => {
       if (!item) return null;
+      if (isGlobalMode()) {
+        panelRoot.dataset.contextItemId = "";
+        return null;
+      }
       if (autoLoadedPaperContextSnapshot !== undefined) {
+        writeAutoLoadedContextItemId(
+          autoLoadedContextSourceItemSnapshot ?? null,
+          autoLoadedPaperContextSnapshot,
+        );
         return autoLoadedPaperContextSnapshot;
       }
       if (autoLoadedPaperContextPromise) return autoLoadedPaperContextPromise;

@@ -285,6 +285,8 @@ const MERMAID_VIEWER_ZOOM_OUT_ICON = "−";
 const MERMAID_VIEWER_ZOOM_IN_ICON = "+";
 
 const MERMAID_PREVIEW_OPEN_ICON = "⛶";
+const MERMAID_CYTOSCAPE_STYLESHEET_ID = "__________cytoscape_stylesheet";
+const MERMAID_CYTOSCAPE_CONTAINER_CLASS = "__________cytoscape_container";
 
 const MERMAID_THEME_DATASET_KEY = "llmMermaidTheme";
 
@@ -621,6 +623,24 @@ function escapeCssStringLiteral(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
+function stripMermaidLeadingDirectivesAndComments(source: string): string {
+  let text = source.trimStart();
+  let previous = "";
+  while (text !== previous) {
+    previous = text;
+    text = text
+      .replace(/^%%\{[\s\S]*?\}%%\s*/i, "")
+      .replace(/^%%(?!\{)[^\n\r]*(?:\r?\n|$)\s*/i, "");
+  }
+  return text;
+}
+
+export function needsMermaidCytoscapeLayoutHost(source: string): boolean {
+  return /^mindmap(?:\b|-)/i.test(
+    stripMermaidLeadingDirectivesAndComments(source),
+  );
+}
+
 function createMermaidDocumentFacade(doc: Document, body: HTMLElement): Document {
   const proxy = new Proxy(doc, {
     get(target, property, receiver) {
@@ -640,8 +660,8 @@ function createMermaidDocumentFacade(doc: Document, body: HTMLElement): Document
       }
       if (property === "getElementById") {
         return (id: string) =>
-          target.getElementById(id) ||
-          body.querySelector(`[id="${escapeCssStringLiteral(id)}"]`);
+          body.querySelector(`[id="${escapeCssStringLiteral(id)}"]`) ||
+          target.getElementById(id);
       }
 
       const value = Reflect.get(target, property, target);
@@ -650,6 +670,12 @@ function createMermaidDocumentFacade(doc: Document, body: HTMLElement): Document
   });
   return proxy as Document;
 }
+
+type MermaidRenderTarget = {
+  container: HTMLElement;
+  documentBody: HTMLElement;
+  cleanup: () => void;
+};
 
 function createMermaidRenderHost(
   doc: Document,
@@ -665,6 +691,66 @@ function createMermaidRenderHost(
   host.style.overflow = "hidden";
   preview.appendChild(host);
   return host;
+}
+
+function removeMermaidRenderNode(node: HTMLElement): void {
+  if (typeof node.remove === "function") {
+    node.remove();
+  } else {
+    node.parentNode?.removeChild(node);
+  }
+}
+
+function createMermaidCytoscapeLayoutHost(doc: Document): HTMLElement {
+  const host = doc.createElementNS(HTML_NAMESPACE, "div") as HTMLElement;
+  // Mermaid's cose-bilkent layout asks Cytoscape for document.getElementById("cy").
+  host.id = "cy";
+  host.className = MERMAID_CYTOSCAPE_CONTAINER_CLASS;
+  host.setAttribute("aria-hidden", "true");
+  host.style.position = "absolute";
+  host.style.left = "-10000px";
+  host.style.top = "0";
+  host.style.width = "1px";
+  host.style.height = "1px";
+  host.style.overflow = "hidden";
+  return host;
+}
+
+function createMermaidCytoscapeStylesheetSentinel(
+  doc: Document,
+): HTMLStyleElement {
+  const style = doc.createElementNS(HTML_NAMESPACE, "style") as HTMLStyleElement;
+  // Cytoscape otherwise tries document.head.insertBefore(...), but Zotero
+  // windows do not always expose a browser-like head element on this path.
+  style.id = MERMAID_CYTOSCAPE_STYLESHEET_ID;
+  style.textContent = `.${MERMAID_CYTOSCAPE_CONTAINER_CLASS} { position: relative; }`;
+  return style;
+}
+
+function createMermaidRenderTarget(
+  doc: Document,
+  preview: HTMLElement,
+  source: string,
+): MermaidRenderTarget {
+  if (!needsMermaidCytoscapeLayoutHost(source)) {
+    const container = createMermaidRenderHost(doc, preview);
+    return {
+      container,
+      documentBody: container,
+      cleanup: () => removeMermaidRenderNode(container),
+    };
+  }
+
+  const wrapper = createMermaidRenderHost(doc, preview);
+  const styleSentinel = createMermaidCytoscapeStylesheetSentinel(doc);
+  const layoutHost = createMermaidCytoscapeLayoutHost(doc);
+  const container = doc.createElementNS(HTML_NAMESPACE, "div") as HTMLElement;
+  wrapper.append(styleSentinel, layoutHost, container);
+  return {
+    container,
+    documentBody: wrapper,
+    cleanup: () => removeMermaidRenderNode(wrapper),
+  };
 }
 
 async function withDocumentGlobals<T>(
@@ -1082,17 +1168,78 @@ function restoreMermaidEdgeLabels(line: string, labels: string[]): string {
   );
 }
 
+function decodeMermaidLabelHtmlEntities(label: string): string {
+  return label.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|#39);/gi, (
+    entity,
+    body: string,
+  ) => {
+    const lower = body.toLowerCase();
+    if (lower === "amp") return "&";
+    if (lower === "lt") return "<";
+    if (lower === "gt") return ">";
+    if (lower === "quot") return '"';
+    if (lower === "apos" || lower === "#39") return "'";
+    const codePoint = lower.startsWith("#x")
+      ? Number.parseInt(lower.slice(2), 16)
+      : lower.startsWith("#")
+        ? Number.parseInt(lower.slice(1), 10)
+        : Number.NaN;
+    if (!Number.isFinite(codePoint)) return entity;
+    try {
+      return String.fromCodePoint(codePoint);
+    } catch {
+      return entity;
+    }
+  });
+}
+
+function normalizeMermaidLabelMarkdown(label: string): string {
+  let normalized = decodeMermaidLabelHtmlEntities(label);
+  if (/^\s*`[\s\S]*`\s*$/.test(normalized)) return normalized;
+  normalized = normalized
+    .replace(/\*\*([\s\S]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`\n]+?)`/g, "<code>$1</code>");
+  return normalized;
+}
+
+function escapeMermaidQuotedLabel(label: string): string {
+  return label.replace(/"/g, "#quot;");
+}
+
+function shouldQuoteMermaidFlowchartLabel(label: string): boolean {
+  return /[()?:;]/.test(label) || /<\/?(?:strong|code)\b/i.test(label);
+}
+
 function normalizeMermaidFlowchartLabelsInLine(line: string): string {
   const { masked, labels } = maskMermaidEdgeLabels(line);
-  const normalized = masked.replace(
+  const quotedNormalized = masked.replace(
+    /(\b[A-Za-z][\w-]*\s*)\["((?:[^"\\]|\\.)*)"\]/g,
+    (match, prefix: string, label: string) => {
+      const normalizedLabel = normalizeMermaidLabelMarkdown(label);
+      if (normalizedLabel === label) return match;
+      return `${prefix}["${escapeMermaidQuotedLabel(normalizedLabel)}"]`;
+    },
+  );
+  const normalized = quotedNormalized.replace(
     /(\b[A-Za-z][\w-]*\s*)\[(?!\[)([^\]\n]*[()?:;][^\]\n]*)\]/g,
     (match, prefix: string, label: string) => {
       const trimmed = label.trim();
       if (!trimmed || trimmed.startsWith('"') || trimmed.startsWith("'")) {
         return match;
       }
-      const escapedLabel = label.replace(/"/g, "#quot;");
+      const normalizedLabel = normalizeMermaidLabelMarkdown(label);
+      const escapedLabel = escapeMermaidQuotedLabel(normalizedLabel);
       return `${prefix}["${escapedLabel}"]`;
+    },
+  ).replace(
+    /(\b[A-Za-z][\w-]*\s*)\[(?!\[)([^\]"\n]*)\]/g,
+    (match, prefix: string, label: string) => {
+      const normalizedLabel = normalizeMermaidLabelMarkdown(label);
+      if (normalizedLabel === label) return match;
+      if (!shouldQuoteMermaidFlowchartLabel(normalizedLabel)) {
+        return `${prefix}[${normalizedLabel}]`;
+      }
+      return `${prefix}["${escapeMermaidQuotedLabel(normalizedLabel)}"]`;
     },
   );
   return restoreMermaidEdgeLabels(normalized, labels);
@@ -1255,20 +1402,16 @@ async function renderMermaidSvg(
   source: string,
   preview: HTMLElement,
 ): Promise<string> {
-  const renderHost = createMermaidRenderHost(doc, preview);
-  const renderDoc = createMermaidDocumentFacade(doc, renderHost);
+  const renderTarget = createMermaidRenderTarget(doc, preview, source);
+  const renderDoc = createMermaidDocumentFacade(doc, renderTarget.documentBody);
   const renderId = `llmMermaid${Date.now()}${++mermaidRenderCounter}`;
   try {
     const { svg } = await withDocumentGlobals(renderDoc, () =>
-      Promise.resolve(mermaid.render(renderId, source, renderHost)),
+      Promise.resolve(mermaid.render(renderId, source, renderTarget.container)),
     );
     return svg;
   } finally {
-    if (typeof renderHost.remove === "function") {
-      renderHost.remove();
-    } else {
-      renderHost.parentNode?.removeChild(renderHost);
-    }
+    renderTarget.cleanup();
   }
 }
 
@@ -1280,17 +1423,17 @@ async function renderMermaidSvgWithRetry(
   themeKey: MermaidThemeKey,
 ): Promise<string> {
   const themedSource = normalizeMermaidSourceForTheme(source, themeKey);
+  const normalizedSource = normalizeMermaidFlowchartLabels(themedSource);
   try {
-    const svg = await renderMermaidSvg(mermaid, doc, themedSource, preview);
+    const svg = await renderMermaidSvg(mermaid, doc, normalizedSource, preview);
     return polishRenderedMermaidSvg(extractRenderedMermaidSvg(svg), themeKey);
   } catch (firstError) {
-    const normalizedSource = normalizeMermaidFlowchartLabels(themedSource);
     if (normalizedSource === themedSource) throw firstError;
     try {
       const svg = await renderMermaidSvg(
         mermaid,
         doc,
-        normalizedSource,
+        themedSource,
         preview,
       );
       return polishRenderedMermaidSvg(extractRenderedMermaidSvg(svg), themeKey);

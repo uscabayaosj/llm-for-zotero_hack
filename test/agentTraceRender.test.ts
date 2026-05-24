@@ -13,6 +13,7 @@ import {
 } from "../src/modules/contextPanel/chat";
 import {
   extractRenderedMermaidSvg,
+  needsMermaidCytoscapeLayoutHost,
   normalizeMermaidFlowchartLabels,
   normalizeMermaidSourceForTheme,
   polishRenderedMermaidSvg,
@@ -320,6 +321,32 @@ describe("Mermaid rendering helpers", function () {
     assert.include(normalized, 'subgraph Scaffold["Grid-cell scaffold"]');
   });
 
+  it("normalizes Markdown-style flowchart labels for Mermaid HTML rendering", function () {
+    const source = [
+      "flowchart TD",
+      '  A["**Problem** spatial mapping **and** episodic memory"]',
+      '  B["Graceful memory `continuum` &amp; sequence scaffold"]',
+      "  C[**Conclusion**]",
+      "  A -->|edge **label** stays markdown source| B --> C",
+    ].join("\n");
+
+    const normalized = normalizeMermaidFlowchartLabels(source);
+
+    assert.include(
+      normalized,
+      'A["<strong>Problem</strong> spatial mapping <strong>and</strong> episodic memory"]',
+    );
+    assert.include(
+      normalized,
+      'B["Graceful memory <code>continuum</code> & sequence scaffold"]',
+    );
+    assert.include(normalized, 'C["<strong>Conclusion</strong>"]');
+    assert.include(
+      normalized,
+      "-->|edge **label** stays markdown source| B",
+    );
+  });
+
   it("strips locked Mermaid init overrides while preserving safe directives", function () {
     const source = [
       '%%{init: {"securityLevel": "loose", "htmlLabels": false}}%%',
@@ -333,6 +360,23 @@ describe("Mermaid rendering helpers", function () {
     assert.notInclude(normalized, "securityLevel");
     assert.notInclude(normalized, "htmlLabels");
     assert.include(normalized, "showSequenceNumbers");
+  });
+
+  it("detects Mermaid mindmaps that need the Cytoscape layout host", function () {
+    const mindmap = [
+      '%%{init: {"theme": "base"}}%%',
+      "%% generated summary",
+      "mindmap",
+      "  root((Spatial scaffolds))",
+      "    Episodic memory",
+    ].join("\n");
+
+    assert.isTrue(needsMermaidCytoscapeLayoutHost(mindmap));
+    assert.isFalse(
+      needsMermaidCytoscapeLayoutHost(
+        'flowchart TD\n  A["mindmap is just label text"] --> B',
+      ),
+    );
   });
 
   it("allows safe Mermaid foreignObject labels with HTML line breaks", function () {

@@ -38,7 +38,8 @@ export const FONT_SCALE_STEP_PERCENT = 10;
 export const SELECTED_TEXT_MAX_LENGTH = 4000;
 export const SELECTED_TEXT_PREVIEW_LENGTH = 240;
 export const MAX_SELECTED_TEXT_CONTEXTS = 5;
-export const MAX_EDITABLE_SHORTCUTS = 10;
+// Total visible editable shortcuts: built-in plus user-created custom shortcuts.
+export const MAX_EDITABLE_SHORTCUTS = 20;
 export const MAX_SELECTED_IMAGES = 50;
 export const MAX_UPLOAD_PDF_SIZE_BYTES = 50 * 1024 * 1024;
 export const CHAT_ATTACHMENTS_DIR_NAME = "chat-attachments";
@@ -92,6 +93,7 @@ export const BUILTIN_SHORTCUT_FILES = [
   { id: "key-points", label: "Key Points", file: "key-points.txt" },
   { id: "methodology", label: "Methodology", file: "methodology.txt" },
   { id: "limitations", label: "Limitations", file: "limitations.txt" },
+  { id: "mermaid-diagram", label: "Diagram", file: "mermaid-diagram.txt" },
 ] as const;
 
 

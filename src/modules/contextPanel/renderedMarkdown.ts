@@ -9,6 +9,11 @@ import { sanitizeText } from "./textUtils";
 
 export type RenderedMarkdownOptions = {
   resolveImage?: (src: string) => string | null;
+  onAsyncContentRendered?: () => void;
+};
+
+type MermaidRenderOptions = {
+  onContentRendered?: (preview: HTMLElement) => void;
 };
 
 const MERMAID_RENDERED_SVG_MAX_CHARS = 300_000;
@@ -1446,6 +1451,7 @@ async function renderMermaidSvgWithRetry(
 async function renderMermaidBlocksNow(
   root: ParentNode,
   doc: Document,
+  options?: MermaidRenderOptions,
 ): Promise<void> {
   const previews = Array.from(
     root.querySelectorAll(".llm-mermaid-preview[data-llm-mermaid-source]"),
@@ -1503,6 +1509,12 @@ async function renderMermaidBlocksNow(
         source,
       );
       preview.dataset.mermaidState = "rendered";
+      try {
+        options?.onContentRendered?.(preview);
+      } catch {
+        // Async layout hooks should not turn a successful Mermaid render into
+        // an error preview.
+      }
     } catch (error) {
       if (isStillInRenderedRoot(root, preview)) {
         setMermaidPreviewError(preview, error);
@@ -1514,8 +1526,9 @@ async function renderMermaidBlocksNow(
 export function renderMermaidBlocks(
   root: ParentNode,
   doc: Document,
+  options?: MermaidRenderOptions,
 ): Promise<void> {
-  return enqueueMermaidRender(() => renderMermaidBlocksNow(root, doc));
+  return enqueueMermaidRender(() => renderMermaidBlocksNow(root, doc, options));
 }
 
 export function attachRenderedCopyButtons(root: ParentNode, doc: Document): void {
@@ -1573,5 +1586,13 @@ export function renderRenderedMarkdownInto(
   target.classList.add("llm-rendered-markdown");
   target.innerHTML = renderAssistantMarkdownHtmlForChat(text, options);
   attachRenderedCopyButtons(target, doc);
-  void renderMermaidBlocks(target, doc);
+  void renderMermaidBlocks(
+    target,
+    doc,
+    options?.onAsyncContentRendered
+      ? {
+          onContentRendered: options.onAsyncContentRendered,
+        }
+      : undefined,
+  );
 }

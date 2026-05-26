@@ -133,6 +133,8 @@ import {
   ensureConversationLoaded,
   persistChatScrollSnapshot,
   isScrollUpdateSuspended,
+  requestChatScrollFollowBottom,
+  cancelChatScrollFollowBottomRequest,
   withScrollGuard,
   copyTextToClipboard,
   refreshConversationPanels,
@@ -1551,6 +1553,20 @@ export function setupHandlers(
     scrollTop: number;
     nearBottom: boolean;
   };
+  const STREAMING_FOLLOW_BOTTOM_CATCHUP_MAX_PX = 900;
+  const STREAMING_FOLLOW_BOTTOM_CATCHUP_VIEWPORT_RATIO = 1.5;
+  const getStreamingFollowBottomCatchupDistance = (
+    state: ChatBoxViewportState,
+  ): number =>
+    Math.max(
+      AUTO_SCROLL_BOTTOM_THRESHOLD,
+      Math.min(
+        STREAMING_FOLLOW_BOTTOM_CATCHUP_MAX_PX,
+        Math.round(
+          state.height * STREAMING_FOLLOW_BOTTOM_CATCHUP_VIEWPORT_RATIO,
+        ),
+      ),
+    );
   const buildChatBoxViewportState = (): ChatBoxViewportState | null => {
     if (!chatBox) return null;
     if (!isChatViewportVisible(chatBox)) return null;
@@ -1574,8 +1590,61 @@ export function setupHandlers(
   const captureChatBoxViewportState = () => {
     chatBoxViewportState = buildChatBoxViewportState();
   };
+  const isCurrentConversationStreaming = (): boolean => {
+    if (!item) return false;
+    const conversationKey = getConversationKey(item);
+    return (chatHistory.get(conversationKey) || []).some((msg) =>
+      Boolean(msg.streaming),
+    );
+  };
+  const requestStreamingFollowBottom = () => {
+    if (!item || !chatBox) return;
+    if (!isCurrentConversationStreaming()) return;
+    requestChatScrollFollowBottom(body, item, chatBox);
+    captureChatBoxViewportState();
+  };
 
   if (item && chatBox) {
+    const handleStreamingCatchupWheel = (event: WheelEvent) => {
+      if (!item || !chatBox) return;
+      if (!isCurrentConversationStreaming()) return;
+      if (event.deltaY < 0) {
+        cancelChatScrollFollowBottomRequest(item);
+        return;
+      }
+      if (event.deltaY <= 0) return;
+
+      const target = event.target as Element | null;
+      const targetClosest =
+        target && typeof target.closest === "function"
+          ? target.closest.bind(target)
+          : null;
+      const fromStreamingMermaidPreview = Boolean(
+        targetClosest?.(".llm-bubble.streaming .llm-mermaid-preview"),
+      );
+      if (fromStreamingMermaidPreview) {
+        event.preventDefault();
+        requestStreamingFollowBottom();
+        return;
+      }
+
+      const checkAfterNativeScroll = () => {
+        const current = buildChatBoxViewportState();
+        if (!current) return;
+        const distanceFromBottom = current.maxScrollTop - current.scrollTop;
+        if (
+          distanceFromBottom <= getStreamingFollowBottomCatchupDistance(current)
+        ) {
+          requestStreamingFollowBottom();
+        }
+      };
+      const win = body.ownerDocument?.defaultView;
+      if (win) {
+        win.setTimeout(checkAfterNativeScroll, 0);
+      } else {
+        checkAfterNativeScroll();
+      }
+    };
     const persistScroll = () => {
       if (!item) return;
       if (!chatBox.childElementCount) return;
@@ -1599,9 +1668,31 @@ export function setupHandlers(
         captureChatBoxViewportState();
         return;
       }
+      const currentViewport = buildChatBoxViewportState();
+      if (previousViewport && currentViewport) {
+        const scrollDelta =
+          currentViewport.scrollTop - previousViewport.scrollTop;
+        if (scrollDelta < -2) {
+          cancelChatScrollFollowBottomRequest(item);
+        } else if (scrollDelta > 2 && isCurrentConversationStreaming()) {
+          const distanceFromBottom =
+            currentViewport.maxScrollTop - currentViewport.scrollTop;
+          if (
+            distanceFromBottom <=
+            getStreamingFollowBottomCatchupDistance(currentViewport)
+          ) {
+            requestChatScrollFollowBottom(body, item, chatBox);
+            captureChatBoxViewportState();
+            return;
+          }
+        }
+      }
       persistChatScrollSnapshot(item, chatBox);
       captureChatBoxViewportState();
     };
+    chatBox.addEventListener("wheel", handleStreamingCatchupWheel, {
+      passive: false,
+    });
     chatBox.addEventListener("scroll", persistScroll, { passive: true });
   }
 

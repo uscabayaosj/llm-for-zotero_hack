@@ -58,6 +58,11 @@ type CloneIntoFn = <T extends object>(
   },
 ) => T;
 
+type WindowConstructors = {
+  Object?: ObjectConstructor;
+  Array?: ArrayConstructor;
+};
+
 function resolveRenderablePdfPage(value: unknown): RenderablePdfPage | null {
   const queue: unknown[] = [value];
   const seen = new Set<unknown>();
@@ -119,13 +124,34 @@ function getReaderDocument(reader: any): Document | null {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getPdfApplicationDocument(app: any, reader: any): Document | null {
+  const candidates = [
+    app?.pdfViewer?.container?.ownerDocument,
+    app?.pdfViewer?._container?.ownerDocument,
+    app?.pdfViewer?.viewer?.ownerDocument,
+    app?.appConfig?.mainContainer?.ownerDocument,
+    app?.appConfig?.viewerContainer?.ownerDocument,
+    app?.appConfig?.viewer?.ownerDocument,
+    reader?._iframeWindow?.document,
+    reader?._iframe?.contentDocument,
+    reader?._internalReader?._lastView?._iframeWindow?.document,
+  ];
+
+  for (const candidate of candidates) {
+    const doc = unwrapWrappedJsObject(candidate) as Document | null;
+    if (doc?.createElement && doc?.defaultView) return doc;
+  }
+  return null;
+}
+
 function isCanvasElement(value: unknown): value is HTMLCanvasElement {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      typeof (value as { getContext?: unknown }).getContext === "function" &&
-      ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
-        (value as { tagName?: unknown }).tagName === "CANVAS"),
+    typeof value === "object" &&
+    typeof (value as { getContext?: unknown }).getContext === "function" &&
+    ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
+      (value as { tagName?: unknown }).tagName === "CANVAS"),
   );
 }
 
@@ -145,7 +171,10 @@ function pickLargestCanvas(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getPageViewCanvas(app: any, pageIndex: number): HTMLCanvasElement | null {
+function getPageViewCanvas(
+  app: any,
+  pageIndex: number,
+): HTMLCanvasElement | null {
   const pageView = unwrapWrappedJsObject(
     app?.pdfViewer?.getPageView?.(pageIndex) ||
       app?.pdfViewer?._pages?.[pageIndex] ||
@@ -156,7 +185,9 @@ function getPageViewCanvas(app: any, pageIndex: number): HTMLCanvasElement | nul
   if (isCanvasElement(directCanvas)) return directCanvas;
   if (pageView.div) {
     return pickLargestCanvas(
-      Array.from(pageView.div.querySelectorAll("canvas")) as HTMLCanvasElement[],
+      Array.from(
+        pageView.div.querySelectorAll("canvas"),
+      ) as HTMLCanvasElement[],
     );
   }
   return null;
@@ -206,7 +237,30 @@ function getCloneInto(): CloneIntoFn | undefined {
     cloneInto?: CloneIntoFn;
     Components?: { utils?: { cloneInto?: CloneIntoFn } };
   };
-  return globalWithClone.cloneInto || globalWithClone.Components?.utils?.cloneInto;
+  return (
+    globalWithClone.cloneInto || globalWithClone.Components?.utils?.cloneInto
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getPdfRenderWindow(canvasDoc: Document, reader: any): Window | null {
+  try {
+    const canvasWindow = unwrapWrappedJsObject(
+      canvasDoc.defaultView || null,
+    ) as Window | null;
+    const iframeWindow = unwrapWrappedJsObject(
+      reader?._iframeWindow || null,
+    ) as Window | null;
+    return canvasWindow || iframeWindow || null;
+  } catch {
+    return null;
+  }
+}
+
+function getWindowConstructors(
+  win: Window | null | undefined,
+): WindowConstructors {
+  return (win || null) as unknown as WindowConstructors;
 }
 
 function canvasToDataUrl(canvas: HTMLCanvasElement | null): string | null {
@@ -280,10 +334,10 @@ function isValidViewport(viewport: unknown): viewport is ViewportLike {
   const height = Number((viewport as ViewportLike | null)?.height);
   return Boolean(
     viewport &&
-      Number.isFinite(width) &&
-      width > 0 &&
-      Number.isFinite(height) &&
-      height > 0,
+    Number.isFinite(width) &&
+    width > 0 &&
+    Number.isFinite(height) &&
+    height > 0,
   );
 }
 
@@ -291,32 +345,51 @@ function getSafeViewport(
   targetLabel: string,
   pdfPage: RenderablePdfPage,
   scale: number,
-): {
-  ok: true;
-  viewport: ViewportLike;
-  width: number;
-  height: number;
-  scaleUsed: number;
-  mode: string;
-} | {
-  ok: false;
-} {
+  renderWindow?: Window | null,
+):
+  | {
+      ok: true;
+      viewport: ViewportLike;
+      width: number;
+      height: number;
+      scaleUsed: number;
+      mode: string;
+    }
+  | {
+      ok: false;
+    } {
   const safeScale =
     Number.isFinite(Number(scale)) && Number(scale) > 0 ? Number(scale) : 1.5;
-  const safeRotation =
-    Number.isFinite(Number(pdfPage?.rotate)) ? Number(pdfPage.rotate) : 0;
+  const safeRotation = Number.isFinite(Number(pdfPage?.rotate))
+    ? Number(pdfPage.rotate)
+    : 0;
+  const cloneIntoFn = getCloneInto();
+  const makeViewportOptions = (nextScale: number) => {
+    let viewportOptions = {
+      scale: nextScale,
+      rotation: safeRotation,
+      offsetX: 0,
+      offsetY: 0,
+      dontFlip: false,
+    };
+    if (renderWindow && typeof cloneIntoFn === "function") {
+      try {
+        viewportOptions = cloneIntoFn(viewportOptions, renderWindow, {
+          cloneFunctions: false,
+          wrapReflectors: true,
+        });
+      } catch {
+        // fall back to local options
+      }
+    }
+    return viewportOptions;
+  };
 
   const attempts = [
     {
       scale: safeScale,
       run: (target: RenderablePdfPage, nextScale: number) =>
-        target.getViewport({
-          scale: nextScale,
-          rotation: safeRotation,
-          offsetX: 0,
-          offsetY: 0,
-          dontFlip: false,
-        }),
+        target.getViewport(makeViewportOptions(nextScale)),
       suffix: "object",
     },
     {
@@ -332,13 +405,7 @@ function getSafeViewport(
       {
         scale: 1.5,
         run: (target: RenderablePdfPage, nextScale: number) =>
-          target.getViewport({
-            scale: nextScale,
-            rotation: safeRotation,
-            offsetX: 0,
-            offsetY: 0,
-            dontFlip: false,
-          }),
+          target.getViewport(makeViewportOptions(nextScale)),
         suffix: "object-fallback",
       },
       {
@@ -376,16 +443,18 @@ function getSafeViewport(
 function buildManualViewport(
   pageLike: RenderablePdfPage,
   scale: number,
-): {
-  ok: true;
-  viewport: ViewportLike;
-  width: number;
-  height: number;
-  scaleUsed: number;
-  mode: string;
-} | {
-  ok: false;
-} {
+):
+  | {
+      ok: true;
+      viewport: ViewportLike;
+      width: number;
+      height: number;
+      scaleUsed: number;
+      mode: string;
+    }
+  | {
+      ok: false;
+    } {
   const sourceView = Array.isArray(pageLike?.view)
     ? pageLike.view
     : Array.isArray(pageLike?._pageInfo?.view)
@@ -402,8 +471,9 @@ function buildManualViewport(
   }
   const safeScale =
     Number.isFinite(Number(scale)) && Number(scale) > 0 ? Number(scale) : 1.5;
-  const safeRotation =
-    Number.isFinite(Number(pageLike?.rotate)) ? Number(pageLike.rotate) : 0;
+  const safeRotation = Number.isFinite(Number(pageLike?.rotate))
+    ? Number(pageLike.rotate)
+    : 0;
   const safeUserUnit =
     Number.isFinite(Number(pageLike?.userUnit)) && Number(pageLike.userUnit) > 0
       ? Number(pageLike.userUnit)
@@ -478,8 +548,12 @@ function buildManualViewport(
       rotateB * totalScale,
       rotateC * totalScale,
       rotateD * totalScale,
-      offsetCanvasX - rotateA * totalScale * centerX - rotateC * totalScale * centerY,
-      offsetCanvasY - rotateB * totalScale * centerX - rotateD * totalScale * centerY,
+      offsetCanvasX -
+        rotateA * totalScale * centerX -
+        rotateC * totalScale * centerY,
+      offsetCanvasY -
+        rotateB * totalScale * centerX -
+        rotateD * totalScale * centerY,
     ],
     width,
     height,
@@ -510,16 +584,12 @@ function scopeViewportForRender(
   reader: any,
 ): ViewportLike {
   try {
-    const iframeWindow = unwrapWrappedJsObject(
-      reader?._iframeWindow || null,
-    ) as Window | null;
-    const canvasWindow = unwrapWrappedJsObject(
-      canvasDoc.defaultView || null,
-    ) as Window | null;
-    const renderWindow = iframeWindow || canvasWindow;
+    const renderWindow = getPdfRenderWindow(canvasDoc, reader);
     const cloneIntoFn = getCloneInto();
     const payload = {
-      viewBox: Array.isArray(viewport.viewBox) ? [...viewport.viewBox] : viewport.viewBox,
+      viewBox: Array.isArray(viewport.viewBox)
+        ? [...viewport.viewBox]
+        : viewport.viewBox,
       scale: viewport.scale,
       rotation: viewport.rotation,
       offsetX: viewport.offsetX,
@@ -552,10 +622,14 @@ function scopeViewportForRender(
       }
     }
 
-    const ScopedObject =
-      renderWindow?.Object || canvasDoc.defaultView?.Object;
-    const ScopedArray = renderWindow?.Array || canvasDoc.defaultView?.Array;
-    if (typeof ScopedObject !== "function" || typeof ScopedArray !== "function") {
+    const renderConstructors = getWindowConstructors(renderWindow);
+    const canvasConstructors = getWindowConstructors(canvasDoc.defaultView);
+    const ScopedObject = renderConstructors.Object || canvasConstructors.Object;
+    const ScopedArray = renderConstructors.Array || canvasConstructors.Array;
+    if (
+      typeof ScopedObject !== "function" ||
+      typeof ScopedArray !== "function"
+    ) {
       return viewport;
     }
     const scopedViewport = new ScopedObject() as ViewportLike;
@@ -591,6 +665,7 @@ function resolvePdfViewport(
   rawPage: unknown,
   pdfPage: RenderablePdfPage,
   scale: number,
+  renderWindow?: Window | null,
 ): {
   viewport: ViewportLike;
   width: number;
@@ -617,7 +692,7 @@ function resolvePdfViewport(
   }
 
   for (const [label, candidate] of candidates) {
-    const safeViewport = getSafeViewport(label, candidate, scale);
+    const safeViewport = getSafeViewport(label, candidate, scale, renderWindow);
     if (safeViewport.ok) {
       return safeViewport;
     }
@@ -625,6 +700,87 @@ function resolvePdfViewport(
 
   const manualViewport = buildManualViewport(pdfPage, scale);
   return manualViewport.ok ? manualViewport : null;
+}
+
+function getFontFaceSetStatus(renderDoc: Document): string {
+  try {
+    const status = renderDoc.fonts?.status;
+    return typeof status === "string" ? status : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function waitForRenderFontsReady(
+  renderDoc: Document,
+  timeoutMs = 1600,
+): Promise<{ waited: boolean; timedOut: boolean; status: string }> {
+  try {
+    const ready = renderDoc.fonts?.ready;
+    if (!ready || typeof ready.then !== "function") {
+      return { waited: false, timedOut: false, status: "unsupported" };
+    }
+
+    const beforeStatus = getFontFaceSetStatus(renderDoc);
+    if (beforeStatus !== "loading") {
+      return { waited: false, timedOut: false, status: beforeStatus };
+    }
+
+    let timedOut = false;
+    await Promise.race([
+      ready,
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, timeoutMs);
+      }),
+    ]);
+
+    const view = renderDoc.defaultView;
+    if (!timedOut && typeof view?.requestAnimationFrame === "function") {
+      await new Promise<void>((resolve) => {
+        view.requestAnimationFrame(() => resolve());
+      });
+    }
+
+    return { waited: true, timedOut, status: getFontFaceSetStatus(renderDoc) };
+  } catch {
+    return { waited: false, timedOut: false, status: "unknown" };
+  }
+}
+
+async function awaitPdfRenderTask(renderTask: unknown): Promise<void> {
+  if (
+    renderTask &&
+    typeof renderTask === "object" &&
+    "promise" in renderTask &&
+    (renderTask as { promise?: Promise<unknown> }).promise
+  ) {
+    await (renderTask as { promise: Promise<unknown> }).promise;
+  } else if (
+    renderTask &&
+    (typeof renderTask === "object" || typeof renderTask === "function") &&
+    "then" in renderTask &&
+    typeof (renderTask as { then?: unknown }).then === "function"
+  ) {
+    await renderTask;
+  }
+}
+
+function clearRenderCanvas(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): void {
+  try {
+    context.save();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, width, height);
+    context.restore();
+  } catch {
+    // A failed clear should not block the existing fallback path.
+  }
 }
 
 async function renderPdfPageToDataUrl(
@@ -635,7 +791,9 @@ async function renderPdfPageToDataUrl(
   pageNumber: number,
   options: { scale?: number } = {},
 ): Promise<string | null> {
-  const canvasDoc = getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
+  const canvasDoc =
+    getPdfApplicationDocument(app, reader) ||
+    Zotero.getMainWindow?.()?.document;
   if (!canvasDoc) return null;
 
   const pdfDocument = unwrapWrappedJsObject(
@@ -657,10 +815,17 @@ async function renderPdfPageToDataUrl(
       Number.isFinite(requestedScale) && requestedScale > 0
         ? requestedScale
         : 1.8;
-    const viewportResult = resolvePdfViewport(rawPage, pdfPage, preferredScale);
+    const renderWindow = getPdfRenderWindow(canvasDoc, reader);
+    const viewportResult = resolvePdfViewport(
+      rawPage,
+      pdfPage,
+      preferredScale,
+      renderWindow,
+    );
     if (!viewportResult) return null;
 
-    const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
+    const renderDoc = renderWindow?.document || canvasDoc;
+    const offscreen = renderDoc.createElement("canvas") as HTMLCanvasElement;
     offscreen.width = Math.max(1, Math.ceil(viewportResult.width));
     offscreen.height = Math.max(1, Math.ceil(viewportResult.height));
     offscreen.style.width = `${offscreen.width}px`;
@@ -668,27 +833,29 @@ async function renderPdfPageToDataUrl(
 
     let dataUrl: string | null = null;
     try {
-      const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
+      const context = offscreen.getContext(
+        "2d",
+      ) as CanvasRenderingContext2D | null;
       if (!context) return null;
 
-      const rawContext = unwrapWrappedJsObject(context) as CanvasRenderingContext2D;
-      const rawViewport = unwrapWrappedJsObject(viewportResult.viewport) as ViewportLike;
-      const renderViewport =
-        viewportResult.mode === "manual.viewbox"
-          ? scopeViewportForRender(rawViewport, canvasDoc, reader)
-          : rawViewport;
+      const rawContext = unwrapWrappedJsObject(
+        context,
+      ) as CanvasRenderingContext2D;
+      const rawViewport = unwrapWrappedJsObject(
+        viewportResult.viewport,
+      ) as ViewportLike;
+      const renderViewport = scopeViewportForRender(
+        rawViewport,
+        canvasDoc,
+        reader,
+      );
 
-      let renderParams: { canvasContext: CanvasRenderingContext2D; viewport: unknown } | unknown = {
+      let renderParams:
+        | { canvasContext: CanvasRenderingContext2D; viewport: unknown }
+        | unknown = {
         canvasContext: rawContext,
         viewport: renderViewport,
       };
-      const iframeWindow = unwrapWrappedJsObject(
-        reader?._iframeWindow || null,
-      ) as Window | null;
-      const canvasWindow = unwrapWrappedJsObject(
-        canvasDoc.defaultView || null,
-      ) as Window | null;
-      const renderWindow = iframeWindow || canvasWindow;
       const cloneIntoFn = getCloneInto();
       if (renderWindow && typeof cloneIntoFn === "function") {
         try {
@@ -708,26 +875,24 @@ async function renderPdfPageToDataUrl(
         }
       }
 
-      const renderTask = pdfPage.render(
-        renderParams as {
-          canvasContext: CanvasRenderingContext2D;
-          viewport: unknown;
-        },
-      );
+      const renderArgs = renderParams as {
+        canvasContext: CanvasRenderingContext2D;
+        viewport: unknown;
+      };
+      const fontStatusBeforeRender = getFontFaceSetStatus(renderDoc);
+      await awaitPdfRenderTask(pdfPage.render(renderArgs));
+
+      const fontWait = await waitForRenderFontsReady(renderDoc);
+      if (fontWait.timedOut && fontWait.status === "loading") {
+        return null;
+      }
+
       if (
-        renderTask &&
-        typeof renderTask === "object" &&
-        "promise" in renderTask &&
-        (renderTask as { promise: Promise<unknown> }).promise
+        (fontStatusBeforeRender === "loading" || fontWait.waited) &&
+        fontWait.status !== "loading"
       ) {
-        await (renderTask as { promise: Promise<unknown> }).promise;
-      } else if (
-        renderTask &&
-        (typeof renderTask === "object" || typeof renderTask === "function") &&
-        "then" in renderTask &&
-        typeof (renderTask as { then?: unknown }).then === "function"
-      ) {
-        await renderTask;
+        clearRenderCanvas(rawContext, offscreen.width, offscreen.height);
+        await awaitPdfRenderTask(pdfPage.render(renderArgs));
       }
 
       const exported = canvasToDataUrl(offscreen);
@@ -838,7 +1003,10 @@ export function parsePageRanges(input: string, maxPage: number): number[] {
  * Navigates the reader to a specific page index (0-based).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function navigateReaderToPage(reader: any, pageIndex: number): Promise<boolean> {
+async function navigateReaderToPage(
+  reader: any,
+  pageIndex: number,
+): Promise<boolean> {
   if (typeof reader?.navigate !== "function") return false;
   const idx = Math.max(0, Math.floor(pageIndex));
   try {
@@ -883,7 +1051,12 @@ async function capturePageByNavigation(
   if (retry) return retry;
 
   await navigateReaderToPage(reader, pageNumber - 1);
-  const rendered = await waitForRenderedPageCanvas(app, reader, pageNumber, 3000);
+  const rendered = await waitForRenderedPageCanvas(
+    app,
+    reader,
+    pageNumber,
+    3000,
+  );
   if (rendered && rendered.width > 0 && rendered.height > 0) {
     const visibleUrl = canvasToDataUrl(rendered);
     if (visibleUrl && !isCanvasLikelyBlank(rendered)) {

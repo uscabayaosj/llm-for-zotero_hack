@@ -6,6 +6,7 @@ import {
   extractQuoteCitationsFromToolContent,
   replaceQuoteCitationPlaceholdersForMarkdown,
 } from "../src/modules/contextPanel/quoteCitations";
+import { renderMarkdown } from "../src/utils/markdown";
 
 describe("quoteCitations", function () {
   it("generates stable ids from quote text, citation label, and context item", function () {
@@ -64,6 +65,26 @@ describe("quoteCitations", function () {
     assert.include(rendered, "> A stable quote.");
     assert.include(rendered, "(Lee, 2025)");
     assert.notInclude(rendered, "[[quote:");
+  });
+
+  it("does not double-blockquote anchored quotes already wrapped in quote syntax", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "First source paragraph.\n\nSecond source paragraph.",
+      citationLabel: "(Lee, 2025)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      `Evidence:\n\n> [[quote:${citation!.id}]]`,
+      [citation!],
+    );
+    const html = renderMarkdown(rendered);
+
+    assert.notInclude(rendered, "> >");
+    assert.notInclude(html, "<blockquote><blockquote>");
+    assert.include(html, "<p>First source paragraph.</p>");
+    assert.include(html, "<p>Second source paragraph.</p>");
   });
 
   it("can suppress unresolved placeholders on external text surfaces", function () {

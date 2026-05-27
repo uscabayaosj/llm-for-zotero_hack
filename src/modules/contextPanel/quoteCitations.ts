@@ -6,6 +6,8 @@ import type {
 import { formatPaperSourceLabel } from "./paperAttribution";
 
 export const QUOTE_CITATION_PATTERN = /\[\[quote:([A-Za-z0-9_-]+)\]\]/g;
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN =
+  /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/gm;
 
 function normalizeText(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -189,14 +191,20 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
       citation,
     ]),
   );
-  return markdown.replace(QUOTE_CITATION_PATTERN, (token, id: string) => {
+  const unresolved = options.unresolved || "preserve";
+  const replaceToken = (token: string, id: string): string => {
     const citation = byId.get(id);
     if (citation) return formatQuoteCitationMarkdown(citation);
-    const unresolved = options.unresolved || "preserve";
     return unresolved === "preserve"
       ? token
       : formatUnresolvedQuoteCitationPlaceholder(unresolved);
-  });
+  };
+  const normalizedMarkdown = markdown.replace(
+    BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN,
+    (token, id: string) => replaceToken(token, id),
+  );
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  return normalizedMarkdown.replace(QUOTE_CITATION_PATTERN, replaceToken);
 }
 
 function extractFromUnknown(

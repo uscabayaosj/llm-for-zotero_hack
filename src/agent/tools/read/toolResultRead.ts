@@ -196,15 +196,16 @@ async function executeToolResultRead(
   }
   const warnings: string[] = [];
   const currentSignature = context.resourceSignature;
-  if (
+  const isStaleScope = Boolean(
     record.resourceSignature &&
-    currentSignature &&
-    record.resourceSignature !== currentSignature
-  ) {
+      currentSignature &&
+      record.resourceSignature !== currentSignature,
+  );
+  if (isStaleScope) {
     warnings.push(
       input.allowStale
         ? "The Zotero resource scope has changed since this result was stored; returning stale result content because allowStale is true."
-        : "The Zotero resource scope has changed since this result was stored. Treat this as stale context; re-run the source tool for current-scope evidence.",
+        : "The Zotero resource scope has changed since this result was stored. Re-run the source tool for current-scope evidence.",
     );
   }
   const base: Record<string, unknown> = {
@@ -214,9 +215,20 @@ async function executeToolResultRead(
     toolCallId: record.toolCallId,
     inputDigest: record.inputDigest,
     resourceSignature: record.resourceSignature,
+    ...(isStaleScope
+      ? { currentResourceSignature: currentSignature, stale: true }
+      : {}),
     createdAt: record.createdAt,
     warnings,
   };
+  if (isStaleScope && !input.allowStale) {
+    return {
+      ...base,
+      ok: false,
+      error:
+        "Stored tool result belongs to a previous Zotero resource scope. Re-run the source tool for current-scope evidence, or set allowStale true only if stale result content is explicitly acceptable.",
+    };
+  }
   if (!input.path) {
     return {
       ...base,

@@ -168,7 +168,7 @@ describe("agent tool-result handles", function () {
     assert.match(String(output.error), /current conversation/);
   });
 
-  it("warns when reading a handle after the resource scope changed", async function () {
+  it("blocks stale-scope handles by default and allows explicit stale reads", async function () {
     const record = createAgentToolResultHandleRecord({
       conversationKey: 5,
       toolName: "library_retrieve",
@@ -184,16 +184,29 @@ describe("agent tool-result handles", function () {
       context({ conversationKey: 5, resourceSignature: "scope-new" }),
     );
 
-    assert.equal(output.ok, true);
+    assert.equal(output.ok, false);
+    assert.equal(output.stale, true);
+    assert.equal(output.currentResourceSignature, "scope-new");
+    assert.equal(output.resourceSignature, "scope-old");
+    assert.notProperty(output, "items");
+    assert.notProperty(output, "value");
+    assert.notProperty(output, "excerpt");
+    assert.notProperty(output, "availablePaths");
+    assert.notProperty(output, "snippetsCount");
     assert.include(
       String((output.warnings as string[])[0]),
       "resource scope has changed",
     );
+    assert.include(String(output.error), "Re-run the source tool");
 
     const staleAllowed = await executeRead(
       { handle: record!.handle, path: "snippets", allowStale: true },
       context({ conversationKey: 5, resourceSignature: "scope-new" }),
     );
+    assert.equal(staleAllowed.ok, true);
+    assert.equal(staleAllowed.stale, true);
+    assert.equal(staleAllowed.currentResourceSignature, "scope-new");
+    assert.deepEqual(staleAllowed.items, [{ text: "Old scoped evidence" }]);
     assert.include(
       String((staleAllowed.warnings as string[])[0]),
       "allowStale",

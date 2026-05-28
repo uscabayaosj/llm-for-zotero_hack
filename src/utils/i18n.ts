@@ -351,14 +351,25 @@ const zhCN: Record<string, string> = {
   "Uploading PDF…": "正在上传 PDF…",
   "Uploading to local server… (%s MB)": "正在上传到本地服务…（%s MB）",
   "Upload failed: HTTP %s to %s": "上传失败：HTTP %s 到 %s",
+  "Waiting for MinerU to start…": "正在等待 MinerU 开始处理…",
+  "Waiting for MinerU to start… (%ss)":
+    "正在等待 MinerU 开始处理…（%s 秒）",
+  "Waiting for MinerU upload to be accepted… (%ss)":
+    "正在等待 MinerU 接收上传文件…（%s 秒）",
+  "Waiting for MinerU status… (%ss)":
+    "正在等待 MinerU 状态…（%s 秒）",
   "Processing on server…": "服务器正在处理…",
   "Processing on server… (%ss)": "服务器正在处理…（%s 秒）",
+  "Converting on server… (%ss)": "服务器正在转换…（%s 秒）",
   "Waiting for parser… (%ss)": "等待解析器处理…（%s 秒）",
   "Local MinerU parsing timed out": "本地 MinerU 解析超时",
   "Local parse failed: HTTP %s": "本地解析失败：HTTP %s",
   "Done (%s files extracted)": "完成（已提取 %s 个文件）",
   "Extraction failed on server": "服务器解析失败",
-  "Timed out after 10 minutes": "10 分钟后超时",
+  "Missing ZIP result from server": "服务器未返回 ZIP 结果",
+  "Timed out waiting for MinerU status": "等待 MinerU 状态超时",
+  "Timed out before MinerU started processing":
+    "MinerU 开始处理前等待超时",
   "Local MinerU health check timed out": "本地 MinerU 健康检查超时",
   "Local MinerU health check failed: HTTP %s":
     "本地 MinerU 健康检查失败：HTTP %s",

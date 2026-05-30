@@ -878,7 +878,7 @@ describe("agentTrace render", function () {
           type: "codex_tool_activity",
           itemId: "web-1",
           phase: "completed",
-          toolName: "web_search",
+          toolName: "codex_web_search",
           toolLabel: "Opened web page",
           args: {
             query: longQuery,

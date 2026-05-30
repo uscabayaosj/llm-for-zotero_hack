@@ -3697,7 +3697,7 @@ function createCodexNativeActivityTraceController(
       const updated = upsertToolActivity({
         itemId,
         phase,
-        toolName: "web_search",
+        toolName: "codex_web_search",
         toolLabel: "Web search",
         args: webSearch?.args || (query ? { query } : undefined),
         ok: phase === "completed" ? !failed : undefined,

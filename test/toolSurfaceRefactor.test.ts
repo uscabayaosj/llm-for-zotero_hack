@@ -9,7 +9,6 @@ import {
 } from "../src/agent/skills";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
-import { createWebSearchTool } from "../src/agent/tools/read/webSearch";
 import type { AgentToolContext } from "../src/agent/types";
 
 describe("semantic tool surface", function () {
@@ -94,8 +93,17 @@ describe("semantic tool surface", function () {
       "paper_read",
       "run_command",
       "undo_last_action",
-      "web_search",
       "zotero_script",
+    ]);
+    const literatureSearch = tools.find((tool) => tool.name === "literature_search");
+    const literatureProperties = (
+      literatureSearch?.inputSchema as {
+        properties?: Record<string, { enum?: string[] }>;
+      }
+    )?.properties;
+    assert.deepEqual(literatureProperties?.workflow?.enum, [
+      "answer",
+      "review",
     ]);
     for (const legacyName of [
       "query_library",
@@ -113,6 +121,7 @@ describe("semantic tool surface", function () {
         `${legacyName} remains internally callable`,
       );
     }
+    assert.isUndefined(registry.getTool("web_search"));
     for (const name of ["file_io", "run_command", "zotero_script"]) {
       assert.equal(
         tools.find((tool) => tool.name === name)?.tier,
@@ -1156,57 +1165,4 @@ describe("semantic tool surface", function () {
     });
   });
 
-  it("web_search returns cited URL results without fetching result pages", async function () {
-    const globalScope = globalThis as typeof globalThis & {
-      Zotero?: { HTTP?: { request?: unknown } };
-    };
-    const originalZotero = globalScope.Zotero;
-    let requestedUrl = "";
-    globalScope.Zotero = {
-      HTTP: {
-        request: async (_method: string, url: string) => {
-          requestedUrl = url;
-          return {
-            responseText: `
-              <html><body>
-                <div class="result">
-                  <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs">Example Docs</a>
-                  <a class="result__snippet">Current documentation snippet.</a>
-                </div>
-              </body></html>
-            `,
-          };
-        },
-      },
-    };
-    try {
-      const tool = createWebSearchTool();
-      const validated = tool.validate({
-        query: "example docs",
-        mode: "docs",
-        limit: 3,
-      });
-      assert.equal(validated.ok, true);
-      if (!validated.ok) return;
-      const output = await tool.execute(validated.value, baseContext);
-      const content = output as {
-        query?: string;
-        mode?: string;
-        results?: Array<{ title?: string; url?: string; source?: string }>;
-      };
-      assert.include(requestedUrl, "html.duckduckgo.com");
-      assert.equal(content.query, "example docs");
-      assert.equal(content.mode, "docs");
-      assert.deepEqual(content.results, [
-        {
-          title: "Example Docs",
-          url: "https://example.com/docs",
-          snippet: "Current documentation snippet.",
-          source: "example.com",
-        },
-      ]);
-    } finally {
-      globalScope.Zotero = originalZotero;
-    }
-  });
 });

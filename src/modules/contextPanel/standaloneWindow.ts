@@ -95,7 +95,7 @@ import {
   getClaudeProjectDir,
   listClaudeProjectSkillEntries,
 } from "../../claudeCode/projectSkills";
-import { getCoreAgentRuntime } from "../../agent";
+import { initAgentSubsystem } from "../../agent";
 import {
   getConversationSystemPref,
   getStoredConversationSystemPref,
@@ -2153,7 +2153,7 @@ export function openStandaloneChat(options?: {
 
       const reloadClaudeProjectCommands = async () => {
         try {
-          await refreshClaudeSlashCommands(getCoreAgentRuntime(), true);
+          await refreshClaudeSlashCommands(await initAgentSubsystem(), true);
         } catch (err) {
           ztoolkit.log("LLM: Claude project command refresh failed", err);
         }
@@ -2689,7 +2689,7 @@ export function openStandaloneChat(options?: {
           {
             resetSessionTokens,
             scheduleAttachmentGc: scheduleStandaloneAttachmentGc,
-            getCoreAgentRuntime,
+            getCoreAgentRuntime: initAgentSubsystem,
             log: (message, ...args) => ztoolkit.log(message, ...args),
           },
         );
@@ -3440,9 +3440,16 @@ export function openStandaloneChat(options?: {
           }
           if (!getClaudeCodeModeEnabled()) {
             void releaseClaudeRuntimeForBody(contentArea as Element);
-            void invalidateAllClaudeHotRuntimes(getCoreAgentRuntime()).catch((err) => {
-              ztoolkit.log("LLM: Failed to invalidate all Claude hot runtimes", err);
-            });
+            void initAgentSubsystem()
+              .then((coreRuntime) =>
+                invalidateAllClaudeHotRuntimes(coreRuntime),
+              )
+              .catch((err) => {
+                ztoolkit.log(
+                  "LLM: Failed to invalidate all Claude hot runtimes",
+                  err,
+                );
+              });
             if (getConversationSystemPref() === "claude_code") {
               setConversationSystemPref("upstream");
             }

@@ -231,7 +231,11 @@ import {
   mergeQuoteCitations,
   replaceQuoteCitationPlaceholdersForMarkdown,
 } from "./quoteCitations";
-import { getAgentApi, getCoreAgentRuntime } from "../../agent/index";
+import {
+  getAgentApi,
+  getCoreAgentRuntime,
+  initAgentSubsystem,
+} from "../../agent/index";
 import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
 import { getAgentRunTrace } from "../../agent/store/traceStore";
 import {
@@ -6532,6 +6536,7 @@ async function retryLatestAgentResponse(
     providerProtocol,
     modelProviderLabel,
   });
+  await initAgentSubsystem();
   await retryAgentTurn(
     body,
     item,
@@ -6604,6 +6609,7 @@ async function sendAgentQuestion(opts: {
     );
     return;
   }
+  await initAgentSubsystem();
   await sendAgentTurn(
     opts,
     buildAgentEngineDeps(opts.item, opts.conversationSystem),

@@ -31,6 +31,7 @@ import {
 import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 
 let runtime: AgentRuntime | null = null;
+let runtimeInitTask: Promise<AgentRuntime> | null = null;
 let _actionRegistry: ActionRegistry | null = null;
 let _toolRegistry: ReturnType<typeof createBuiltInToolRegistry> | null = null;
 
@@ -50,8 +51,7 @@ function createToolRegistry() {
   });
 }
 
-export async function initAgentSubsystem(): Promise<AgentRuntime> {
-  if (runtime) return runtime;
+async function createAgentSubsystemRuntime(): Promise<AgentRuntime> {
   await initAgentTraceStore();
   await initConversationMemoryStore();
   await initAgentTranscriptStore();
@@ -73,9 +73,20 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
   return runtime;
 }
 
+export async function initAgentSubsystem(): Promise<AgentRuntime> {
+  if (runtime) return runtime;
+  if (!runtimeInitTask) {
+    runtimeInitTask = createAgentSubsystemRuntime().finally(() => {
+      runtimeInitTask = null;
+    });
+  }
+  return runtimeInitTask;
+}
+
 export function shutdownAgentSubsystem(): void {
   unregisterMcpServer();
   clearCodexZoteroMcpPreflightCache();
+  runtimeInitTask = null;
   _actionRegistry = null;
   _toolRegistry = null;
   resetClaudeBridgeRuntime();

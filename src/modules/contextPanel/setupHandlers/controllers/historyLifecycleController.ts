@@ -108,7 +108,7 @@ import {
   setLockedGlobalConversationKey,
   buildPaperStateKey,
 } from "../../prefHelpers";
-import { getCoreAgentRuntime } from "../../../../agent";
+import type { AgentRuntime } from "../../../../agent/runtime";
 import {
   finalizeConversationDeletion,
   getConversationDeletionFailureMessage,
@@ -267,7 +267,7 @@ export type HistoryLifecycleControllerDeps = {
   ) => Promise<void>;
   runExplicitNewChatAction?: (action: () => Promise<void>) => Promise<void>;
   setActiveEditSession: (value: any) => void;
-  getCoreAgentRuntime: () => ReturnType<typeof getCoreAgentRuntime>;
+  getCoreAgentRuntime: () => AgentRuntime | Promise<AgentRuntime>;
   clearPendingRequestForConversation?: (conversationKey: number) => void;
   clearAgentToolCaches?: (conversationKey: number) => void;
   clearAgentConversationState?: (conversationKey: number) => Promise<void>;

@@ -45,14 +45,6 @@ function getStartupBoolPref(key: string, defaultValue = false): boolean {
   return defaultValue;
 }
 
-function shouldInitializeAgentSubsystem(): boolean {
-  return (
-    getStartupBoolPref("enableAgentMode") ||
-    getStartupBoolPref("enableClaudeCodeMode") ||
-    getStartupBoolPref("enableCodexAppServerMode")
-  );
-}
-
 async function measureStartupPhase<T>(
   label: string,
   task: () => Promise<T> | T,
@@ -179,8 +171,7 @@ function scheduleClaudeProjectBootstrapIfEnabled(): void {
   });
 }
 
-function scheduleAgentSubsystemIfEnabled(): void {
-  if (!shouldInitializeAgentSubsystem()) return;
+function scheduleAgentSubsystemStartup(): void {
   runDeferredStartupTask("agent subsystem", async () => {
     const { getAgentApi, initAgentSubsystem } = await import("./agent");
     await initAgentSubsystem();
@@ -230,7 +221,7 @@ function scheduleDeferredStartupWork(
   scheduleConversationMaintenance(readiness);
   scheduleConversationIntegrityAudit();
   scheduleClaudeProjectBootstrapIfEnabled();
-  scheduleAgentSubsystemIfEnabled();
+  scheduleAgentSubsystemStartup();
   scheduleUserSkillsLoad();
   scheduleAttachmentMaintenance();
   scheduleWebChatRelayRegistration();

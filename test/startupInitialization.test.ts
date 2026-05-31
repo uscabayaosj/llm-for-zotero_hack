@@ -48,9 +48,11 @@ describe("plugin startup initialization", function () {
   it("keeps optional runtime services deferred without blocking startup", function () {
     const source = readSource("../src/hooks.ts");
 
-    assert.include(source, "if (!shouldInitializeAgentSubsystem()) return;");
-    assert.include(source, 'getStartupBoolPref("enableClaudeCodeMode")');
-    assert.include(source, 'getStartupBoolPref("enableCodexAppServerMode")');
+    assert.include(source, "scheduleAgentSubsystemStartup();");
+    assert.include(
+      source,
+      'const { getAgentApi, initAgentSubsystem } = await import("./agent");',
+    );
     assert.include(source, "scheduleUserSkillsLoad();");
     assert.include(source, "scheduleWebChatRelayRegistration();");
     assert.include(source, "scheduleMineruAutoWatchRegistration();");

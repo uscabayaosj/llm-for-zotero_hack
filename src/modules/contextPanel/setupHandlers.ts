@@ -283,7 +283,6 @@ import {
 } from "./paperScopeCommand";
 import {
   getAgentApi,
-  getCoreAgentRuntime,
   initAgentSubsystem,
 } from "../../agent/index";
 import type { ActionRequestContext } from "../../agent/actions";
@@ -975,11 +974,16 @@ export function setupHandlers(
   const warmClaudeModeCaches = () => {
     if (!isClaudeModeAvailable() || isNoteSession()) return;
     if (claudeWarmupInFlight) return;
-    const coreRuntime = getCoreAgentRuntime();
-    claudeWarmupInFlight = Promise.allSettled([
-      refreshClaudeSlashCommands(coreRuntime, false),
-      listClaudeEfforts(coreRuntime, getSelectedClaudeRuntimeEntry().model),
-    ])
+    claudeWarmupInFlight = initAgentSubsystem()
+      .then((coreRuntime) =>
+        Promise.allSettled([
+          refreshClaudeSlashCommands(coreRuntime, false),
+          listClaudeEfforts(coreRuntime, getSelectedClaudeRuntimeEntry().model),
+        ]),
+      )
+      .catch((err: unknown) => {
+        ztoolkit.log("LLM: Failed to warm Claude mode caches", err);
+      })
       .finally(() => {
         claudeWarmupInFlight = null;
       })
@@ -1423,14 +1427,14 @@ export function setupHandlers(
       }
       if (!getClaudeCodeModeEnabled()) {
         void releaseClaudeRuntimeForBody(body);
-        void invalidateAllClaudeHotRuntimes(getCoreAgentRuntime()).catch(
-          (err: unknown) => {
+        void initAgentSubsystem()
+          .then((coreRuntime) => invalidateAllClaudeHotRuntimes(coreRuntime))
+          .catch((err: unknown) => {
             ztoolkit.log(
               "LLM: Failed to invalidate all Claude hot runtimes",
               err,
             );
-          },
-        );
+          });
         setConversationSystemPref("upstream");
         if (isClaudeConversationSystem()) {
           void switchConversationSystem("upstream");
@@ -4173,7 +4177,7 @@ export function setupHandlers(
     setActiveEditSession: (value) => {
       activeEditSession = value;
     },
-    getCoreAgentRuntime,
+    getCoreAgentRuntime: initAgentSubsystem,
     clearAgentToolCaches: clearAllAgentToolCaches,
     clearAgentConversationState,
     setStatusMessage: status
@@ -6151,7 +6155,7 @@ export function setupHandlers(
             ? String(baseItem?.getField?.("title") || "").trim() || undefined
             : undefined,
       });
-      await invalidateClaudeConversationSession(getCoreAgentRuntime(), {
+      await invalidateClaudeConversationSession(await initAgentSubsystem(), {
         conversationKey,
         scope,
       });

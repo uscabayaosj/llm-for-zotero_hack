@@ -121,7 +121,7 @@ export type ConversationDeletionDeps = {
   clearTransientComposeStateForItem?: (itemId: number) => void;
   resetSessionTokens?: (conversationKey: number) => void;
   scheduleAttachmentGc?: () => void;
-  getCoreAgentRuntime?: () => unknown;
+  getCoreAgentRuntime?: () => unknown | Promise<unknown>;
   clearAgentToolCaches?: (conversationKey: number) => void;
   clearAgentConversationState?: (conversationKey: number) => Promise<void>;
   operations?: Partial<ConversationDeletionOperations>;
@@ -226,14 +226,17 @@ function buildOperations(
       if (!deps.getCoreAgentRuntime) {
         return;
       }
-      await invalidateClaudeConversationSession(deps.getCoreAgentRuntime() as any, {
-        conversationKey,
-        scope: buildClaudeScope({
-          libraryID: target.libraryID,
-          kind: target.kind,
-          paperItemID: target.paperItemID,
-        }),
-      });
+      await invalidateClaudeConversationSession(
+        (await deps.getCoreAgentRuntime()) as any,
+        {
+          conversationKey,
+          scope: buildClaudeScope({
+            libraryID: target.libraryID,
+            kind: target.kind,
+            paperItemID: target.paperItemID,
+          }),
+        },
+      );
     },
     clearRememberedSelection,
     ...deps.operations,

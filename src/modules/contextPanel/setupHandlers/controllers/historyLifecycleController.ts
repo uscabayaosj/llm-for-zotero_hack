@@ -2,6 +2,7 @@ import { createElement } from "../../../../utils/domHelpers";
 import { t } from "../../../../utils/i18n";
 import type { ConversationSystem } from "../../../../shared/types";
 import {
+  loadTruncatedConversationIndexMatches,
   searchConversationIndexWithStatus,
   type ConversationSearchIndexMatch,
 } from "../../../../shared/conversationSearchIndex";
@@ -723,11 +724,15 @@ export function createHistoryLifecycleController(
 
   const loadSearchableConversationHistory = async (
     libraryID: number,
+    options: { limit?: number | null } = {},
   ): Promise<ConversationHistoryEntry[]> => {
     const normalizedLibraryID =
       Number.isFinite(libraryID) && libraryID > 0 ? Math.floor(libraryID) : 0;
     if (!normalizedLibraryID) return [];
-    const searchLimit = Math.max(GLOBAL_HISTORY_LIMIT, 100);
+    const searchLimit =
+      options.limit === null
+        ? null
+        : options.limit ?? Math.max(GLOBAL_HISTORY_LIMIT, 100);
     const entries: ConversationHistoryEntry[] = [];
 
     if (isClaudeConversationSystem()) {
@@ -796,6 +801,30 @@ export function createHistoryLifecycleController(
     return entries;
   };
 
+  const runHistorySearchDocumentLoads = async (
+    entries: ConversationHistoryEntry[],
+    documents: Map<number, HistorySearchDocument>,
+  ): Promise<void> => {
+    const concurrency = 8;
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(concurrency, entries.length) },
+      async () => {
+        for (;;) {
+          const index = nextIndex;
+          nextIndex += 1;
+          const entry = entries[index];
+          if (!entry) return;
+          documents.set(
+            entry.conversationKey,
+            await ensureHistorySearchDocument(entry),
+          );
+        }
+      },
+    );
+    await Promise.all(workers);
+  };
+
   const createHistorySearchEntryFromIndexMatch = (
     match: ConversationSearchIndexMatch,
   ): ConversationHistoryEntry | null =>
@@ -831,32 +860,68 @@ export function createHistoryLifecycleController(
     entries: ConversationHistoryEntry[];
     resultsByKey: Map<number, HistorySearchResult>;
   }> => {
-    const indexed = await searchConversationIndexWithStatus({
-      system: getConversationSystem(),
+    const system = getConversationSystem();
+    let indexed = await searchConversationIndexWithStatus({
+      system,
       libraryID,
       query,
       refresh: false,
     });
+    if (indexed.status === "empty" || indexed.status === "stale") {
+      const refreshed = await searchConversationIndexWithStatus({
+        system,
+        libraryID,
+        query,
+        refresh: true,
+      });
+      if (refreshed.status !== "unavailable") {
+        indexed = refreshed;
+      }
+    }
+    if (indexed.status === "unavailable") {
+      return await searchLoadedConversationHistory(libraryID, query);
+    }
     if (
-      indexed.status !== "ready" ||
-      (indexed.matches.length === 0 && indexed.catalogRowCount > 0)
+      indexed.matches.length === 0 &&
+      indexed.catalogRowCount > 0 &&
+      indexed.status !== "ready"
     ) {
       return await searchLoadedConversationHistory(libraryID, query);
     }
-    const entries: ConversationHistoryEntry[] = [];
+    const entryByKey = new Map<number, ConversationHistoryEntry>();
     const documents = new Map<number, HistorySearchDocument>();
-    for (const match of indexed.matches) {
+    const addIndexedMatch = (match: ConversationSearchIndexMatch): void => {
       const entry = createHistorySearchEntryFromIndexMatch(match);
       if (!entry || pendingHistoryDeletionKeys.has(entry.conversationKey)) {
-        continue;
+        return;
       }
+      entryByKey.set(entry.conversationKey, entry);
       const document = createHistorySearchDocument(entry, [
         { text: match.bodyText },
       ]);
       cacheHistorySearchDocument(entry, document);
       documents.set(entry.conversationKey, document);
-      entries.push(entry);
+    };
+    for (const match of indexed.matches) {
+      addIndexedMatch(match);
     }
+    if (indexed.status === "truncated") {
+      const truncatedMatches = await loadTruncatedConversationIndexMatches({
+        system,
+        libraryID,
+      });
+      const truncatedEntries: ConversationHistoryEntry[] = [];
+      for (const match of truncatedMatches) {
+        const entry = createHistorySearchEntryFromIndexMatch(match);
+        if (!entry || pendingHistoryDeletionKeys.has(entry.conversationKey)) {
+          continue;
+        }
+        entryByKey.set(entry.conversationKey, entry);
+        truncatedEntries.push(entry);
+      }
+      await runHistorySearchDocumentLoads(truncatedEntries, documents);
+    }
+    const entries = Array.from(entryByKey.values());
     const rawResults = buildHistorySearchResults(
       entries,
       normalizeHistorySearchQuery(query),
@@ -879,18 +944,11 @@ export function createHistoryLifecycleController(
     entries: ConversationHistoryEntry[];
     resultsByKey: Map<number, HistorySearchResult>;
   }> => {
-    const entries = (await loadSearchableConversationHistory(libraryID)).filter(
-      (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
-    );
+    const entries = (
+      await loadSearchableConversationHistory(libraryID, { limit: null })
+    ).filter((entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey));
     const documents = new Map<number, HistorySearchDocument>();
-    await Promise.all(
-      entries.map(async (entry) => {
-        documents.set(
-          entry.conversationKey,
-          await ensureHistorySearchDocument(entry),
-        );
-      }),
-    );
+    await runHistorySearchDocumentLoads(entries, documents);
     const rawResults = buildHistorySearchResults(
       entries,
       normalizeHistorySearchQuery(query),

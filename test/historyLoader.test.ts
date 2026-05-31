@@ -245,6 +245,62 @@ describe("historyLoader", function () {
     );
   });
 
+  it("can load all upstream search candidates without a recent-history limit", async function () {
+    const queries: string[] = [];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          queries.push(sql);
+          if (
+            sql.includes("FROM llm_for_zotero_paper_conversations pc") &&
+            sql.includes("WHERE pc.library_id = ?") &&
+            !sql.includes("pc.paper_item_id = ?")
+          ) {
+            return [
+              {
+                conversationKey: 1_500_000_010,
+                libraryID: 1,
+                paperItemID: 10,
+                sessionVersion: 2,
+                createdAt: 100,
+                title: "Old paper conversation",
+                lastActivityAt: 100,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          if (sql.includes("FROM llm_for_zotero_global_conversations gc")) {
+            return [
+              {
+                conversationKey: 2_000_000_001,
+                libraryID: 1,
+                createdAt: 200,
+                title: "Old library conversation",
+                lastActivityAt: 200,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const rows = await loadAllConversationHistory({ libraryID: 1, limit: null });
+
+    assert.lengthOf(rows, 2);
+    assert.isFalse(
+      queries
+        .filter(
+          (sql) =>
+            sql.includes("FROM llm_for_zotero_paper_conversations pc") ||
+            sql.includes("FROM llm_for_zotero_global_conversations gc"),
+        )
+        .some((sql) => sql.includes("LIMIT ?")),
+    );
+  });
+
   it("loads all Claude Code conversations across paper and global chat", async function () {
     const claudePaperKey = CLAUDE_PAPER_CONVERSATION_KEY_BASE + 10;
     const claudeGlobalKey = CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1;

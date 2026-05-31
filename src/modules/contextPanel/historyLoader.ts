@@ -136,14 +136,14 @@ export async function loadConversationHistoryScope(
  */
 export async function loadAllConversationHistory(params: {
   libraryID: number;
-  limit?: number;
+  limit?: number | null;
 }): Promise<ConversationHistoryScopeEntry[]> {
   const normalizedLibraryID = Number.isFinite(params.libraryID) && params.libraryID > 0
     ? Math.floor(params.libraryID)
     : 0;
   if (normalizedLibraryID <= 0) return [];
 
-  const limit = params.limit ?? 100;
+  const limit = params.limit === null ? null : params.limit ?? 100;
 
   const summaries = await conversationRepository.listAllCatalogEntries({
     system: "upstream",

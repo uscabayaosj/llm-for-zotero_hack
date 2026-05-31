@@ -654,10 +654,11 @@ export const conversationRepository = {
   async listAllCatalogEntries(params: {
     system: ConversationSystem;
     libraryID: number;
-    limit?: number;
+    limit?: number | null;
   }): Promise<ConversationCatalogEntry[]> {
     const libraryID = normalizePositiveInt(params.libraryID);
-    const limit = normalizeLimit(params.limit, 100);
+    const limit =
+      params.limit === null ? null : normalizeLimit(params.limit, 100);
     if (!libraryID) return [];
     if (params.system === "claude_code") {
       const [paperRows, globalRows] = await Promise.all([

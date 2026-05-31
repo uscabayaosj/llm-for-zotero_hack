@@ -252,6 +252,13 @@ function normalizeLimit(limit: number, fallback: number): number {
   return Math.max(1, Math.floor(limit));
 }
 
+function normalizeOptionalLimit(limit: number | null | undefined): number | null {
+  if (limit === null) return null;
+  if (!Number.isFinite(Number(limit))) return null;
+  const normalized = Math.floor(Number(limit));
+  return normalized > 0 ? normalized : null;
+}
+
 function normalizeStoredAttachments(
   attachments?: StoredChatAttachment[],
 ): StoredChatAttachment[] {
@@ -2488,11 +2495,13 @@ export async function listPaperConversations(
  */
 export async function listAllPaperConversationsByLibrary(
   libraryID: number,
-  limit: number,
+  limit: number | null,
 ): Promise<PaperConversationSummary[]> {
   const normalizedLibraryID = normalizeLibraryID(libraryID);
   if (!normalizedLibraryID) return [];
-  const normalizedLimit = normalizeLimit(limit, 100);
+  const normalizedLimit = normalizeOptionalLimit(limit);
+  const params: unknown[] = [normalizedLibraryID];
+  if (normalizedLimit) params.push(normalizedLimit);
 
   const rows = (await Zotero.DB.queryAsync(
     `SELECT pc.conversation_id AS conversationID,
@@ -2508,8 +2517,8 @@ export async function listAllPaperConversationsByLibrary(
      WHERE pc.library_id = ?
        AND COALESCE(pc.user_turn_count, 0) > 0
      ORDER BY lastActivityAt DESC, pc.conversation_key DESC
-     LIMIT ?`,
-    [normalizedLibraryID, normalizedLimit],
+     ${normalizedLimit ? "LIMIT ?" : ""}`,
+    params,
   )) as PaperConversationSummaryRow[] | undefined;
 
   if (!rows?.length) return [];
@@ -2698,12 +2707,18 @@ export async function createGlobalConversation(
 
 export async function listGlobalConversations(
   libraryID: number,
-  limit: number,
+  limit: number | null,
   includeEmpty = false,
 ): Promise<GlobalConversationSummary[]> {
   const normalizedLibraryID = normalizeLibraryID(libraryID);
   if (!normalizedLibraryID) return [];
-  const normalizedLimit = normalizeLimit(limit, 50);
+  const normalizedLimit = normalizeOptionalLimit(limit);
+  const params: unknown[] = [
+    normalizedLibraryID,
+    GLOBAL_CONVERSATION_KEY_BASE,
+    UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
+  ];
+  if (normalizedLimit) params.push(normalizedLimit);
 
   const rows = (await Zotero.DB.queryAsync(
     `SELECT gc.conversation_id AS conversationID,
@@ -2719,13 +2734,8 @@ export async function listGlobalConversations(
        AND gc.conversation_key < ?
        ${includeEmpty ? "" : "AND COALESCE(gc.user_turn_count, 0) > 0"}
      ORDER BY lastActivityAt DESC, gc.conversation_key DESC
-     LIMIT ?`,
-    [
-      normalizedLibraryID,
-      GLOBAL_CONVERSATION_KEY_BASE,
-      UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
-      normalizedLimit,
-    ],
+     ${normalizedLimit ? "LIMIT ?" : ""}`,
+    params,
   )) as GlobalConversationSummaryRow[] | undefined;
 
   if (!rows?.length) return [];

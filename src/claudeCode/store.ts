@@ -132,6 +132,13 @@ function normalizeLimit(limit: number, fallback: number): number {
   return Math.max(1, Math.floor(limit));
 }
 
+function normalizeOptionalLimit(limit: number | null | undefined): number | null {
+  if (limit === null) return null;
+  if (!Number.isFinite(Number(limit))) return null;
+  const normalized = Math.floor(Number(limit));
+  return normalized > 0 ? normalized : null;
+}
+
 function isClaudeStoreConversationKey(conversationKey: number): boolean {
   return isConversationKeyFor("claude_code", conversationKey);
 }
@@ -1878,11 +1885,12 @@ async function listClaudeConversations(params: {
   libraryID: number;
   kind: ClaudeConversationKind;
   paperItemID?: number;
-  limit?: number;
+  limit?: number | null;
 }): Promise<ClaudeConversationSummary[]> {
   const libraryID = normalizeLibraryID(params.libraryID);
   if (!libraryID) return [];
-  const limit = normalizeLimit(params.limit ?? 50, 50);
+  const limit =
+    params.limit === null ? null : normalizeLimit(params.limit ?? 50, 50);
   const sql = params.kind === "paper"
     ? `SELECT c.conversation_id AS conversationID,
               c.conversation_key AS conversationKey,
@@ -1906,7 +1914,7 @@ async function listClaudeConversations(params: {
          AND c.kind = 'paper'
          AND c.paper_item_id = ?
        ORDER BY updatedAt DESC, c.conversation_key DESC
-       LIMIT ?`
+       ${limit ? "LIMIT ?" : ""}`
     : `SELECT c.conversation_id AS conversationID,
               c.conversation_key AS conversationKey,
               c.library_id AS libraryID,
@@ -1928,12 +1936,18 @@ async function listClaudeConversations(params: {
        WHERE c.library_id = ?
          AND c.kind = 'global'
        ORDER BY updatedAt DESC, c.conversation_key DESC
-       LIMIT ?`;
+       ${limit ? "LIMIT ?" : ""}`;
+  const queryParams =
+    params.kind === "paper"
+      ? [
+          libraryID,
+          normalizePaperItemID(Number(params.paperItemID)) || 0,
+          ...(limit ? [limit] : []),
+        ]
+      : [libraryID, ...(limit ? [limit] : [])];
   const rows = (await Zotero.DB.queryAsync(
     sql,
-    params.kind === "paper"
-      ? [libraryID, normalizePaperItemID(Number(params.paperItemID)) || 0, limit]
-      : [libraryID, limit],
+    queryParams,
   )) as ClaudeConversationRow[] | undefined;
   if (!rows?.length) return [];
   const summaries = rows
@@ -1947,7 +1961,7 @@ async function listClaudeConversations(params: {
 
 export async function listClaudeGlobalConversations(
   libraryID: number,
-  limit = 50,
+  limit: number | null = 50,
 ): Promise<ClaudeConversationSummary[]> {
   return listClaudeConversations({ libraryID, kind: "global", limit });
 }
@@ -1962,11 +1976,13 @@ export async function listClaudePaperConversations(
 
 export async function listAllClaudePaperConversationsByLibrary(
   libraryID: number,
-  limit = 100,
+  limit: number | null = 100,
 ): Promise<ClaudeConversationSummary[]> {
   const normalizedLibraryID = normalizeLibraryID(libraryID);
   if (!normalizedLibraryID) return [];
-  const normalizedLimit = normalizeLimit(limit, 100);
+  const normalizedLimit = normalizeOptionalLimit(limit);
+  const queryParams: unknown[] = [normalizedLibraryID];
+  if (normalizedLimit) queryParams.push(normalizedLimit);
   const rows = (await Zotero.DB.queryAsync(
     `SELECT c.conversation_id AS conversationID,
             c.conversation_key AS conversationKey,
@@ -1990,8 +2006,8 @@ export async function listAllClaudePaperConversationsByLibrary(
        AND c.kind = 'paper'
        AND COALESCE(c.user_turn_count, 0) > 0
      ORDER BY updatedAt DESC, c.conversation_key DESC
-     LIMIT ?`,
-    [normalizedLibraryID, normalizedLimit],
+     ${normalizedLimit ? "LIMIT ?" : ""}`,
+    queryParams,
   )) as ClaudeConversationRow[] | undefined;
   if (!rows?.length) return [];
   const summaries = rows

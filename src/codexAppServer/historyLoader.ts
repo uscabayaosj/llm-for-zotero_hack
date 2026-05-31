@@ -68,11 +68,14 @@ export async function loadCodexConversationHistoryScope(params: {
 
 export async function loadAllCodexConversationHistory(params: {
   libraryID: number;
-  limit?: number;
+  limit?: number | null;
 }): Promise<CodexConversationHistoryEntry[]> {
-  const normalizedLimit = Number.isFinite(params.limit)
-    ? Math.max(1, Math.floor(params.limit as number))
-    : 100;
+  const normalizedLimit =
+    params.limit === null
+      ? null
+      : Number.isFinite(params.limit)
+        ? Math.max(1, Math.floor(params.limit as number))
+        : 100;
   return (
     await conversationRepository.listAllCatalogEntries({
       system: "codex",

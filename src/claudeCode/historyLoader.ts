@@ -68,11 +68,14 @@ export async function loadClaudeConversationHistoryScope(params: {
 
 export async function loadAllClaudeConversationHistory(params: {
   libraryID: number;
-  limit?: number;
+  limit?: number | null;
 }): Promise<ClaudeConversationHistoryEntry[]> {
-  const normalizedLimit = Number.isFinite(params.limit)
-    ? Math.max(1, Math.floor(params.limit as number))
-    : 100;
+  const normalizedLimit =
+    params.limit === null
+      ? null
+      : Number.isFinite(params.limit)
+        ? Math.max(1, Math.floor(params.limit as number))
+        : 100;
   return (
     await conversationRepository.listAllCatalogEntries({
       system: "claude_code",

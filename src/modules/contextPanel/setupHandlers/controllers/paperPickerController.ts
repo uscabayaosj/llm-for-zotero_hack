@@ -66,6 +66,11 @@ type PaperPickerRow =
       depth: number;
     };
 
+const PAPER_PICKER_VIEWPORT_MARGIN = 12;
+const PAPER_PICKER_ANCHOR_GAP = 8;
+const PAPER_PICKER_MIN_USEFUL_HEIGHT = 120;
+const PAPER_PICKER_MAX_HEIGHT = 280;
+
 type PaperPickerControllerDeps = {
   body: Element;
   panelRoot: HTMLElement;
@@ -88,6 +93,68 @@ type PaperPickerControllerDeps = {
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   log: (message: string, ...args: unknown[]) => void;
 };
+
+export function positionPaperPickerForAnchor(params: {
+  body: Element;
+  panelRoot: HTMLElement;
+  paperPicker: HTMLDivElement;
+  anchor: HTMLElement | null;
+}): void {
+  const { body, panelRoot, paperPicker, anchor } = params;
+  const ownerDoc = body.ownerDocument;
+  const ownerWin = ownerDoc?.defaultView;
+  if (!ownerDoc || !ownerWin || !anchor) {
+    paperPicker.classList.remove("llm-paper-picker-below");
+    paperPicker.style.removeProperty("--llm-paper-picker-max-height");
+    return;
+  }
+
+  const anchorRect = anchor.getBoundingClientRect();
+  const panelRect = panelRoot.getBoundingClientRect?.();
+  const viewportHeight =
+    ownerWin.innerHeight || ownerDoc.documentElement?.clientHeight || 0;
+  const viewportTop = Math.max(0, panelRect?.top ?? 0);
+  const viewportBottom = Math.min(
+    viewportHeight || Number.POSITIVE_INFINITY,
+    panelRect?.bottom ?? Number.POSITIVE_INFINITY,
+  );
+  const preferredMaxHeight = Math.max(
+    PAPER_PICKER_MIN_USEFUL_HEIGHT,
+    Math.floor(
+      Math.min(
+        PAPER_PICKER_MAX_HEIGHT,
+        (viewportHeight || PAPER_PICKER_MAX_HEIGHT / 0.4) * 0.4,
+      ),
+    ),
+  );
+  const spaceAbove = Math.max(
+    0,
+    anchorRect.top -
+      viewportTop -
+      PAPER_PICKER_VIEWPORT_MARGIN -
+      PAPER_PICKER_ANCHOR_GAP,
+  );
+  const spaceBelow = Math.max(
+    0,
+    viewportBottom -
+      anchorRect.bottom -
+      PAPER_PICKER_VIEWPORT_MARGIN -
+      PAPER_PICKER_ANCHOR_GAP,
+  );
+  const placeBelow =
+    spaceAbove < PAPER_PICKER_MIN_USEFUL_HEIGHT && spaceBelow > spaceAbove;
+  const availableHeight = placeBelow ? spaceBelow : spaceAbove;
+  const maxHeight = Math.max(
+    1,
+    Math.floor(Math.min(preferredMaxHeight, availableHeight)),
+  );
+
+  paperPicker.classList.toggle("llm-paper-picker-below", placeBelow);
+  paperPicker.style.setProperty(
+    "--llm-paper-picker-max-height",
+    `${maxHeight}px`,
+  );
+}
 
 export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   getActiveAtToken: () => ActiveSlashToken | null;
@@ -486,31 +553,12 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
 
   const positionPaperPickerForVisibleAnchor = () => {
     if (!paperPicker) return;
-    const ownerDoc = body.ownerDocument;
-    const ownerWin = ownerDoc?.defaultView;
-    const composeArea = paperPicker.parentElement as HTMLElement | null;
-    if (!ownerDoc || !ownerWin || !composeArea) {
-      paperPicker.classList.remove("llm-paper-picker-below");
-      return;
-    }
-    const anchorRect = composeArea.getBoundingClientRect();
-    const panelRect = panelRoot.getBoundingClientRect?.();
-    const viewportTop = Math.max(0, panelRect?.top ?? 0);
-    const viewportBottom = Math.min(
-      ownerWin.innerHeight || ownerDoc.documentElement?.clientHeight || 0,
-      panelRect?.bottom ?? Number.POSITIVE_INFINITY,
-    );
-    const margin = 12;
-    const pickerHeight = Math.max(
-      1,
-      paperPicker.getBoundingClientRect().height || paperPicker.scrollHeight,
-    );
-    const spaceAbove = Math.max(0, anchorRect.top - viewportTop - margin);
-    const spaceBelow = Math.max(0, viewportBottom - anchorRect.bottom - margin);
-    paperPicker.classList.toggle(
-      "llm-paper-picker-below",
-      spaceAbove < pickerHeight && spaceBelow > spaceAbove,
-    );
+    positionPaperPickerForAnchor({
+      body,
+      panelRoot,
+      paperPicker,
+      anchor: paperPicker.parentElement as HTMLElement | null,
+    });
   };
 
   const showPaperPicker = () => {

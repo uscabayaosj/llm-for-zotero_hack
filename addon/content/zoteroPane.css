@@ -6047,13 +6047,14 @@ label.llm-search-results-item:hover {
 
 /* Input Section */
 .llm-input-section {
+  --llm-input-section-padding: 10px;
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
   flex-shrink: 0;
   min-width: 0;
-  padding: 10px;
+  padding: var(--llm-input-section-padding);
   border-radius: 16px;
   border: 1px solid var(--stroke-secondary);
   background: var(--material-background);
@@ -6655,12 +6656,12 @@ label.llm-search-results-item:hover {
 .llm-paper-picker {
   display: none;
   position: absolute;
-  left: 0;
-  right: 0;
+  left: var(--llm-input-section-padding, 10px);
+  right: var(--llm-input-section-padding, 10px);
   top: auto;
   bottom: calc(100% + 8px);
   z-index: 30;
-  max-height: min(40vh, 280px);
+  max-height: var(--llm-paper-picker-max-height, min(40vh, 280px));
   overflow-y: auto;
   border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
   border-radius: 12px;

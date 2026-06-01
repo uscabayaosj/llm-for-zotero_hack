@@ -1,6 +1,9 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
-import { createPaperPickerController } from "../src/modules/contextPanel/setupHandlers/controllers/paperPickerController";
+import {
+  createPaperPickerController,
+  positionPaperPickerForAnchor,
+} from "../src/modules/contextPanel/setupHandlers/controllers/paperPickerController";
 import { MAX_SELECTED_PAPER_CONTEXTS } from "../src/modules/contextPanel/constants";
 import { invalidatePaperSearchCache } from "../src/modules/contextPanel/paperSearch";
 import {
@@ -71,6 +74,10 @@ class FakeClassList {
     for (const token of tokens) this.tokens.delete(token);
   }
 
+  contains(token: string): boolean {
+    return this.tokens.has(token);
+  }
+
   toggle(token: string, force?: boolean): boolean {
     const shouldAdd = force === undefined ? !this.tokens.has(token) : force;
     if (shouldAdd) this.tokens.add(token);
@@ -86,6 +93,16 @@ class FakeStyle {
   setProperty(name: string, value: string): void {
     this.properties.set(name, value);
   }
+
+  getPropertyValue(name: string): string {
+    return this.properties.get(name) || "";
+  }
+
+  removeProperty(name: string): string {
+    const previous = this.getPropertyValue(name);
+    this.properties.delete(name);
+    return previous;
+  }
 }
 
 class FakeElement {
@@ -100,6 +117,7 @@ class FakeElement {
   readonly attributes = new Map<string, string>();
   readonly children: FakeElement[] = [];
   parentElement: FakeElement | null = null;
+  private rect: DOMRect = makeRect();
 
   constructor(
     readonly ownerDocument: FakeDocument,
@@ -143,25 +161,49 @@ class FakeElement {
     // No layout in unit tests.
   }
 
+  setBoundingClientRect(rect: Partial<DOMRect>): void {
+    this.rect = makeRect(rect);
+  }
+
   getBoundingClientRect(): DOMRect {
-    return {
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      width: 0,
-      height: 0,
-      toJSON: () => ({}),
-    } as DOMRect;
+    return this.rect;
   }
 }
 
 class FakeDocument {
+  defaultView = {
+    innerHeight: 800,
+    setTimeout: (handler: TimerHandler, timeout?: number) =>
+      setTimeout(handler, timeout),
+    clearTimeout: (handle?: number) => clearTimeout(handle),
+  };
+  documentElement = { clientHeight: 800 };
+
   createElementNS(_namespace: string, tagName: string): FakeElement {
     return new FakeElement(this, tagName);
   }
+}
+
+function makeRect(rect: Partial<DOMRect> = {}): DOMRect {
+  const left = rect.left ?? rect.x ?? 0;
+  const top = rect.top ?? rect.y ?? 0;
+  const width =
+    rect.width ?? (rect.right !== undefined ? rect.right - left : 0);
+  const height =
+    rect.height ?? (rect.bottom !== undefined ? rect.bottom - top : 0);
+  const right = rect.right ?? left + width;
+  const bottom = rect.bottom ?? top + height;
+  return {
+    x: rect.x ?? left,
+    y: rect.y ?? top,
+    top,
+    right,
+    bottom,
+    left,
+    width,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 function makeFakeInput(value: string): HTMLTextAreaElement {
@@ -179,6 +221,94 @@ function makeFakeInput(value: string): HTMLTextAreaElement {
 function waitForPickerSearch(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 160));
 }
+
+describe("paper picker placement", function () {
+  function makePlacementFixture(viewportHeight: number) {
+    const fakeDocument = new FakeDocument();
+    fakeDocument.defaultView.innerHeight = viewportHeight;
+    fakeDocument.documentElement.clientHeight = viewportHeight;
+    const body = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    );
+    const panelRoot = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    );
+    const inputSection = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    );
+    const paperPicker = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    );
+    inputSection.appendChild(paperPicker);
+    panelRoot.setBoundingClientRect({
+      top: 0,
+      bottom: viewportHeight,
+      height: viewportHeight,
+    });
+    return { body, panelRoot, inputSection, paperPicker };
+  }
+
+  it("prefers opening above the full input section when room exists", function () {
+    const { body, panelRoot, inputSection, paperPicker } =
+      makePlacementFixture(800);
+    inputSection.setBoundingClientRect({ top: 500, bottom: 660, height: 160 });
+
+    positionPaperPickerForAnchor({
+      body: body as unknown as Element,
+      panelRoot: panelRoot as unknown as HTMLElement,
+      paperPicker: paperPicker as unknown as HTMLDivElement,
+      anchor: inputSection as unknown as HTMLElement,
+    });
+
+    assert.isFalse(paperPicker.classList.contains("llm-paper-picker-below"));
+    assert.equal(
+      paperPicker.style.getPropertyValue("--llm-paper-picker-max-height"),
+      "280px",
+    );
+  });
+
+  it("keeps the picker above and scrollable when above space is constrained", function () {
+    const { body, panelRoot, inputSection, paperPicker } =
+      makePlacementFixture(600);
+    inputSection.setBoundingClientRect({ top: 180, bottom: 340, height: 160 });
+
+    positionPaperPickerForAnchor({
+      body: body as unknown as Element,
+      panelRoot: panelRoot as unknown as HTMLElement,
+      paperPicker: paperPicker as unknown as HTMLDivElement,
+      anchor: inputSection as unknown as HTMLElement,
+    });
+
+    assert.isFalse(paperPicker.classList.contains("llm-paper-picker-below"));
+    assert.equal(
+      paperPicker.style.getPropertyValue("--llm-paper-picker-max-height"),
+      "160px",
+    );
+  });
+
+  it("falls back below only when above space is not useful", function () {
+    const { body, panelRoot, inputSection, paperPicker } =
+      makePlacementFixture(600);
+    inputSection.setBoundingClientRect({ top: 80, bottom: 300, height: 220 });
+
+    positionPaperPickerForAnchor({
+      body: body as unknown as Element,
+      panelRoot: panelRoot as unknown as HTMLElement,
+      paperPicker: paperPicker as unknown as HTMLDivElement,
+      anchor: inputSection as unknown as HTMLElement,
+    });
+
+    assert.isTrue(paperPicker.classList.contains("llm-paper-picker-below"));
+    assert.equal(
+      paperPicker.style.getPropertyValue("--llm-paper-picker-max-height"),
+      "240px",
+    );
+  });
+});
 
 describe("paper picker controller", function () {
   it("allows 30 manually selected paper contexts and rejects the 31st", function () {

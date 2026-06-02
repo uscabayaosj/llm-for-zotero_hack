@@ -26,7 +26,7 @@ const REFERENCE_SELECTOR_PANEL_MIN_HEIGHT: Record<
 > = {
   folders: 165,
   tags: 150,
-  references: 240,
+  references: 150,
 };
 const REFERENCE_SELECTOR_PANEL_MAX_HEIGHT: Record<
   ReferenceSelectorPanelKey,
@@ -39,6 +39,11 @@ const REFERENCE_SELECTOR_PANEL_MAX_HEIGHT: Record<
 const REFERENCE_SELECTOR_PANEL_KEYS: ReferenceSelectorPanelKey[] = [
   "folders",
   "references",
+  "tags",
+];
+const REFERENCE_SELECTOR_AUTO_COLLAPSE_ORDER: ReferenceSelectorPanelKey[] = [
+  "references",
+  "folders",
   "tags",
 ];
 export const REFERENCE_SELECTOR_PANEL_COLLAPSED_HEIGHT = 28;
@@ -57,6 +62,9 @@ export type ReferenceSelectorPanelLayout = {
   toggleCollapsed: (key: ReferenceSelectorPanelKey) => void;
   capturePanelHeights: () => void;
   captureRenderedPanelHeights: () => Map<ReferenceSelectorPanelKey, number>;
+  fitPanelsToAvailableHeight: (
+    preferredOpenPanel?: ReferenceSelectorPanelKey,
+  ) => void;
   applyPanelHeight: (panel: HTMLElement, key: ReferenceSelectorPanelKey) => void;
   createPanelSeparator: (
     ownerDoc: Document,
@@ -104,8 +112,11 @@ export function createReferenceSelectorPanelLayout(
     return Math.max(0, safeMaxHeight - REFERENCE_SELECTOR_LIST_VERTICAL_PADDING);
   };
 
-  const getPanelBudgetHeight = (key: ReferenceSelectorPanelKey): number => {
-    if (collapsedPanels.has(key)) return REFERENCE_SELECTOR_PANEL_COLLAPSED_HEIGHT;
+  const getPanelBudgetHeight = (
+    key: ReferenceSelectorPanelKey,
+    panels: Set<ReferenceSelectorPanelKey> = collapsedPanels,
+  ): number => {
+    if (panels.has(key)) return REFERENCE_SELECTOR_PANEL_COLLAPSED_HEIGHT;
     const height =
       panelHeights.get(key) ?? REFERENCE_SELECTOR_PANEL_DEFAULT_HEIGHT[key];
     return Math.max(
@@ -113,6 +124,15 @@ export function createReferenceSelectorPanelLayout(
       Math.min(REFERENCE_SELECTOR_PANEL_MAX_HEIGHT[key], Math.floor(height)),
     );
   };
+
+  const clampPanelStoredHeight = (
+    key: ReferenceSelectorPanelKey,
+    height: number,
+  ): number =>
+    Math.max(
+      REFERENCE_SELECTOR_PANEL_MIN_HEIGHT[key],
+      Math.min(REFERENCE_SELECTOR_PANEL_MAX_HEIGHT[key], Math.floor(height)),
+    );
 
   const getPanelAvailableMaxHeight = (key: ReferenceSelectorPanelKey): number => {
     const reservedHeight = REFERENCE_SELECTOR_PANEL_KEYS.filter(
@@ -134,6 +154,53 @@ export function createReferenceSelectorPanelLayout(
       Math.min(getPanelAvailableMaxHeight(key), Math.floor(height)),
     );
 
+  const getPreviousPanelKey = (
+    key: ReferenceSelectorPanelKey,
+  ): ReferenceSelectorPanelKey | null => {
+    const index = REFERENCE_SELECTOR_PANEL_KEYS.indexOf(key);
+    if (index <= 0) return null;
+    return REFERENCE_SELECTOR_PANEL_KEYS[index - 1];
+  };
+
+  const getMinimumPanelStackHeight = (
+    panels: Set<ReferenceSelectorPanelKey>,
+  ): number =>
+    REFERENCE_SELECTOR_PANEL_KEYS.reduce(
+      (total, key) =>
+        total +
+        (panels.has(key)
+          ? REFERENCE_SELECTOR_PANEL_COLLAPSED_HEIGHT
+          : REFERENCE_SELECTOR_PANEL_MIN_HEIGHT[key]),
+      0,
+    );
+
+  const collapsePanelsToFit = (
+    panels: Set<ReferenceSelectorPanelKey>,
+    preferredOpenPanel?: ReferenceSelectorPanelKey,
+  ): Set<ReferenceSelectorPanelKey> => {
+    const budget = getPanelStackBudget();
+    if (getMinimumPanelStackHeight(panels) <= budget) return panels;
+
+    const next = new Set(panels);
+    const collapseOrder = REFERENCE_SELECTOR_AUTO_COLLAPSE_ORDER.filter(
+      (key) => key !== preferredOpenPanel,
+    );
+    if (preferredOpenPanel) collapseOrder.push(preferredOpenPanel);
+
+    for (const key of collapseOrder) {
+      if (next.has(key)) continue;
+      next.add(key);
+      if (getMinimumPanelStackHeight(next) <= budget) break;
+    }
+    return next;
+  };
+
+  const fitPanelsToAvailableHeight = (
+    preferredOpenPanel?: ReferenceSelectorPanelKey,
+  ): void => {
+    collapsedPanels = collapsePanelsToFit(collapsedPanels, preferredOpenPanel);
+  };
+
   const getRenderedPanels = (): Array<
     [ReferenceSelectorPanelKey, HTMLElement | undefined]
   > => {
@@ -145,6 +212,15 @@ export function createReferenceSelectorPanelLayout(
       ["references", shell.children[1] as HTMLElement | undefined],
       ["tags", shell.children[2] as HTMLElement | undefined],
     ];
+  };
+
+  const getRenderedPanel = (
+    key: ReferenceSelectorPanelKey,
+  ): HTMLElement | undefined => {
+    for (const [panelKey, panel] of getRenderedPanels()) {
+      if (panelKey === key) return panel;
+    }
+    return undefined;
   };
 
   const capturePanelHeights = (): void => {
@@ -218,13 +294,56 @@ export function createReferenceSelectorPanelLayout(
     if (!ownerWin || collapsedPanels.has(key)) return;
     const startY = event.clientY;
     const startHeight = getPanelRenderedHeight(panel, key);
+    const neighborKey = getPreviousPanelKey(key);
+    const neighborPanel =
+      neighborKey && !collapsedPanels.has(neighborKey)
+        ? getRenderedPanel(neighborKey)
+        : undefined;
+    const startNeighborHeight =
+      neighborKey && neighborPanel
+        ? getPanelRenderedHeight(neighborPanel, neighborKey)
+        : 0;
     panel.classList.add("llm-paper-picker-panel-resizing");
+    neighborPanel?.classList.add("llm-paper-picker-panel-resizing");
     const onMove = (moveEvent: MouseEvent) => {
       moveEvent.preventDefault();
-      const nextHeight = clampPanelHeight(
-        key,
-        startHeight + startY - moveEvent.clientY,
-      );
+      const requestedDelta = startY - moveEvent.clientY;
+      if (neighborKey && neighborPanel && startNeighborHeight > 0) {
+        const maxGrow = Math.max(
+          0,
+          Math.min(
+            REFERENCE_SELECTOR_PANEL_MAX_HEIGHT[key] - startHeight,
+            startNeighborHeight -
+              REFERENCE_SELECTOR_PANEL_MIN_HEIGHT[neighborKey],
+          ),
+        );
+        const maxShrink = Math.max(
+          0,
+          Math.min(
+            startHeight - REFERENCE_SELECTOR_PANEL_MIN_HEIGHT[key],
+            REFERENCE_SELECTOR_PANEL_MAX_HEIGHT[neighborKey] -
+              startNeighborHeight,
+          ),
+        );
+        const appliedDelta = Math.max(
+          -maxShrink,
+          Math.min(maxGrow, requestedDelta),
+        );
+        const nextHeight = clampPanelStoredHeight(
+          key,
+          startHeight + appliedDelta,
+        );
+        const nextNeighborHeight = clampPanelStoredHeight(
+          neighborKey,
+          startNeighborHeight - appliedDelta,
+        );
+        panelHeights.set(key, nextHeight);
+        panelHeights.set(neighborKey, nextNeighborHeight);
+        panel.style.height = `${nextHeight}px`;
+        neighborPanel.style.height = `${nextNeighborHeight}px`;
+        return;
+      }
+      const nextHeight = clampPanelHeight(key, startHeight + requestedDelta);
       panelHeights.set(key, nextHeight);
       panel.style.height = `${nextHeight}px`;
     };
@@ -232,6 +351,7 @@ export function createReferenceSelectorPanelLayout(
       ownerWin.removeEventListener("mousemove", onMove);
       ownerWin.removeEventListener("mouseup", onUp);
       panel.classList.remove("llm-paper-picker-panel-resizing");
+      neighborPanel?.classList.remove("llm-paper-picker-panel-resizing");
       capturePanelHeights();
     };
     ownerWin.addEventListener("mousemove", onMove);
@@ -315,10 +435,11 @@ export function createReferenceSelectorPanelLayout(
     collapsedPanels.has(key);
 
   const toggleCollapsed = (key: ReferenceSelectorPanelKey): void => {
+    const expanding = collapsedPanels.has(key);
     const next = new Set(collapsedPanels);
     if (next.has(key)) next.delete(key);
     else next.add(key);
-    collapsedPanels = next;
+    collapsedPanels = expanding ? collapsePanelsToFit(next, key) : next;
     deps.render();
   };
 
@@ -373,6 +494,7 @@ export function createReferenceSelectorPanelLayout(
     toggleCollapsed,
     capturePanelHeights,
     captureRenderedPanelHeights,
+    fitPanelsToAvailableHeight,
     applyPanelHeight,
     createPanelSeparator,
     createPanelToggle,

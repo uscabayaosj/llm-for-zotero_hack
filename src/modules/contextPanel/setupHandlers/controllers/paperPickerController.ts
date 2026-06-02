@@ -1001,6 +1001,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     (): Map<PaperPickerPanelKey, number> =>
       panelLayout.captureRenderedPanelHeights();
 
+  const fitPaperPickerPanelsToAvailableHeight = (): void =>
+    panelLayout.fitPanelsToAvailableHeight();
+
   const applyPaperPickerPanelHeight = (
     panel: HTMLElement,
     key: PaperPickerPanelKey,
@@ -1668,6 +1671,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     }
     const previousPanelHeights = capturePaperPickerRenderedPanelHeights();
     capturePaperPickerPanelHeights();
+    if (referenceSelectorState.mode === "browse") {
+      fitPaperPickerPanelsToAvailableHeight();
+    }
     const preservedReferenceScrollTop = options.preserveReferenceScroll
       ? getRenderedPaperPickerReferenceRowHost()?.scrollTop
       : undefined;

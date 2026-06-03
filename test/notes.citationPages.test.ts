@@ -128,11 +128,11 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteText, "[[quote:");
   });
 
-  it("does not export unresolved quote anchors into chat-history text", function () {
+  it("omits unresolved quote anchors from chat-history text", function () {
     const messages: Message[] = [
       {
         role: "assistant",
-        text: "Evidence:\n\n[[quote:Q_missing]]",
+        text: "Evidence:\n\n[[quote:Q_missing]]\n\nContinue.",
         timestamp: 2,
         modelName: "Claude",
         quoteCitations: [],
@@ -141,9 +141,12 @@ describe("notes citation page export", function () {
 
     const result = buildChatHistoryNotePayload(messages);
 
-    assert.include(result.noteText, "[quote unavailable]");
+    assert.include(result.noteText, "Evidence");
+    assert.include(result.noteText, "Continue.");
     assert.notInclude(result.noteText, "[[quote:");
+    assert.notInclude(result.noteText, "[quote unavailable]");
     assert.notInclude(result.noteHtml, "[[quote:");
+    assert.notInclude(result.noteHtml, "[quote unavailable]");
   });
 
   it("does not export leaked source metadata markers into chat-history text", function () {

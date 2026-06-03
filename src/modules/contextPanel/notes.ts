@@ -385,7 +385,7 @@ function buildAssistantNoteHtml(
   const response = replaceQuoteCitationPlaceholdersForMarkdown(
     sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
     quoteCitations,
-    { unresolved: "unavailable" },
+    { unresolved: "omit" },
   );
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
@@ -401,7 +401,7 @@ function renderChatMessageHtmlForNote(
   const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
     sanitizeText(text || "").trim(),
     quoteCitations,
-    { unresolved: "unavailable" },
+    { unresolved: "omit" },
   );
   if (!safeText) return "";
   // Reuse the same markdown-to-note rendering path as single-response save.
@@ -720,7 +720,7 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
         ? replaceQuoteCitationPlaceholdersForMarkdown(
             textWithContext,
             msg.quoteCitations,
-            { unresolved: "unavailable" },
+            { unresolved: "omit" },
           )
         : textWithContext;
     if (msg.role === "user") {

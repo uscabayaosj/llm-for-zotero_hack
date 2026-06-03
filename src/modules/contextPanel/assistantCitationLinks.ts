@@ -109,7 +109,6 @@ export const INLINE_CITATION_SKIP_SELECTOR = [
   ".llm-citation-icon",
   ".llm-quote-citation-anchor",
   ".llm-quote-card",
-  ".llm-quote-citation-missing",
 ].join(", ");
 
 const INLINE_CITATION_PATTERN =
@@ -2535,16 +2534,6 @@ function resolveQuoteCitationCandidates(
     : [];
 }
 
-function createQuoteCitationUnavailableElement(
-  ownerDoc: Document,
-  _quoteId: string,
-): HTMLElement {
-  const missing = ownerDoc.createElement("span");
-  missing.className = "llm-quote-citation-missing";
-  missing.textContent = "[quote unavailable]";
-  return missing;
-}
-
 function buildQuotePreviewText(quoteText: string): string {
   const normalized = sanitizeText(quoteText || "")
     .replace(/\s+/g, " ")
@@ -2724,17 +2713,17 @@ export function renderQuoteCitationPlaceholders(params: {
       }
       const quoteId = match[1];
       const quoteCitation = byId.get(quoteId);
-      fragment.appendChild(
-        quoteCitation
-          ? createQuoteCitationAnchorElement({
-              ownerDoc,
-              body: params.body,
-              panelItem: params.panelItem,
-              candidates,
-              quoteCitation,
-            })
-          : createQuoteCitationUnavailableElement(ownerDoc, quoteId),
-      );
+      if (quoteCitation) {
+        fragment.appendChild(
+          createQuoteCitationAnchorElement({
+            ownerDoc,
+            body: params.body,
+            panelItem: params.panelItem,
+            candidates,
+            quoteCitation,
+          }),
+        );
+      }
       cursor = end;
     }
     if (cursor < text.length) {

@@ -40,14 +40,16 @@ describe("chat retry model inputs", function () {
     assert.notInclude(rendered, "(Lee, 2026)");
   });
 
-  it("does not render unresolved quote anchors in assistant bubbles", function () {
+  it("omits unresolved quote anchors in assistant bubbles", function () {
     const rendered = buildAssistantDisplayMarkdownForRender({
-      text: "Evidence:\n\n[[quote:Q_missing]]",
+      text: "Evidence:\n\n[[quote:Q_missing]]\n\nContinue.",
       quoteCitations: [],
     });
 
-    assert.include(rendered, "[quote unavailable]");
+    assert.include(rendered, "Evidence");
+    assert.include(rendered, "Continue.");
     assert.notInclude(rendered, "[[quote:");
+    assert.notInclude(rendered, "[quote unavailable]");
   });
 
   it("expands quote anchors in rendered clipboard payloads", function () {
@@ -71,16 +73,19 @@ describe("chat retry model inputs", function () {
     assert.notInclude(payload!.renderedHtml, "[[quote:");
   });
 
-  it("does not leak unresolved quote anchors in clipboard payloads", function () {
+  it("omits unresolved quote anchors in clipboard payloads", function () {
     const payload = buildRenderedMarkdownClipboardPayload(
-      "Evidence:\n\n[[quote:Q_missing]]",
+      "Evidence:\n\n[[quote:Q_missing]]\n\nContinue.",
       [],
     );
 
     assert.isNotNull(payload);
-    assert.include(payload!.plainText, "[quote unavailable]");
+    assert.include(payload!.plainText, "Evidence");
+    assert.include(payload!.plainText, "Continue.");
     assert.notInclude(payload!.plainText, "[[quote:");
+    assert.notInclude(payload!.plainText, "[quote unavailable]");
     assert.notInclude(payload!.renderedHtml, "[[quote:");
+    assert.notInclude(payload!.renderedHtml, "[quote unavailable]");
   });
 
   it("sanitizes leaked source metadata markers before assistant rendering", function () {

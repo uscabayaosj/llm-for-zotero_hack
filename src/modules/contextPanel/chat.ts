@@ -1837,7 +1837,7 @@ export function buildAssistantDisplayMarkdownForRender(
   return replaceQuoteCitationPlaceholdersForMarkdown(
     sanitizeText(message.text || ""),
     message.quoteCitations,
-    { resolved: "preserve", unresolved: "unavailable" },
+    { resolved: "preserve", unresolved: "omit" },
   );
 }
 
@@ -1852,7 +1852,7 @@ export function buildRenderedMarkdownClipboardPayload(
   const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
     sanitizeText(markdownText).trim(),
     quoteCitations,
-    { unresolved: "unavailable" },
+    { unresolved: "omit" },
   );
   if (!safeText) return null;
 

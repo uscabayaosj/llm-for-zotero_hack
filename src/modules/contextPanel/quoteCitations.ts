@@ -228,9 +228,31 @@ export type UnresolvedQuoteCitationPlaceholderMode =
 function formatUnresolvedQuoteCitationPlaceholder(
   mode: UnresolvedQuoteCitationPlaceholderMode,
 ): string {
-  if (mode === "unavailable") return "[quote unavailable]";
-  if (mode === "omit") return "";
+  if (mode === "unavailable" || mode === "omit") return "";
   return "";
+}
+
+export function findUnresolvedQuoteCitationPlaceholderIds(
+  markdown: string,
+  quoteCitations: QuoteCitation[] | undefined | null,
+): string[] {
+  if (!markdown) return [];
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const matches = Array.from(markdown.matchAll(QUOTE_CITATION_PATTERN));
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  if (!matches.length) return [];
+  const byId = new Set(
+    normalizeQuoteCitations(quoteCitations).map((citation) => citation.id),
+  );
+  const unresolved: string[] = [];
+  const seen = new Set<string>();
+  for (const match of matches) {
+    const id = match[1] || "";
+    if (!id || byId.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    unresolved.push(id);
+  }
+  return unresolved;
 }
 
 export function replaceQuoteCitationPlaceholdersForMarkdown(

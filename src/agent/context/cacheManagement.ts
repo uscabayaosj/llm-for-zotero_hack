@@ -927,9 +927,6 @@ function truncateSnippet(value: string): string {
 
 function formatSnippet(snippet: AgentEvidenceSnippet, index: number): string {
   const lines = [`  ${index + 1}. Evidence snippet:`];
-  if (snippet.quoteCitationId) {
-    lines.push(`     quoteCitationId: ${snippet.quoteCitationId}`);
-  }
   if (snippet.sourceLabel) {
     lines.push(`     sourceLabel: ${snippet.sourceLabel}`);
   }
@@ -1057,7 +1054,7 @@ export function buildAgentEvidenceContextBlock(params: {
   return [
     "Preserved evidence from prior agent tool reads:",
     "Reuse this evidence when it directly answers the follow-up. Re-read only when the user asks for updated evidence, the preserved snippets are insufficient, or the resource scope changed.",
-    "Citation rule: use quoteCitationId as [[quote:<id>]] when available, otherwise put sourceLabel on the next non-empty line after a blockquote. Do not copy source/page/section/chunk metadata into the final answer.",
+    "Citation rule: quote preserved text directly and put sourceLabel on the next non-empty line after a blockquote. Do not write quoteCitationId, source/page/section/chunk metadata, or [[quote:<id>]] anchors from preserved evidence.",
     ...entries.flatMap(formatEvidenceEntry),
   ].join("\n");
 }

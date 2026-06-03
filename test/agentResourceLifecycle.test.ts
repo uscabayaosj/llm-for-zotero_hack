@@ -617,7 +617,8 @@ describe("agent resource lifecycle", function () {
     assert.include(block, "Preserved evidence from prior agent tool reads");
     assert.include(block, "Baseline Paper");
     assert.include(block, "sourceLabel: (Smith, 2024)");
-    assert.include(block, "quoteCitationId: Q_prior_read");
+    assert.notInclude(block, "quoteCitationId: Q_prior_read");
+    assert.notInclude(block, "[[quote:Q_prior_read]]");
     assert.include(block, "internalLocator: page p. 4; section Results");
     assert.notInclude(block, "[source=");
     assert.include(block, "intervention selectively changed");

@@ -548,14 +548,16 @@ describe("agentTrace render", function () {
     assert.notInclude(rendered, "(Chandra et al., 2025)");
   });
 
-  it("does not render unresolved quote anchors in agent trace markdown", function () {
+  it("omits unresolved quote anchors in agent trace markdown", function () {
     const rendered = buildAgentTraceMarkdownForRender(
-      "Evidence:\n\n[[quote:Q_missing]]",
+      "Evidence:\n\n[[quote:Q_missing]]\n\nContinue.",
       { quoteCitations: [] },
     );
 
-    assert.include(rendered, "[quote unavailable]");
+    assert.include(rendered, "Evidence");
+    assert.include(rendered, "Continue.");
     assert.notInclude(rendered, "[[quote:");
+    assert.notInclude(rendered, "[quote unavailable]");
   });
 
   it("uses rendered Markdown HTML for streaming assistant text", function () {

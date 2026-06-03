@@ -5805,12 +5805,6 @@ label.llm-search-results-item:hover {
   display: none;
 }
 
-.llm-quote-citation-missing {
-  display: inline-block;
-  color: var(--fill-secondary);
-  font-style: italic;
-}
-
 .llm-rendered-markdown strong {
   font-weight: 600;
 }

@@ -789,14 +789,15 @@ describe("citation page cache", function () {
     assert.include(source, "navigateToHiddenQuoteLocation");
   });
 
-  it("does not expose internal quote ids in unavailable quote text", function () {
+  it("omits unresolved quote placeholders instead of rendering fallback text", function () {
     const source = readFileSync(
       resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
       "utf8",
     );
 
-    assert.include(source, 'missing.textContent = "[quote unavailable]"');
-    assert.notInclude(source, "[quote unavailable:");
+    assert.notInclude(source, "[quote unavailable]");
+    assert.notInclude(source, "createQuoteCitationUnavailableElement");
+    assert.include(source, "if (quoteCitation) {");
   });
 });
 

@@ -23,7 +23,11 @@ import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel
 import { invalidateCachedContextText } from "../../modules/contextPanel/pdfContext";
 import { ensureMineruCacheDirForAttachment } from "../../modules/contextPanel/mineruSync";
 import type { AgentRuntimeRequest } from "../types";
-import type { PaperContentSourceMode, PaperContextRef } from "../../shared/types";
+import type {
+  PaperContentSourceMode,
+  PaperContextRef,
+  TagContextRef,
+} from "../../shared/types";
 import {
   isGlobalPortalItem,
   isPaperPortalItem,
@@ -410,11 +414,28 @@ function resolveAnyAttachmentTitle(
   return total > 1 ? `Attachment ${index + 1}` : "Attachment";
 }
 
-function getItemTags(item: Zotero.Item | null | undefined): string[] {
+function getItemTags(
+  item: Zotero.Item | null | undefined,
+  options: { includeAutomatic?: boolean } = {},
+): string[] {
   if (!item) return [];
+  const includeAutomatic = options.includeAutomatic !== false;
   try {
     const out = (item.getTags?.() || [])
-      .map((entry) => normalizeText(entry?.tag))
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object") {
+          const typed = entry as { tag?: unknown; name?: unknown; type?: unknown };
+          if (typed.type === 1 && !includeAutomatic) return "";
+          return typeof typed.tag === "string"
+            ? typed.tag
+            : typeof typed.name === "string"
+              ? typed.name
+              : "";
+        }
+        return "";
+      })
+      .map((entry) => normalizeText(entry))
       .filter(Boolean);
     return Array.from(new Set(out)).sort((left, right) =>
       left.localeCompare(right, undefined, { sensitivity: "base" }),
@@ -1104,7 +1125,8 @@ export class ZoteroGateway {
     ];
     const allowAmbientActivePaper =
       request.conversationKind !== "global" &&
-      !request.selectedCollectionContexts?.length;
+      !request.selectedCollectionContexts?.length &&
+      !request.selectedTagContexts?.length;
     if (!allowAmbientActivePaper) {
       return out;
     }
@@ -1354,6 +1376,45 @@ export class ZoteroGateway {
     };
   }
 
+  async listTagItemTargets(params: {
+    libraryID: number;
+    tagContext: TagContextRef;
+    limit?: number;
+    itemType?: string;
+  }): Promise<{
+    tagName: string;
+    items: LibraryItemTarget[];
+    totalCount: number;
+  }> {
+    const libraryID = Number.isFinite(params.libraryID)
+      ? Math.floor(params.libraryID)
+      : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const tagName = normalizeText(params.tagContext.name);
+    const normalizedName = normalizeText(
+      params.tagContext.normalizedName || params.tagContext.name,
+    )
+      .toLowerCase()
+      .trim();
+    const includeAutomatic = params.tagContext.includeAutomatic === true;
+    const rawItems = await getAllLibraryItems(libraryID);
+    const filtered = rawItems.filter((item) => {
+      const tags = getItemTags(item, { includeAutomatic });
+      if (params.tagContext.scope === "allTagged") return tags.length > 0;
+      if (params.tagContext.scope === "untagged") return tags.length === 0;
+      if (!normalizedName) return false;
+      return tags.some(
+        (tag) => tag === tagName || tag.toLowerCase() === normalizedName,
+      );
+    });
+    const allItems = buildItemTargets(filtered, { itemType: params.itemType });
+    return {
+      tagName,
+      items: limitItemTargets(allItems, params.limit),
+      totalCount: allItems.length,
+    };
+  }
+
   async listItemsByFilters(params: {
     libraryID: number;
     filters?: AgentLibraryFilters;
@@ -1514,6 +1575,7 @@ export class ZoteroGateway {
     libraryID: number;
     query: string;
     filters?: AgentLibraryFilters;
+    allowedItemIds?: number[];
     limit?: number;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
@@ -1521,6 +1583,17 @@ export class ZoteroGateway {
       return { items: [], totalCount: 0 };
     }
     const normalizedLimit = normalizeResultLimit(params.limit) || 50;
+    const allowedItemIds = Array.isArray(params.allowedItemIds)
+      ? new Set(
+          params.allowedItemIds
+            .map((itemId) =>
+              Number.isFinite(itemId) && itemId > 0
+                ? Math.floor(itemId)
+                : 0,
+            )
+            .filter(Boolean),
+        )
+      : null;
     try {
       const search = params.filters
         ? buildAgentLibrarySearch(libraryID, params.filters)
@@ -1534,6 +1607,7 @@ export class ZoteroGateway {
         const item = Zotero.Items.get(id);
         if (!item) continue;
         const topId = (item.parentID as number | false | undefined) || id;
+        if (allowedItemIds && !allowedItemIds.has(topId)) continue;
         if (!seen.has(topId)) {
           seen.add(topId);
           resolvedIds.push(topId);

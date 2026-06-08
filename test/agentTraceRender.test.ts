@@ -18,6 +18,8 @@ import {
 } from "../src/modules/contextPanel/chat";
 import {
   extractRenderedMermaidSvg,
+  isSafeRenderedMarkdownAttributeForTests,
+  isSafeRenderedMarkdownElementForTests,
   needsMermaidCytoscapeLayoutHost,
   normalizeMermaidFlowchartLabels,
   normalizeMermaidSourceForTheme,
@@ -216,8 +218,7 @@ class FakeElement {
 
   findAllByTag(tagName: string): FakeElement[] {
     const normalized = tagName.toLowerCase();
-    const matches =
-      this.tagName.toLowerCase() === normalized ? [this] : [];
+    const matches = this.tagName.toLowerCase() === normalized ? [this] : [];
     for (const child of this.children) {
       matches.push(...child.findAllByTag(normalized));
     }
@@ -292,6 +293,50 @@ function collectFakeText(element: FakeElement | null | undefined): string {
   return [element.textContent, ...element.children.map(collectFakeText)].join(
     "",
   );
+}
+
+function createSanitizerElement(
+  localName: string,
+  classes: string[] = [],
+  parent: Element | null = null,
+): Element {
+  return {
+    localName,
+    parentElement: parent,
+    parentNode: parent,
+    nodeType: 1,
+    classList: {
+      contains: (cls: string) => classes.includes(cls),
+    },
+  } as unknown as Element;
+}
+
+function createKatexSvgElement(localName: "svg" | "path" | "line"): Element {
+  const katex = createSanitizerElement("span", ["katex"]);
+  const svg = createSanitizerElement("svg", [], katex);
+  return localName === "svg" ? svg : createSanitizerElement(localName, [], svg);
+}
+
+function extractKatexSvgTags(
+  html: string,
+): Array<{ tagName: "svg" | "path" | "line"; attrs: Array<[string, string]> }> {
+  const tags: Array<{
+    tagName: "svg" | "path" | "line";
+    attrs: Array<[string, string]>;
+  }> = [];
+  for (const tagMatch of html.matchAll(/<(svg|path|line)\b([^>]*)>/gi)) {
+    const attrs: Array<[string, string]> = [];
+    for (const attrMatch of tagMatch[2].matchAll(
+      /([A-Za-z_:][\w:.-]*)="([^"]*)"/g,
+    )) {
+      attrs.push([attrMatch[1], attrMatch[2]]);
+    }
+    tags.push({
+      tagName: tagMatch[1].toLowerCase() as "svg" | "path" | "line",
+      attrs,
+    });
+  }
+  return tags;
 }
 
 const obsidianStyleMermaidFixture = [
@@ -768,6 +813,80 @@ describe("agentTrace render", function () {
     assert.notInclude(html, "math-error");
   });
 
+  it("allows the SVG tags and attributes emitted by KaTeX math", function () {
+    const formulas = [
+      String.raw`\sqrt{x+y}`,
+      String.raw`\sqrt[3]{x}`,
+      String.raw`\widehat{x}`,
+      String.raw`\overrightarrow{AB}`,
+      String.raw`\xrightarrow{n\to\infty}`,
+      String.raw`\overbrace{x+y}`,
+      String.raw`\underbrace{x+y}`,
+      String.raw`\cancel{x+y}`,
+    ];
+
+    for (const formula of formulas) {
+      const html = renderAssistantMarkdownHtmlForChat(
+        String.raw`$$${formula}$$`,
+      );
+      const tags = extractKatexSvgTags(html);
+
+      assert.isNotEmpty(tags, formula);
+      assert.include(html, "katex", formula);
+      assert.include(html, "<svg", formula);
+
+      for (const tag of tags) {
+        const element = createKatexSvgElement(tag.tagName);
+        assert.isTrue(
+          isSafeRenderedMarkdownElementForTests(element),
+          `${formula} ${tag.tagName}`,
+        );
+        for (const [name, value] of tag.attrs) {
+          assert.isTrue(
+            isSafeRenderedMarkdownAttributeForTests(element, name, value),
+            `${formula} ${tag.tagName}.${name}=${value}`,
+          );
+        }
+      }
+    }
+  });
+
+  it("keeps non-KaTeX and unsafe SVG blocked in rendered Markdown", function () {
+    const rawSvg = createSanitizerElement("svg");
+    const rawPath = createSanitizerElement("path");
+    const rawLine = createSanitizerElement("line");
+
+    assert.isFalse(isSafeRenderedMarkdownElementForTests(rawSvg));
+    assert.isFalse(isSafeRenderedMarkdownElementForTests(rawPath));
+    assert.isFalse(isSafeRenderedMarkdownElementForTests(rawLine));
+
+    const katexSvg = createKatexSvgElement("svg");
+    const katexPath = createKatexSvgElement("path");
+    const katexLine = createKatexSvgElement("line");
+    const unsafeAttrs: Array<[Element, string, string]> = [
+      [katexSvg, "onload", "alert(1)"],
+      [katexSvg, "href", "https://example.com/x.svg"],
+      [katexSvg, "xlink:href", "https://example.com/x.svg"],
+      [katexSvg, "style", "background:url(https://example.com/x.svg)"],
+      [katexSvg, "filter", "url(https://example.com/filter.svg#x)"],
+      [katexSvg, "clip-path", "url(https://example.com/clip.svg#x)"],
+      [katexSvg, "width", "url(https://example.com/x.svg)"],
+      [katexPath, "href", "https://example.com/x.svg"],
+      [katexPath, "style", "stroke:url(https://example.com/x.svg)"],
+      [katexPath, "d", "M0 0 L10 10 url(https://example.com/x.svg)"],
+      [katexLine, "xlink:href", "https://example.com/x.svg"],
+      [katexLine, "style", "stroke:url(https://example.com/x.svg)"],
+      [katexLine, "x1", "url(https://example.com/x.svg)"],
+    ];
+
+    for (const [element, name, value] of unsafeAttrs) {
+      assert.isFalse(
+        isSafeRenderedMarkdownAttributeForTests(element, name, value),
+        `${name}=${value}`,
+      );
+    }
+  });
+
   it("preserves whitespace when compacting reasoning deltas", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -993,9 +1112,11 @@ describe("agentTrace render", function () {
     );
     assert.lengthOf(savedActions, 3);
     assert.isFalse(
-      (savedPathRoot.findByClass(
-        "llm-generated-image-action-open",
-      ) as FakeElement | null)?.disabled,
+      (
+        savedPathRoot.findByClass(
+          "llm-generated-image-action-open",
+        ) as FakeElement | null
+      )?.disabled,
     );
     const openClick = (
       savedPathRoot.findByClass(
@@ -1019,9 +1140,11 @@ describe("agentTrace render", function () {
     ) as unknown as { src?: string } | null;
     assert.equal(dataImg?.src, "data:image/png;base64,abc123");
     assert.isTrue(
-      ((dataUrlContainer as unknown as FakeElement).findByClass(
-        "llm-generated-image-action-open",
-      ) as FakeElement | null)?.disabled,
+      (
+        (dataUrlContainer as unknown as FakeElement).findByClass(
+          "llm-generated-image-action-open",
+        ) as FakeElement | null
+      )?.disabled,
     );
 
     const opaqueContainer = fakeDocument.createElement("div") as HTMLElement;
@@ -1162,7 +1285,10 @@ describe("agentTrace render", function () {
         FilePicker?: unknown;
       };
       Components?: {
-        classes?: Record<string, { createInstance?: (iface: unknown) => unknown }>;
+        classes?: Record<
+          string,
+          { createInstance?: (iface: unknown) => unknown }
+        >;
         interfaces?: {
           nsIFilePicker?: {
             modeSave: number;
@@ -1855,7 +1981,10 @@ describe("agentTrace render", function () {
     assert.equal(code?.textContent, command);
     assert.equal(code?.attributes["data-language"], "sh");
     assert.lengthOf(inputs, 1);
-    assert.equal((inputs[0] as FakeElement & { value?: string }).value, "/tmp/project");
+    assert.equal(
+      (inputs[0] as FakeElement & { value?: string }).value,
+      "/tmp/project",
+    );
   });
 
   it("removes repetitive filler chatter between tool steps", function () {

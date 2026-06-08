@@ -492,6 +492,8 @@ const SAFE_GLOBAL_MARKDOWN_ATTRS = new Set([
   "title",
 ]);
 
+const KATEX_SVG_TAGS = new Set(["svg", "path", "line"]);
+
 function compactRenderedUrl(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f\s]+/g, "");
 }
@@ -515,12 +517,108 @@ function isSafeRenderedMarkdownUrl(
   );
 }
 
-function isSafeRenderedMarkdownAttribute(
+function getRenderedMarkdownTagName(element: Element): string {
+  return element.localName.toLowerCase();
+}
+
+function getRenderedMarkdownParentElement(element: Element): Element | null {
+  const parentElement = element.parentElement;
+  if (parentElement) return parentElement;
+  const parentNode = element.parentNode;
+  return parentNode && parentNode.nodeType === 1
+    ? (parentNode as Element)
+    : null;
+}
+
+function hasRenderedMarkdownAncestorClass(
+  element: Element,
+  className: string,
+): boolean {
+  let parent = getRenderedMarkdownParentElement(element);
+  while (parent) {
+    if (parent.classList?.contains(className)) return true;
+    parent = getRenderedMarkdownParentElement(parent);
+  }
+  return false;
+}
+
+function isSafeKatexSvgElement(element: Element): boolean {
+  return (
+    KATEX_SVG_TAGS.has(getRenderedMarkdownTagName(element)) &&
+    hasRenderedMarkdownAncestorClass(element, "katex")
+  );
+}
+
+function isSafeRenderedMarkdownElement(element: Element): boolean {
+  const tagName = getRenderedMarkdownTagName(element);
+  return (
+    SAFE_RENDERED_MARKDOWN_TAGS.has(tagName) || isSafeKatexSvgElement(element)
+  );
+}
+
+function isKatexSvgNumber(value: string): boolean {
+  return /^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(value);
+}
+
+function isKatexSvgLength(value: string): boolean {
+  return /^(?:\d+(?:\.\d+)?|\.\d+)(?:em|%)?$/i.test(value.trim());
+}
+
+function isKatexSvgViewBox(value: string): boolean {
+  const parts = value.trim().split(/[\s,]+/);
+  return (
+    parts.length === 4 &&
+    parts.every((part) => part !== "" && isKatexSvgNumber(part))
+  );
+}
+
+function isKatexSvgPreserveAspectRatio(value: string): boolean {
+  return /^(?:none|x(?:Min|Mid|Max)Y(?:Min|Mid|Max)(?:\s+(?:meet|slice))?)$/.test(
+    value.trim(),
+  );
+}
+
+function isKatexSvgPathData(value: string): boolean {
+  return /^[MmZzLlHhVvCcSsQqTtAaEe0-9,.\s+-]+$/.test(value.trim());
+}
+
+function isSafeKatexSvgAttribute(
   tagName: string,
   attrName: string,
   attrValue: string,
 ): boolean {
+  if (tagName === "svg") {
+    if (attrName === "xmlns") return attrValue === "http://www.w3.org/2000/svg";
+    if (attrName === "width" || attrName === "height")
+      return isKatexSvgLength(attrValue);
+    if (attrName === "viewbox") return isKatexSvgViewBox(attrValue);
+    if (attrName === "preserveaspectratio")
+      return isKatexSvgPreserveAspectRatio(attrValue);
+    return false;
+  }
+  if (tagName === "path") {
+    return attrName === "d" && isKatexSvgPathData(attrValue);
+  }
+  if (tagName === "line") {
+    if (attrName === "x1" || attrName === "y1")
+      return isKatexSvgLength(attrValue);
+    if (attrName === "x2" || attrName === "y2")
+      return isKatexSvgLength(attrValue);
+    return attrName === "stroke-width" && isKatexSvgLength(attrValue);
+  }
+  return false;
+}
+
+function isSafeRenderedMarkdownAttribute(
+  element: Element,
+  attrName: string,
+  attrValue: string,
+): boolean {
+  const tagName = getRenderedMarkdownTagName(element);
   if (!attrName || attrName.startsWith("on")) return false;
+  if (isSafeKatexSvgElement(element)) {
+    return isSafeKatexSvgAttribute(tagName, attrName, attrValue);
+  }
   if (SAFE_GLOBAL_MARKDOWN_ATTRS.has(attrName)) return true;
   if (attrName.startsWith("data-llm-")) return true;
 
@@ -544,6 +642,24 @@ function isSafeRenderedMarkdownAttribute(
   return false;
 }
 
+export function isSafeRenderedMarkdownElementForTests(
+  element: Element,
+): boolean {
+  return isSafeRenderedMarkdownElement(element);
+}
+
+export function isSafeRenderedMarkdownAttributeForTests(
+  element: Element,
+  attrName: string,
+  attrValue: string,
+): boolean {
+  return isSafeRenderedMarkdownAttribute(
+    element,
+    attrName.toLowerCase(),
+    attrValue,
+  );
+}
+
 function sanitizeRenderedMarkdownFragment(
   fragment: ParentNode,
   doc: Document,
@@ -552,8 +668,8 @@ function sanitizeRenderedMarkdownFragment(
     fragment.querySelectorAll("*") as any,
   ) as Element[];
   for (const element of elements) {
-    const tagName = element.localName.toLowerCase();
-    if (!SAFE_RENDERED_MARKDOWN_TAGS.has(tagName)) {
+    const tagName = getRenderedMarkdownTagName(element);
+    if (!isSafeRenderedMarkdownElement(element)) {
       element.parentNode?.replaceChild(
         doc.createTextNode(element.textContent || ""),
         element,
@@ -563,7 +679,7 @@ function sanitizeRenderedMarkdownFragment(
 
     for (const attr of Array.from(element.attributes)) {
       const attrName = attr.name.toLowerCase();
-      if (!isSafeRenderedMarkdownAttribute(tagName, attrName, attr.value)) {
+      if (!isSafeRenderedMarkdownAttribute(element, attrName, attr.value)) {
         element.removeAttribute(attr.name);
       }
     }

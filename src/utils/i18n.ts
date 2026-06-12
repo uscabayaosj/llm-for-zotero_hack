@@ -42,6 +42,8 @@ const zhCN: Record<string, string> = {
   "Delete conversation": "删除对话",
   "Delete this turn": "删除此轮对话",
   "Delete this prompt and response": "删除此提问和回答",
+  "Fork this turn": "从此轮分叉",
+  "Start a new chat from this turn": "从此轮开始新的对话",
   "Copy chat as md": "复制对话为 Markdown",
   "Save chat as note": "保存对话为笔记",
   "Upload files": "上传文件",
@@ -100,6 +102,14 @@ const zhCN: Record<string, string> = {
   "Created a new note": "已创建新笔记",
   "Failed to create note": "创建笔记失败",
   "No deletable turn found": "没有可删除的对话轮次",
+  "No forkable turn found": "没有可分叉的对话轮次",
+  "Fork is not supported for this conversation type yet":
+    "此对话类型暂不支持分叉",
+  "Wait for the current response to finish before forking":
+    "请等待当前回复完成后再分叉",
+  "No active library for conversation fork": "没有可用于分叉的活跃文献库",
+  "Failed to fork conversation": "分叉对话失败",
+  "Conversation forked": "对话已 fork",
   "No chat history detected.": "未检测到对话历史。",
   "Copied chat as md": "已复制对话为 Markdown",
   "Saved chat history to new note": "已将对话历史保存为新笔记",

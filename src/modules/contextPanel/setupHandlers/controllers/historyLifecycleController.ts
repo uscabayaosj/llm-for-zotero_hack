@@ -200,6 +200,12 @@ type CreateConversationOptions = {
   forceFresh?: boolean;
   excludeConversationKey?: number;
 };
+type ForkTurnTarget = {
+  item: Zotero.Item;
+  conversationKey: number;
+  userTimestamp: number;
+  assistantTimestamp: number;
+};
 
 export { clearDeletedAgentConversationState } from "../../agentConversationCleanup";
 
@@ -221,6 +227,7 @@ export type HistoryLifecycleControllerDeps = {
   historyUndo: HTMLElement | null;
   historyUndoText: HTMLElement | null;
   historyUndoBtn: HTMLButtonElement | null;
+  topToast: HTMLElement | null;
   modeChipBtn: HTMLButtonElement | null;
   claudeSystemToggleBtn: HTMLButtonElement | null;
   getItem: () => Zotero.Item | null;
@@ -347,6 +354,7 @@ export function createHistoryLifecycleController(
     historyUndo,
     historyUndoText,
     historyUndoBtn,
+    topToast,
     modeChipBtn,
     claudeSystemToggleBtn,
   } = deps;
@@ -499,6 +507,8 @@ export function createHistoryLifecycleController(
     expiresAt: number;
   };
   let pendingTurnDeletion: PendingTurnDeletion | null = null;
+  const TOP_TOAST_TIMEOUT_MS = 2600;
+  let topToastTimer: number | null = null;
 
   const getWindowTimeout = (fn: () => void, delayMs: number): number => {
     const win = body.ownerDocument?.defaultView;
@@ -533,6 +543,28 @@ export function createHistoryLifecycleController(
     if (!historyUndo || !historyUndoText) return;
     historyUndoText.textContent = t("Deleted one turn");
     historyUndo.style.display = "flex";
+  };
+
+  const showTopToast = (message: string): void => {
+    if (!topToast) return;
+    clearWindowTimeout(topToastTimer);
+    topToastTimer = null;
+    topToast.textContent = message;
+    topToast.style.display = "flex";
+    topToast.setAttribute("aria-hidden", "false");
+    const win = body.ownerDocument?.defaultView;
+    const reveal = () => topToast.classList.add("llm-top-toast-visible");
+    if (win?.requestAnimationFrame) {
+      win.requestAnimationFrame(reveal);
+    } else {
+      reveal();
+    }
+    topToastTimer = getWindowTimeout(() => {
+      topToast.classList.remove("llm-top-toast-visible");
+      topToast.setAttribute("aria-hidden", "true");
+      topToast.style.display = "none";
+      topToastTimer = null;
+    }, TOP_TOAST_TIMEOUT_MS);
   };
 
   const cloneTurnMessageForUndo = (message: Message): Message => ({
@@ -754,7 +786,7 @@ export function createHistoryLifecycleController(
     const searchLimit =
       options.limit === null
         ? null
-        : options.limit ?? Math.max(GLOBAL_HISTORY_LIMIT, 100);
+        : (options.limit ?? Math.max(GLOBAL_HISTORY_LIMIT, 100));
     const entries: ConversationHistoryEntry[] = [];
 
     if (isClaudeConversationSystem()) {
@@ -2488,6 +2520,162 @@ export function createHistoryLifecycleController(
     }
   };
 
+  const forkConversationFromTurn = async (
+    target: ForkTurnTarget,
+  ): Promise<void> => {
+    syncStateFromDeps();
+    const targetItem = target.item || item;
+    const sourceConversationKey = Number.isFinite(target.conversationKey)
+      ? Math.floor(target.conversationKey)
+      : 0;
+    const assistantTimestamp = Number.isFinite(target.assistantTimestamp)
+      ? Math.floor(target.assistantTimestamp)
+      : 0;
+    if (!targetItem || sourceConversationKey <= 0 || assistantTimestamp <= 0) {
+      if (status) setStatus(status, t("No forkable turn found"), "error");
+      return;
+    }
+    if (isRequestPending(sourceConversationKey)) {
+      if (status)
+        setStatus(
+          status,
+          t("Wait for the current response to finish before forking"),
+          "warning",
+        );
+      return;
+    }
+    if (isWebChatMode() || getConversationSystem() !== "upstream") {
+      if (status)
+        setStatus(
+          status,
+          t("Fork is not supported for this conversation type yet"),
+          "warning",
+        );
+      return;
+    }
+
+    const pendingDeletionAffectsFork = Boolean(
+      pendingTurnDeletion &&
+      pendingTurnDeletion.conversationKey === sourceConversationKey &&
+      pendingTurnDeletion.assistantTimestamp <= assistantTimestamp,
+    );
+    if (pendingDeletionAffectsFork) {
+      const finalized = await finalizePendingTurnDeletion("superseded");
+      if (!finalized) return;
+    }
+
+    const sourceHistory = chatHistory.get(sourceConversationKey) || [];
+    const turnPair = findTurnPairByTimestamps(
+      sourceHistory,
+      target.userTimestamp,
+      assistantTimestamp,
+    );
+    if (!turnPair) {
+      if (status) setStatus(status, t("No forkable turn found"), "error");
+      return;
+    }
+    if (
+      turnPair.userMessage.runMode === "agent" ||
+      turnPair.assistantMessage.runMode === "agent" ||
+      Boolean(turnPair.assistantMessage.webchatRunState) ||
+      Boolean(turnPair.assistantMessage.webchatCompletionReason) ||
+      turnPair.assistantMessage.compactMarker
+    ) {
+      if (status)
+        setStatus(
+          status,
+          t("Fork is not supported for this conversation type yet"),
+          "warning",
+        );
+      return;
+    }
+
+    const kind = resolveDisplayConversationKind(targetItem);
+    if (kind !== "global" && kind !== "paper") {
+      if (status) setStatus(status, t("No forkable turn found"), "error");
+      return;
+    }
+    const baseItem = resolveConversationBaseItem(targetItem);
+    const libraryID =
+      normalizeHistoryPaperItemID(targetItem.libraryID) ||
+      normalizeHistoryPaperItemID(baseItem?.libraryID) ||
+      getCurrentLibraryID();
+    if (!libraryID) {
+      if (status)
+        setStatus(
+          status,
+          t("No active library for conversation fork"),
+          "error",
+        );
+      return;
+    }
+
+    const paperItemID =
+      kind === "paper" ? normalizeHistoryPaperItemID(baseItem?.id) : 0;
+    if (kind === "paper" && (!baseItem || !paperItemID)) {
+      if (status)
+        setStatus(status, t("No active paper for paper chat"), "error");
+      return;
+    }
+
+    let result: Awaited<
+      ReturnType<typeof conversationRepository.forkConversation>
+    > | null = null;
+    try {
+      result = await conversationRepository.forkConversation({
+        system: "upstream",
+        kind,
+        libraryID,
+        paperItemID: paperItemID || undefined,
+        sourceConversationKey,
+        throughAssistantTimestamp: assistantTimestamp,
+      });
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to fork conversation", err);
+    }
+    if (!result?.entry?.conversationKey) {
+      if (status) setStatus(status, t("Failed to fork conversation"), "error");
+      return;
+    }
+
+    const nextConversationKey = Math.floor(result.entry.conversationKey);
+    chatHistory.delete(nextConversationKey);
+    loadedConversationKeys.delete(nextConversationKey);
+    invalidateHistorySearchDocument(sourceConversationKey);
+    invalidateHistorySearchDocument(nextConversationKey);
+
+    let loaded = false;
+    if (kind === "paper") {
+      loaded = Boolean(
+        await switchPaperConversation(nextConversationKey, {
+          paperItem: baseItem,
+          allowedCatalogPaperItemID: paperItemID,
+        }),
+      );
+    } else {
+      loaded = await switchGlobalConversation(nextConversationKey);
+    }
+    if (!loaded) {
+      if (status)
+        setStatus(status, t("Could not load this conversation"), "error");
+      return;
+    }
+
+    try {
+      const forkedHistory = chatHistory.get(nextConversationKey) || [];
+      await replaceOwnerAttachmentRefs(
+        "conversation",
+        nextConversationKey,
+        collectAttachmentHashesFromMessages(forkedHistory),
+      );
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to refresh fork attachment refs", err);
+    }
+    void refreshGlobalHistoryHeader();
+    showTopToast(t("Conversation forked"));
+    if (status) setStatus(status, t("Conversation forked"), "ready");
+  };
+
   const historySearchPopupController = createHistorySearchPopupController({
     parent: panelRoot || (body as HTMLElement),
     loadEntries: async () => {
@@ -2589,9 +2777,9 @@ export function createHistoryLifecycleController(
 
   const finalizePendingTurnDeletion = async (
     reason: "timeout" | "superseded",
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const pending = clearPendingTurnDeletion();
-    if (!pending) return;
+    if (!pending) return true;
     let hasError = false;
     try {
       await conversationRepository.deleteTurnMessages({
@@ -2623,6 +2811,7 @@ export function createHistoryLifecycleController(
       setStatus(status, t("Turn deleted"), "ready");
     }
     void refreshGlobalHistoryHeader();
+    return !hasError;
   };
 
   const undoPendingTurnDeletion = () => {
@@ -3763,6 +3952,7 @@ export function createHistoryLifecycleController(
     },
     runExplicitNewChatAction,
     queueTurnDeletion,
+    forkConversationFromTurn,
     clearPendingTurnDeletion,
     resetHistorySearchState,
     hasPendingTurnDeletionForConversation: (conversationKey: number) =>

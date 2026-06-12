@@ -2797,6 +2797,41 @@
   background: var(--color-accent10);
 }
 
+.llm-top-toast {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  max-width: min(320px, 92%);
+  min-height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--material-background) 90%,
+    var(--color-accent10)
+  );
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-11);
+  line-height: 1.25;
+  padding: 6px 10px;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-top-toast-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .llm-shortcut-menu-item,
 .llm-response-menu-item {
   appearance: none;

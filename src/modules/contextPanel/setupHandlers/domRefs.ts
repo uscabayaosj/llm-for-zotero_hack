@@ -33,6 +33,7 @@ export type PanelDomRefs = {
   historyUndo: HTMLDivElement | null;
   historyUndoText: HTMLSpanElement | null;
   historyUndoBtn: HTMLButtonElement | null;
+  topToast: HTMLDivElement | null;
   claudeSystemToggleBtn: HTMLButtonElement | null;
   claudeSystemToggleIcon: HTMLSpanElement | null;
   selectTextBtn: HTMLButtonElement | null;
@@ -71,8 +72,10 @@ export type PanelDomRefs = {
   responseMenu: HTMLDivElement | null;
   responseMenuCopyBtn: HTMLButtonElement | null;
   responseMenuNoteBtn: HTMLButtonElement | null;
+  responseMenuForkBtn: HTMLButtonElement | null;
   responseMenuDeleteBtn: HTMLButtonElement | null;
   promptMenu: HTMLDivElement | null;
+  promptMenuForkBtn: HTMLButtonElement | null;
   promptMenuDeleteBtn: HTMLButtonElement | null;
   exportMenu: HTMLDivElement | null;
   exportMenuCopyBtn: HTMLButtonElement | null;
@@ -119,7 +122,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       ".llm-actions-right",
     ) as HTMLDivElement | null,
     popoutBtn: body.querySelector("#llm-popout") as HTMLButtonElement | null,
-    settingsBtn: body.querySelector("#llm-settings") as HTMLButtonElement | null,
+    settingsBtn: body.querySelector(
+      "#llm-settings",
+    ) as HTMLButtonElement | null,
     exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
     titleStatic: body.querySelector(
@@ -144,9 +149,7 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     historyModeIndicator: body.querySelector(
       "#llm-history-toggle",
     ) as HTMLButtonElement | null,
-    modeCapsule: body.querySelector(
-      "#llm-mode-capsule",
-    ) as HTMLElement | null,
+    modeCapsule: body.querySelector("#llm-mode-capsule") as HTMLElement | null,
     modeChipBtn: body.querySelector(
       "#llm-mode-chip",
     ) as HTMLButtonElement | null,
@@ -168,6 +171,7 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     historyUndoBtn: body.querySelector(
       "#llm-history-undo-btn",
     ) as HTMLButtonElement | null,
+    topToast: body.querySelector("#llm-top-toast") as HTMLDivElement | null,
     claudeSystemToggleBtn: body.querySelector(
       "#llm-claude-system-toggle",
     ) as HTMLButtonElement | null,
@@ -262,9 +266,7 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     shortcutMenu: body.querySelector(
       "#llm-shortcut-menu",
     ) as HTMLDivElement | null,
-    commandRow: body.querySelector(
-      "#llm-command-row",
-    ) as HTMLDivElement | null,
+    commandRow: body.querySelector("#llm-command-row") as HTMLDivElement | null,
     commandRowBadge: body.querySelector(
       "#llm-command-row-badge",
     ) as HTMLSpanElement | null,
@@ -280,10 +282,16 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     responseMenuNoteBtn: body.querySelector(
       "#llm-response-menu-note",
     ) as HTMLButtonElement | null,
+    responseMenuForkBtn: body.querySelector(
+      "#llm-response-menu-fork",
+    ) as HTMLButtonElement | null,
     responseMenuDeleteBtn: body.querySelector(
       "#llm-response-menu-delete",
     ) as HTMLButtonElement | null,
     promptMenu: body.querySelector("#llm-prompt-menu") as HTMLDivElement | null,
+    promptMenuForkBtn: body.querySelector(
+      "#llm-prompt-menu-fork",
+    ) as HTMLButtonElement | null,
     promptMenuDeleteBtn: body.querySelector(
       "#llm-prompt-menu-delete",
     ) as HTMLButtonElement | null,

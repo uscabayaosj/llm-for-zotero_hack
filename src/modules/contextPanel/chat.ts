@@ -638,9 +638,7 @@ type GeneratedImageFilePickerConstructor = new () => GeneratedImageFilePicker;
 
 function getGeneratedImagePickerParentWindow(doc: Document): Window | null {
   const mainWindow = Zotero.getMainWindow?.() as Window | null | undefined;
-  const candidates = [mainWindow, doc.defaultView].filter(
-    Boolean,
-  ) as Window[];
+  const candidates = [mainWindow, doc.defaultView].filter(Boolean) as Window[];
   const withBrowsingContext = candidates.find((candidate) =>
     Boolean(
       (candidate as unknown as { browsingContext?: unknown }).browsingContext,
@@ -649,9 +647,7 @@ function getGeneratedImagePickerParentWindow(doc: Document): Window | null {
   return withBrowsingContext || candidates[0] || null;
 }
 
-function getZoteroFilePickerConstructor():
-  | GeneratedImageFilePickerConstructor
-  | null {
+function getZoteroFilePickerConstructor(): GeneratedImageFilePickerConstructor | null {
   const ZoteroFilePicker = (Zotero as any).FilePicker as
     | GeneratedImageFilePickerConstructor
     | undefined;
@@ -708,10 +704,7 @@ function configureGeneratedImageFilePicker(
     }
   }
   try {
-    picker.appendFilter?.(
-      "Images",
-      "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg",
-    );
+    picker.appendFilter?.("Images", "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg");
   } catch (err) {
     ztoolkit.log("LLM: Failed to add generated image file filter", err);
   }
@@ -757,9 +750,7 @@ async function resolveGeneratedImageFilePickerResult(
       result === 0);
   if (!ok) return { status: "cancelled" };
   const path = getGeneratedImagePickerFilePath(picker);
-  return path
-    ? { status: "selected", path }
-    : { status: "unavailable" };
+  return path ? { status: "selected", path } : { status: "unavailable" };
 }
 
 async function pickGeneratedImageSavePath(
@@ -877,7 +868,9 @@ export function renderAssistantGeneratedImagesInto(
         return Promise.resolve(onClick()).catch((error) => {
           ztoolkit.log("LLM: Generated image action failed:", error);
           report(
-            error instanceof Error ? error.message : "Generated image action failed",
+            error instanceof Error
+              ? error.message
+              : "Generated image action failed",
             "error",
           );
         });
@@ -893,7 +886,10 @@ export function renderAssistantGeneratedImagesInto(
           "llm-generated-image-action-copy",
           "Copy image",
           async () => {
-            const result = await copyGeneratedImageToClipboard(container, image);
+            const result = await copyGeneratedImageToClipboard(
+              container,
+              image,
+            );
             report(result === "image" ? "Copied image" : "Copied image source");
           },
         ),
@@ -1269,12 +1265,18 @@ function attachAssistantResponseContextMenu(params: {
     const responseMenuDeleteBtn = responseMenu?.querySelector(
       "#llm-response-menu-delete",
     ) as HTMLButtonElement | null;
+    const responseMenuForkBtn = responseMenu?.querySelector(
+      "#llm-response-menu-fork",
+    ) as HTMLButtonElement | null;
     const canDeleteResponseTurn = Boolean(
       pairedUserMessage?.role === "user" && !message.streaming,
     );
     if (!responseMenu) return;
     if (responseMenuDeleteBtn) {
       responseMenuDeleteBtn.disabled = !canDeleteResponseTurn;
+    }
+    if (responseMenuForkBtn) {
+      responseMenuForkBtn.disabled = !canDeleteResponseTurn;
     }
     if (exportMenu) exportMenu.style.display = "none";
     if (promptMenu) promptMenu.style.display = "none";
@@ -4589,7 +4591,9 @@ function reconstructRetryPayload(userMessage: Message): {
   const selectedCollectionContexts = normalizeCollectionContexts(
     userMessage.selectedCollectionContexts,
   );
-  const selectedTagContexts = normalizeTagContexts(userMessage.selectedTagContexts);
+  const selectedTagContexts = normalizeTagContexts(
+    userMessage.selectedTagContexts,
+  );
   return {
     question,
     screenshotImages,
@@ -5154,7 +5158,9 @@ function syncComposeContextForInlineEdit(
   } else {
     selectedCollectionContextCache.delete(item.id);
   }
-  const selectedTagContexts = normalizeTagContexts(userMessage.selectedTagContexts);
+  const selectedTagContexts = normalizeTagContexts(
+    userMessage.selectedTagContexts,
+  );
   if (selectedTagContexts.length) {
     selectedTagContextCache.set(item.id, selectedTagContexts);
   } else {
@@ -5284,7 +5290,8 @@ export async function editLatestUserMessageAndRetry(
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const selectedTagContextsForMessage = normalizeTagContexts(selectedTagContexts);
+  const selectedTagContextsForMessage =
+    normalizeTagContexts(selectedTagContexts);
   const pdfExcludeKeys = derivePdfModePaperKeys(
     attachments,
     item,
@@ -5363,9 +5370,10 @@ export async function editLatestUserMessageAndRetry(
     selectedCollectionContextsForMessage.length
       ? selectedCollectionContextsForMessage
       : undefined;
-  retryPair.userMessage.selectedTagContexts = selectedTagContextsForMessage.length
-    ? selectedTagContextsForMessage
-    : undefined;
+  retryPair.userMessage.selectedTagContexts =
+    selectedTagContextsForMessage.length
+      ? selectedTagContextsForMessage
+      : undefined;
   retryPair.userMessage.paperContextsExpanded = false;
   retryPair.userMessage.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -6322,7 +6330,8 @@ export async function editUserTurnAndRetry(opts: {
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const selectedTagContextsForMessage = normalizeTagContexts(selectedTagContexts);
+  const selectedTagContextsForMessage =
+    normalizeTagContexts(selectedTagContexts);
   const pdfExcludeKeysEdit = derivePdfModePaperKeys(
     attachments,
     item,
@@ -7464,7 +7473,8 @@ export async function sendQuestion(
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const selectedTagContextsForMessage = normalizeTagContexts(selectedTagContexts);
+  const selectedTagContextsForMessage =
+    normalizeTagContexts(selectedTagContexts);
   let {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -9246,9 +9256,15 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           const promptMenuDeleteBtn = promptMenu?.querySelector(
             "#llm-prompt-menu-delete",
           ) as HTMLButtonElement | null;
+          const promptMenuForkBtn = promptMenu?.querySelector(
+            "#llm-prompt-menu-fork",
+          ) as HTMLButtonElement | null;
           if (!promptMenu) return;
           if (promptMenuDeleteBtn) {
             promptMenuDeleteBtn.disabled = !canDeletePromptTurn;
+          }
+          if (promptMenuForkBtn) {
+            promptMenuForkBtn.disabled = !canDeletePromptTurn;
           }
           if (!canDeletePromptTurn) return;
           if (responseMenu) responseMenu.style.display = "none";

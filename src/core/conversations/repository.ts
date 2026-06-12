@@ -57,6 +57,7 @@ import {
   deleteTurnMessages as deleteUpstreamTurnMessages,
   ensureGlobalConversationExists,
   ensurePaperV1Conversation,
+  forkUpstreamConversationMessages,
   getGlobalConversation,
   getPaperConversation,
   loadConversation as loadUpstreamConversation,
@@ -131,6 +132,17 @@ type EnsureCatalogEntryParams = ConversationCatalogScope & {
 };
 
 type CreateCatalogEntryParams = ConversationCatalogScope;
+
+type ForkConversationParams = ConversationCatalogScope & {
+  sourceConversationKey: number;
+  throughAssistantTimestamp: number;
+  title?: string;
+};
+
+export type ForkConversationResult = {
+  entry: ConversationCatalogEntry;
+  copiedMessageCount: number;
+};
 
 function normalizePositiveInt(value: unknown): number {
   const parsed = Number(value);
@@ -300,7 +312,9 @@ async function repairRuntimeRegistryFromSummary(
   system: "claude_code" | "codex",
   summary: ClaudeConversationSummary | CodexConversationSummary,
 ): Promise<void> {
-  const existing = await getRegisteredConversationScope(summary.conversationKey);
+  const existing = await getRegisteredConversationScope(
+    summary.conversationKey,
+  );
   if (
     existing &&
     !existing.valid &&
@@ -330,7 +344,9 @@ async function repairUpstreamRuntimeRegistryFromEntry(
   entry: ConversationCatalogEntry,
 ): Promise<boolean> {
   if (entry.system !== "upstream") return true;
-  if (!isConversationKeyForKind("upstream", entry.kind, entry.conversationKey)) {
+  if (
+    !isConversationKeyForKind("upstream", entry.kind, entry.conversationKey)
+  ) {
     return false;
   }
   return await repairRegisteredConversationScope({
@@ -617,6 +633,75 @@ export const conversationRepository = {
     return conversationKey
       ? fromUpstreamGlobalSummary(await getGlobalConversation(conversationKey))
       : null;
+  },
+
+  async forkConversation(
+    params: ForkConversationParams,
+  ): Promise<ForkConversationResult | null> {
+    if (params.system !== "upstream") return null;
+    const libraryID = normalizePositiveInt(params.libraryID);
+    const paperItemID = normalizePositiveInt(params.paperItemID);
+    const sourceConversationKey = normalizePositiveInt(
+      params.sourceConversationKey,
+    );
+    const throughAssistantTimestamp = normalizeTimestamp(
+      params.throughAssistantTimestamp,
+    );
+    if (!libraryID || !sourceConversationKey || !throughAssistantTimestamp) {
+      return null;
+    }
+    if (params.kind === "paper" && !paperItemID) return null;
+
+    const sourceEntry = await conversationRepository.getCatalogEntry({
+      system: "upstream",
+      kind: params.kind,
+      conversationKey: sourceConversationKey,
+    });
+    if (!catalogEntryMatchesScope(sourceEntry, params)) return null;
+
+    const entry = await conversationRepository.createCatalogEntry({
+      system: "upstream",
+      kind: params.kind,
+      libraryID,
+      paperItemID,
+    });
+    if (!entry) return null;
+
+    const copiedMessageCount = await forkUpstreamConversationMessages({
+      sourceConversationKey,
+      targetConversationKey: entry.conversationKey,
+      throughAssistantTimestamp,
+      timestampBase: Date.now(),
+    });
+    if (copiedMessageCount <= 0) {
+      await conversationRepository.deleteCatalogEntry({
+        system: "upstream",
+        kind: entry.kind,
+        conversationKey: entry.conversationKey,
+      });
+      return null;
+    }
+
+    const titleSeed =
+      normalizeTitle(params.title) ||
+      normalizeTitle(sourceEntry?.title) ||
+      "Forked chat";
+    await conversationRepository.setCatalogTitle({
+      system: "upstream",
+      kind: entry.kind,
+      conversationKey: entry.conversationKey,
+      title: `Fork: ${titleSeed}`,
+    });
+
+    const refreshed = await conversationRepository.getCatalogEntry({
+      system: "upstream",
+      kind: entry.kind,
+      conversationKey: entry.conversationKey,
+    });
+    return {
+      entry: refreshed || entry,
+      copiedMessageCount,
+    };
   },
 
   async listCatalogEntries(

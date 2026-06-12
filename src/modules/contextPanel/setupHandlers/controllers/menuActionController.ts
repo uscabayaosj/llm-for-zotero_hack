@@ -48,8 +48,10 @@ type MenuActionControllerDeps = {
   responseMenu: HTMLDivElement | null;
   responseMenuCopyBtn: HTMLButtonElement | null;
   responseMenuNoteBtn: HTMLButtonElement | null;
+  responseMenuForkBtn: HTMLButtonElement | null;
   responseMenuDeleteBtn: HTMLButtonElement | null;
   promptMenu: HTMLDivElement | null;
+  promptMenuForkBtn: HTMLButtonElement | null;
   promptMenuDeleteBtn: HTMLButtonElement | null;
   exportMenu: HTMLDivElement | null;
   exportMenuCopyBtn: HTMLButtonElement | null;
@@ -81,6 +83,12 @@ type MenuActionControllerDeps = {
     userTimestamp: number;
     assistantTimestamp: number;
   }) => Promise<void>;
+  forkConversationFromTurn: (target: {
+    item: Zotero.Item;
+    conversationKey: number;
+    userTimestamp: number;
+    assistantTimestamp: number;
+  }) => Promise<void>;
   logError: (message: string, error: unknown) => void;
 };
 
@@ -105,6 +113,39 @@ export function attachMenuActionController(
     level: "ready" | "warning" | "error",
   ) => {
     if (deps.status) setStatus(deps.status, message, level);
+  };
+
+  const normalizeTurnTarget = (
+    target: Pick<
+      NonNullable<ResponseMenuTarget>,
+      "item" | "conversationKey" | "userTimestamp" | "assistantTimestamp"
+    > | null,
+  ): {
+    item: Zotero.Item;
+    conversationKey: number;
+    userTimestamp: number;
+    assistantTimestamp: number;
+  } | null => {
+    if (!target?.item) return null;
+    const conversationKey = Number(target.conversationKey || 0);
+    const userTimestamp = Number(target.userTimestamp || 0);
+    const assistantTimestamp = Number(target.assistantTimestamp || 0);
+    if (
+      !Number.isFinite(conversationKey) ||
+      conversationKey <= 0 ||
+      !Number.isFinite(userTimestamp) ||
+      userTimestamp <= 0 ||
+      !Number.isFinite(assistantTimestamp) ||
+      assistantTimestamp <= 0
+    ) {
+      return null;
+    }
+    return {
+      item: target.item,
+      conversationKey: Math.floor(conversationKey),
+      userTimestamp: Math.floor(userTimestamp),
+      assistantTimestamp: Math.floor(assistantTimestamp),
+    };
   };
 
   if (
@@ -157,7 +198,10 @@ export function attachMenuActionController(
         generatedImages,
       } = target;
       if (!targetItem || (!contentText && !generatedImages?.length)) {
-        deps.logError("LLM: Note save - missing item or response content", null);
+        deps.logError(
+          "LLM: Note save - missing item or response content",
+          null,
+        );
         return;
       }
       try {
@@ -232,6 +276,17 @@ export function attachMenuActionController(
         assistantTimestamp: Math.floor(assistantTimestamp),
       });
     });
+    deps.responseMenuForkBtn?.addEventListener("click", async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const target = normalizeTurnTarget(deps.getResponseMenuTarget());
+      deps.closeResponseMenu();
+      if (!target) {
+        setStatusMessage(t("No forkable turn found"), "error");
+        return;
+      }
+      await deps.forkConversationFromTurn(target);
+    });
   }
 
   if (deps.promptMenu && !deps.promptMenu.dataset.listenerAttached) {
@@ -257,6 +312,17 @@ export function attachMenuActionController(
         userTimestamp: Math.floor(target.userTimestamp),
         assistantTimestamp: Math.floor(target.assistantTimestamp),
       });
+    });
+    deps.promptMenuForkBtn?.addEventListener("click", async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const target = normalizeTurnTarget(deps.getPromptMenuTarget());
+      deps.closePromptMenu();
+      if (!target) {
+        setStatusMessage(t("No forkable turn found"), "error");
+        return;
+      }
+      await deps.forkConversationFromTurn(target);
     });
   }
 

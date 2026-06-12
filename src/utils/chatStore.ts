@@ -24,6 +24,7 @@ import {
 import {
   buildLatestStoredMessagesQuery,
   storedMessageDisplayOrderSql,
+  storedMessageRoleOrderSql,
 } from "../shared/conversationMessageSql";
 import {
   buildConversationID,
@@ -256,7 +257,9 @@ function normalizeLimit(limit: number, fallback: number): number {
   return Math.max(1, Math.floor(limit));
 }
 
-function normalizeOptionalLimit(limit: number | null | undefined): number | null {
+function normalizeOptionalLimit(
+  limit: number | null | undefined,
+): number | null {
   if (limit === null) return null;
   if (!Number.isFinite(Number(limit))) return null;
   const normalized = Math.floor(Number(limit));
@@ -378,6 +381,41 @@ type ConversationCatalogSeedRow = {
   createdAt?: unknown;
   title?: unknown;
 };
+
+const CHAT_MESSAGE_COPY_COLUMNS = [
+  "role",
+  "text",
+  "timestamp",
+  "run_mode",
+  "agent_run_id",
+  "selected_text",
+  "selected_texts_json",
+  "selected_text_sources_json",
+  "selected_text_paper_contexts_json",
+  "selected_text_note_contexts_json",
+  "paper_contexts_json",
+  "full_text_paper_contexts_json",
+  "citation_paper_contexts_json",
+  "quote_citations_json",
+  "collection_contexts_json",
+  "tag_contexts_json",
+  "screenshot_images",
+  "attachments_json",
+  "model_attachments_json",
+  "generated_images_json",
+  "model_name",
+  "model_entry_id",
+  "model_provider_label",
+  "webchat_run_state",
+  "webchat_completion_reason",
+  "reasoning_summary",
+  "reasoning_details",
+  "context_tokens",
+  "context_window",
+] as const;
+
+type ChatMessageCopyColumn = (typeof CHAT_MESSAGE_COPY_COLUMNS)[number];
+type StoredChatMessageCopyRow = Record<ChatMessageCopyColumn, unknown>;
 
 function normalizeCatalogTimestamp(value: unknown): number {
   const parsed = Number(value);
@@ -1797,6 +1835,101 @@ export async function loadConversation(
   }
 
   return messages;
+}
+
+export async function forkUpstreamConversationMessages(params: {
+  sourceConversationKey: number;
+  targetConversationKey: number;
+  throughAssistantTimestamp: number;
+  timestampBase?: number;
+}): Promise<number> {
+  const sourceKey = normalizeConversationKey(params.sourceConversationKey);
+  const targetKey = normalizeConversationKey(params.targetConversationKey);
+  if (
+    !sourceKey ||
+    !targetKey ||
+    !isUpstreamStoreConversationKey(sourceKey) ||
+    !isUpstreamStoreConversationKey(targetKey) ||
+    sourceKey === targetKey
+  ) {
+    return 0;
+  }
+
+  const throughAssistantTimestamp = Number(params.throughAssistantTimestamp);
+  const normalizedThroughTimestamp = Number.isFinite(throughAssistantTimestamp)
+    ? Math.floor(throughAssistantTimestamp)
+    : 0;
+  if (normalizedThroughTimestamp <= 0) return 0;
+
+  const sourceSelector =
+    await resolveRepairingMessageConversationSelector(sourceKey);
+  const anchorRows = (await Zotero.DB.queryAsync(
+    `SELECT id, timestamp
+     FROM ${CHAT_MESSAGES_TABLE}
+     WHERE ${sourceSelector.whereSql}
+       AND role = 'assistant'
+       AND timestamp = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [...sourceSelector.params, normalizedThroughTimestamp],
+  )) as Array<{ id?: unknown; timestamp?: unknown }> | undefined;
+  const anchorRow = anchorRows?.[0];
+  const anchorId = Number(anchorRow?.id || 0);
+  const anchorTimestamp = Number(anchorRow?.timestamp || 0);
+  if (!Number.isFinite(anchorId) || anchorId <= 0) return 0;
+  if (!Number.isFinite(anchorTimestamp) || anchorTimestamp <= 0) return 0;
+
+  const roleOrderSql = storedMessageRoleOrderSql("role");
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT ${CHAT_MESSAGE_COPY_COLUMNS.join(", ")}
+     FROM ${CHAT_MESSAGES_TABLE}
+     WHERE ${sourceSelector.whereSql}
+       AND (
+         timestamp < ?
+         OR (timestamp = ? AND ${roleOrderSql} < 1)
+         OR (timestamp = ? AND ${roleOrderSql} = 1 AND id <= ?)
+       )
+     ORDER BY ${storedMessageDisplayOrderSql()}`,
+    [
+      ...sourceSelector.params,
+      anchorTimestamp,
+      anchorTimestamp,
+      anchorTimestamp,
+      Math.floor(anchorId),
+    ],
+  )) as StoredChatMessageCopyRow[] | undefined;
+  if (!rows?.length) return 0;
+
+  const targetConversationID = await resolveRegisteredConversationID(targetKey);
+  const timestampBase = Number.isFinite(Number(params.timestampBase))
+    ? Math.floor(Number(params.timestampBase))
+    : Date.now();
+  const insertColumns = [
+    "conversation_id",
+    "conversation_key",
+    ...CHAT_MESSAGE_COPY_COLUMNS,
+  ];
+  const placeholders = insertColumns.map(() => "?").join(", ");
+
+  await Zotero.DB.executeTransaction(async () => {
+    for (const [index, row] of rows.entries()) {
+      await Zotero.DB.queryAsync(
+        `INSERT INTO ${CHAT_MESSAGES_TABLE}
+          (${insertColumns.join(", ")})
+         VALUES (${placeholders})`,
+        [
+          targetConversationID,
+          targetKey,
+          ...CHAT_MESSAGE_COPY_COLUMNS.map((column) =>
+            column === "timestamp" ? timestampBase + index : row[column],
+          ),
+        ],
+      );
+    }
+    await refreshUpstreamConversationCatalogSummary(targetKey);
+  });
+  await refreshUpstreamConversationSearchIndex(targetKey);
+  return rows.length;
 }
 
 export async function appendMessage(

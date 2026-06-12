@@ -67,12 +67,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     hasItem && item
       ? activeNoteSession?.parentItemId ||
         (isPaperPortalItem(item)
-        ? getPaperPortalBaseItemID(item) || 0
-        : item.isAttachment() && item.parentID
-          ? item.parentID
-          : isPaperMode
-            ? item.id
-            : 0)
+          ? getPaperPortalBaseItemID(item) || 0
+          : item.isAttachment() && item.parentID
+            ? item.parentID
+            : isPaperMode
+              ? item.id
+              : 0)
       : 0;
   const hasPaperContext = basePaperItemId > 0;
 
@@ -100,8 +100,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       ? "global"
       : "paper"
     : "";
-  container.dataset.conversationSystem =
-    resolvePreferredConversationSystem({ item });
+  container.dataset.conversationSystem = resolvePreferredConversationSystem({
+    item,
+  });
   container.dataset.basePaperItemId =
     basePaperItemId > 0 ? `${basePaperItemId}` : "";
   container.dataset.noteKind = activeNoteSession?.noteKind || "";
@@ -156,9 +157,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   historyToggle.style.display = activeNoteSession ? "none" : "";
 
   const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
-  const headerModeControls = createElement(doc, "div", "llm-header-mode-controls", {
-    id: "llm-header-mode-controls",
-  });
+  const headerModeControls = createElement(
+    doc,
+    "div",
+    "llm-header-mode-controls",
+    {
+      id: "llm-header-mode-controls",
+    },
+  );
 
   // Mode chip: single pill showing current mode
   const modeSwitchWrap = createElement(doc, "div", "llm-mode-switch", {
@@ -168,7 +174,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   const modeChipLabel = activeNoteSession
     ? t("Note editing")
-    : (isGlobalMode ? t("Library chat") : t("Paper chat"));
+    : isGlobalMode
+      ? t("Library chat")
+      : t("Paper chat");
   const modeChipBtn = createElement(doc, "button", "llm-mode-chip", {
     id: "llm-mode-chip",
     type: "button",
@@ -179,42 +187,71 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   modeSwitchWrap.append(modeChipBtn);
 
-  const claudeToggleBtn = createElement(doc, "button", "llm-claude-system-toggle", {
-    id: "llm-claude-system-toggle",
-    type: "button",
-    title: "Claude Code",
-  });
+  const claudeToggleBtn = createElement(
+    doc,
+    "button",
+    "llm-claude-system-toggle",
+    {
+      id: "llm-claude-system-toggle",
+      type: "button",
+      title: "Claude Code",
+    },
+  );
   claudeToggleBtn.setAttribute("aria-label", "Claude Code");
-  const claudeToggleIcon = createElement(doc, "span", "llm-claude-system-toggle-icon", {
-    id: "llm-claude-system-toggle-icon",
-  });
+  const claudeToggleIcon = createElement(
+    doc,
+    "span",
+    "llm-claude-system-toggle-icon",
+    {
+      id: "llm-claude-system-toggle-icon",
+    },
+  );
   claudeToggleIcon.setAttribute("aria-hidden", "true");
   claudeToggleBtn.appendChild(claudeToggleIcon);
 
-  const claudeContextGauge = createElement(doc, "div", "llm-claude-context-gauge", {
-    id: "llm-claude-context-gauge",
-  }) as HTMLDivElement;
+  const claudeContextGauge = createElement(
+    doc,
+    "div",
+    "llm-claude-context-gauge",
+    {
+      id: "llm-claude-context-gauge",
+    },
+  ) as HTMLDivElement;
   claudeContextGauge.style.display = "none";
   claudeContextGauge.setAttribute("aria-hidden", "true");
 
-  headerModeControls.append(modeSwitchWrap, claudeToggleBtn, claudeContextGauge);
+  headerModeControls.append(
+    modeSwitchWrap,
+    claudeToggleBtn,
+    claudeContextGauge,
+  );
   historyBar.append(historyNewBtn, historyToggle, headerModeControls);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
-  const popoutBtn = createElement(doc, "button", "llm-btn-icon llm-popout-btn", {
-    id: "llm-popout",
-    type: "button",
-    title: t("Open in Window"),
-  });
+  const popoutBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-popout-btn",
+    {
+      id: "llm-popout",
+      type: "button",
+      title: t("Open in Window"),
+    },
+  );
   popoutBtn.setAttribute("aria-label", t("Open chat in a standalone window"));
-  const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
-    id: "llm-settings",
-    type: "button",
-    title: t("Settings"),
-  });
+  const settingsBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-settings-btn",
+    {
+      id: "llm-settings",
+      type: "button",
+      title: t("Settings"),
+    },
+  );
   settingsBtn.setAttribute("aria-label", t("Open plugin settings"));
   settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
   const exportBtn = createElement(doc, "button", "llm-btn-icon", {
@@ -272,6 +309,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   historyUndo.append(historyUndoText, historyUndoBtn);
   header.appendChild(historyUndo);
+
+  const topToast = createElement(doc, "div", "llm-top-toast", {
+    id: "llm-top-toast",
+    textContent: "",
+  });
+  topToast.style.display = "none";
+  topToast.setAttribute("aria-live", "polite");
+  topToast.setAttribute("aria-hidden", "true");
+  header.appendChild(topToast);
 
   container.appendChild(header);
 
@@ -366,9 +412,21 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       title: t("Delete this prompt and response"),
     },
   );
+  const responseMenuForkBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-response-menu-fork",
+      type: "button",
+      textContent: t("Fork this turn"),
+      title: t("Start a new chat from this turn"),
+    },
+  );
   responseMenu.append(
     responseMenuCopyBtn,
     responseMenuNoteBtn,
+    responseMenuForkBtn,
     responseMenuDeleteBtn,
   );
   container.appendChild(responseMenu);
@@ -389,7 +447,18 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       title: t("Delete this prompt and response"),
     },
   );
-  promptMenu.append(promptMenuDeleteBtn);
+  const promptMenuForkBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-prompt-menu-fork",
+      type: "button",
+      textContent: t("Fork this turn"),
+      title: t("Start a new chat from this turn"),
+    },
+  );
+  promptMenu.append(promptMenuForkBtn, promptMenuDeleteBtn);
   container.appendChild(promptMenu);
 
   // Export menu
@@ -892,7 +961,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   container.appendChild(inputSection);
   container.appendChild(statusBar);
   body.appendChild(container);
-
 }
 
 export { buildUI };

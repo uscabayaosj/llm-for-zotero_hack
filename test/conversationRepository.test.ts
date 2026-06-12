@@ -507,6 +507,158 @@ describe("conversationRepository", function () {
     assert.deepEqual(deleteQueries[1]?.params?.slice(-1), [200]);
   });
 
+  it("does not fork runtime conversations through the upstream repository path", async function () {
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          queries.push({ sql, params });
+          return [];
+        },
+      },
+    };
+
+    const result = await conversationRepository.forkConversation({
+      system: "codex",
+      kind: "global",
+      libraryID: 1,
+      sourceConversationKey: CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21,
+      throughAssistantTimestamp: 200,
+    });
+
+    assert.isNull(result);
+    assert.lengthOf(queries, 0);
+  });
+
+  it("forks an upstream global conversation through the selected assistant turn", async function () {
+    const sourceConversationKey = 2_000_000_021;
+    let targetConversationKey = 0;
+    let targetTitle = "";
+    const insertedMessages: unknown[][] = [];
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    const rowForGlobalConversation = (
+      conversationKey: number,
+      title: string,
+    ) => ({
+      conversationID: buildConversationID({
+        conversationKey,
+        system: "upstream",
+        kind: "global",
+        libraryID: 7,
+      }),
+      conversationKey,
+      libraryID: 7,
+      createdAt: 100,
+      title,
+      lastActivityAt: 300,
+      userTurnCount: 2,
+    });
+
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Libraries: {
+        userLibraryID: 7,
+      },
+      DB: {
+        executeTransaction: async (fn: () => Promise<unknown>) => await fn(),
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          queries.push({ sql, params });
+          if (
+            sql.includes("FROM llm_for_zotero_global_conversations gc") &&
+            sql.includes("WHERE gc.conversation_key = ?")
+          ) {
+            const key = Number(params?.[0] || 0);
+            if (key === sourceConversationKey) {
+              return [rowForGlobalConversation(key, "Source title")];
+            }
+            if (key === targetConversationKey) {
+              return [
+                rowForGlobalConversation(
+                  key,
+                  targetTitle || "Fork: Source title",
+                ),
+              ];
+            }
+            return [];
+          }
+          if (
+            sql.includes("SELECT conversation_key AS conversationKey") &&
+            sql.includes("FROM llm_for_zotero_global_conversations") &&
+            sql.includes("WHERE conversation_key = ?")
+          ) {
+            return [];
+          }
+          if (sql.includes("INSERT INTO llm_for_zotero_global_conversations")) {
+            targetConversationKey = Number(params?.[1] || 0);
+            return [];
+          }
+          if (
+            sql.includes("UPDATE llm_for_zotero_global_conversations") &&
+            sql.includes("SET title = ?")
+          ) {
+            targetTitle = String(params?.[0] || "");
+            return [];
+          }
+          if (
+            sql.includes("SELECT id, timestamp") &&
+            sql.includes("FROM llm_for_zotero_chat_messages") &&
+            sql.includes("role = 'assistant'")
+          ) {
+            return [{ id: 4, timestamp: 200 }];
+          }
+          if (
+            sql.includes("SELECT role, text, timestamp") &&
+            sql.includes("FROM llm_for_zotero_chat_messages") &&
+            sql.includes("ORDER BY timestamp ASC")
+          ) {
+            return [
+              { role: "user", text: "First", timestamp: 100 },
+              { role: "assistant", text: "Answer", timestamp: 200 },
+            ];
+          }
+          if (sql.includes("INSERT INTO llm_for_zotero_chat_messages")) {
+            insertedMessages.push([...(params || [])]);
+            return [];
+          }
+          return [];
+        },
+      },
+    };
+
+    const result = await conversationRepository.forkConversation({
+      system: "upstream",
+      kind: "global",
+      libraryID: 7,
+      sourceConversationKey,
+      throughAssistantTimestamp: 200,
+    });
+
+    assert.equal(result?.entry.conversationKey, targetConversationKey);
+    assert.equal(result?.copiedMessageCount, 2);
+    assert.equal(targetTitle, "Fork: Source title");
+    assert.lengthOf(insertedMessages, 2);
+    assert.deepEqual(
+      insertedMessages.map((params) => params.slice(1, 5)),
+      [
+        [targetConversationKey, "user", "First", insertedMessages[0]?.[4]],
+        [
+          targetConversationKey,
+          "assistant",
+          "Answer",
+          insertedMessages[1]?.[4],
+        ],
+      ],
+    );
+    assert.isTrue(
+      queries.some(
+        ({ sql }) =>
+          sql.includes("timestamp < ?") &&
+          sql.includes("CASE role WHEN 'user' THEN 0"),
+      ),
+    );
+  });
+
   it("touches upstream empty draft activity through the repository", async function () {
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     const conversationKey = 2_000_000_021;
@@ -584,7 +736,9 @@ describe("conversationRepository", function () {
     assert.equal(entry, null);
     assert.isFalse(
       queries.some(({ sql }) =>
-        sql.includes("INSERT OR IGNORE INTO llm_for_zotero_global_conversations"),
+        sql.includes(
+          "INSERT OR IGNORE INTO llm_for_zotero_global_conversations",
+        ),
       ),
     );
     assert.isFalse(

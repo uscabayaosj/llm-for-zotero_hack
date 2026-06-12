@@ -551,6 +551,7 @@ describe("agent resource context plan", function () {
     const req = request({
       conversationKey: 101,
       userText: "Summarize this paper",
+      forcedSkillIds: ["evidence-based-qa"],
     });
     await recordAgentTurn(
       req.conversationKey,
@@ -567,6 +568,15 @@ describe("agent resource context plan", function () {
           "description: test skill",
           "---",
           "Use one paper_read overview before answering.",
+        ].join("\n"),
+      ),
+      parseSkill(
+        [
+          "---",
+          "id: evidence-based-qa",
+          "description: explicit evidence skill",
+          "---",
+          "Quote the exact supporting passages.",
         ].join("\n"),
       ),
     ]);
@@ -590,7 +600,7 @@ describe("agent resource context plan", function () {
       messages = await buildAgentInitialMessages(
         req,
         [guidedTool],
-        ["simple-paper-qa"],
+        ["simple-paper-qa", "evidence-based-qa"],
         buildAgentResourceContextPlan(req),
       );
     } finally {
@@ -600,11 +610,16 @@ describe("agent resource context plan", function () {
     const userText = messageText(messages[messages.length - 1]);
 
     assert.notInclude(systemText, "Conversation continuity notes");
-    assert.notInclude(systemText, "Skill guidance loaded for this turn");
+    assert.notInclude(systemText, "Active skills for this turn");
     assert.notInclude(systemText, "mock guided tool");
     assert.include(userText, "Conversation continuity notes");
-    assert.include(userText, "Skill guidance loaded for this turn");
+    assert.include(userText, "Active skills for this turn");
+    assert.include(userText, "### Skill: simple-paper-qa");
+    assert.include(userText, "Activation: automatic match");
     assert.include(userText, "Use one paper_read overview before answering.");
+    assert.include(userText, "### Skill: evidence-based-qa");
+    assert.include(userText, "Activation: explicit slash selection");
+    assert.include(userText, "Quote the exact supporting passages.");
     assert.include(userText, "Use the mock guided tool only for this test.");
     assert.include(userText, "Current-turn dynamic agent guidance");
   });

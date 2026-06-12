@@ -639,9 +639,7 @@ type GeneratedImageFilePickerConstructor = new () => GeneratedImageFilePicker;
 
 function getGeneratedImagePickerParentWindow(doc: Document): Window | null {
   const mainWindow = Zotero.getMainWindow?.() as Window | null | undefined;
-  const candidates = [mainWindow, doc.defaultView].filter(
-    Boolean,
-  ) as Window[];
+  const candidates = [mainWindow, doc.defaultView].filter(Boolean) as Window[];
   const withBrowsingContext = candidates.find((candidate) =>
     Boolean(
       (candidate as unknown as { browsingContext?: unknown }).browsingContext,
@@ -650,9 +648,7 @@ function getGeneratedImagePickerParentWindow(doc: Document): Window | null {
   return withBrowsingContext || candidates[0] || null;
 }
 
-function getZoteroFilePickerConstructor():
-  | GeneratedImageFilePickerConstructor
-  | null {
+function getZoteroFilePickerConstructor(): GeneratedImageFilePickerConstructor | null {
   const ZoteroFilePicker = (Zotero as any).FilePicker as
     | GeneratedImageFilePickerConstructor
     | undefined;
@@ -709,10 +705,7 @@ function configureGeneratedImageFilePicker(
     }
   }
   try {
-    picker.appendFilter?.(
-      "Images",
-      "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg",
-    );
+    picker.appendFilter?.("Images", "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg");
   } catch (err) {
     ztoolkit.log("LLM: Failed to add generated image file filter", err);
   }
@@ -758,9 +751,7 @@ async function resolveGeneratedImageFilePickerResult(
       result === 0);
   if (!ok) return { status: "cancelled" };
   const path = getGeneratedImagePickerFilePath(picker);
-  return path
-    ? { status: "selected", path }
-    : { status: "unavailable" };
+  return path ? { status: "selected", path } : { status: "unavailable" };
 }
 
 async function pickGeneratedImageSavePath(
@@ -878,7 +869,9 @@ export function renderAssistantGeneratedImagesInto(
         return Promise.resolve(onClick()).catch((error) => {
           ztoolkit.log("LLM: Generated image action failed:", error);
           report(
-            error instanceof Error ? error.message : "Generated image action failed",
+            error instanceof Error
+              ? error.message
+              : "Generated image action failed",
             "error",
           );
         });
@@ -894,7 +887,10 @@ export function renderAssistantGeneratedImagesInto(
           "llm-generated-image-action-copy",
           "Copy image",
           async () => {
-            const result = await copyGeneratedImageToClipboard(container, image);
+            const result = await copyGeneratedImageToClipboard(
+              container,
+              image,
+            );
             report(result === "image" ? "Copied image" : "Copied image source");
           },
         ),
@@ -4329,7 +4325,10 @@ function createCodexNativeActivityTraceController(
     return false;
   };
 
-  const noteSkillActivated = (skillId: string): void => {
+  const noteSkillActivated = (
+    skillId: string,
+    options: { source?: "codex-native-slash" } = {},
+  ): void => {
     const cleanSkillId = sanitizeText(skillId || "").trim();
     if (!cleanSkillId || activatedSkillIds.has(cleanSkillId)) return;
     flushAllProgressCoalescers("event");
@@ -4339,7 +4338,10 @@ function createCodexNativeActivityTraceController(
         type: "tool_call",
         callId: `skill:${cleanSkillId}`,
         name: "Skill",
-        args: { skill: cleanSkillId },
+        args: {
+          skill: cleanSkillId,
+          ...(options.source ? { source: options.source } : {}),
+        },
       }),
     );
     sync();
@@ -4522,6 +4524,20 @@ function createCodexNativeActivityTraceController(
   };
 }
 
+type CodexNativeActivityTraceController = ReturnType<
+  typeof createCodexNativeActivityTraceController
+>;
+
+function noteExplicitCodexNativeSkillInvocations(
+  trace: CodexNativeActivityTraceController | null,
+  skillIds?: string[],
+): void {
+  if (!trace?.noteSkillActivated || !skillIds?.length) return;
+  for (const skillId of skillIds) {
+    trace.noteSkillActivated(skillId, { source: "codex-native-slash" });
+  }
+}
+
 function applyWebChatAnswerSnapshot(
   message: Message,
   text: string,
@@ -4659,7 +4675,9 @@ function reconstructRetryPayload(userMessage: Message): {
   const selectedCollectionContexts = normalizeCollectionContexts(
     userMessage.selectedCollectionContexts,
   );
-  const selectedTagContexts = normalizeTagContexts(userMessage.selectedTagContexts);
+  const selectedTagContexts = normalizeTagContexts(
+    userMessage.selectedTagContexts,
+  );
   return {
     question,
     screenshotImages,
@@ -5227,7 +5245,9 @@ function syncComposeContextForInlineEdit(
   } else {
     selectedCollectionContextCache.delete(item.id);
   }
-  const selectedTagContexts = normalizeTagContexts(userMessage.selectedTagContexts);
+  const selectedTagContexts = normalizeTagContexts(
+    userMessage.selectedTagContexts,
+  );
   if (selectedTagContexts.length) {
     selectedTagContextCache.set(item.id, selectedTagContexts);
   } else {
@@ -5357,7 +5377,8 @@ export async function editLatestUserMessageAndRetry(
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const selectedTagContextsForMessage = normalizeTagContexts(selectedTagContexts);
+  const selectedTagContextsForMessage =
+    normalizeTagContexts(selectedTagContexts);
   const pdfExcludeKeys = derivePdfModePaperKeys(
     attachments,
     item,
@@ -5436,9 +5457,10 @@ export async function editLatestUserMessageAndRetry(
     selectedCollectionContextsForMessage.length
       ? selectedCollectionContextsForMessage
       : undefined;
-  retryPair.userMessage.selectedTagContexts = selectedTagContextsForMessage.length
-    ? selectedTagContextsForMessage
-    : undefined;
+  retryPair.userMessage.selectedTagContexts =
+    selectedTagContextsForMessage.length
+      ? selectedTagContextsForMessage
+      : undefined;
   retryPair.userMessage.paperContextsExpanded = false;
   retryPair.userMessage.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -5861,6 +5883,10 @@ export async function retryLatestAssistantResponse(
     const codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
+    noteExplicitCodexNativeSkillInvocations(
+      codexActivityTrace,
+      retryPair.userMessage.forcedSkillIds,
+    );
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
       getAbortController(conversationKey)?.abort();
       await finalizeCancelledAssistant();
@@ -5986,6 +6012,7 @@ export async function retryLatestAssistantResponse(
               effectiveRequestConfig.apiBase,
             ),
             skillContext: buildCodexNativeSkillContext({
+              forcedSkillIds: retryPair.userMessage.forcedSkillIds,
               selectedTexts: retryPair.userMessage.selectedTexts,
               selectedTextSources: retryPair.userMessage.selectedTextSources,
               selectedTextPaperContexts:
@@ -6396,7 +6423,8 @@ export async function editUserTurnAndRetry(opts: {
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const selectedTagContextsForMessage = normalizeTagContexts(selectedTagContexts);
+  const selectedTagContextsForMessage =
+    normalizeTagContexts(selectedTagContexts);
   const pdfExcludeKeysEdit = derivePdfModePaperKeys(
     attachments,
     item,
@@ -7538,7 +7566,8 @@ export async function sendQuestion(
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const selectedTagContextsForMessage = normalizeTagContexts(selectedTagContexts);
+  const selectedTagContextsForMessage =
+    normalizeTagContexts(selectedTagContexts);
   let {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -7614,6 +7643,9 @@ export async function sendQuestion(
       : undefined,
     selectedTagContexts: selectedTagContextsForMessage.length
       ? selectedTagContextsForMessage
+      : undefined,
+    forcedSkillIds: opts.forcedSkillIds?.length
+      ? opts.forcedSkillIds.slice()
       : undefined,
     paperContextsExpanded: false,
     screenshotImages: screenshotImagesForMessage.length
@@ -7948,6 +7980,10 @@ export async function sendQuestion(
     const codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
+    noteExplicitCodexNativeSkillInvocations(
+      codexActivityTrace,
+      opts.forcedSkillIds,
+    );
     responseStreamCoalescer = createBlockStreamCoalescer({
       onBlock: (chunk) => {
         assistantMessage.text += chunk;

@@ -180,19 +180,35 @@ type SendFlowControllerDeps = {
   consumeWebChatForceNewChatIntent?: () => boolean;
 };
 
-function normalizeCodexNativeSkillText(
+function resolveCodexNativeSkillText(
   text: string,
   authMode?: SelectedProfile["authMode"],
-): string {
-  if (authMode !== "codex_app_server") return text;
-  const match = /^\/([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+([\s\S]*))?$/.exec(
-    text.trim(),
+): { text: string; forcedSkillId?: string } {
+  if (authMode !== "codex_app_server") return { text };
+  const trimmed = text.trim();
+  const nativeMatch = /^\$([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+([\s\S]*))?$/.exec(
+    trimmed,
   );
-  if (!match) return text;
-  const skillId = match[1];
-  if (!getAllSkills().some((skill) => skill.id === skillId)) return text;
-  const rest = (match[2] || "").trim();
-  return rest ? `$${skillId}\n\n${rest}` : `$${skillId}`;
+  if (nativeMatch) {
+    const skillId = nativeMatch[1];
+    if (!getAllSkills().some((skill) => skill.id === skillId)) {
+      return { text };
+    }
+    return { text: trimmed, forcedSkillId: skillId };
+  }
+  const slashMatch = /^\/([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+([\s\S]*))?$/.exec(
+    trimmed,
+  );
+  if (!slashMatch) return { text };
+  const skillId = slashMatch[1];
+  if (!getAllSkills().some((skill) => skill.id === skillId)) {
+    return { text };
+  }
+  const rest = (slashMatch[2] || "").trim();
+  return {
+    text: rest ? `$${skillId}\n\n${rest}` : `$${skillId}`,
+    forcedSkillId: skillId,
+  };
 }
 
 export function createSendFlowController(deps: SendFlowControllerDeps): {
@@ -216,10 +232,11 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const textContextConversationKey = deps.getConversationKey(item);
       const draftText = deps.inputBox.value.trim();
       const earlyProfile = deps.getSelectedProfile();
-      const text = normalizeCodexNativeSkillText(
+      const codexNativeSkillText = resolveCodexNativeSkillText(
         (options?.overrideText ?? draftText).trim(),
         earlyProfile?.authMode,
       );
+      const text = codexNativeSkillText.text;
       const selectedContexts = deps.getSelectedTextContextEntries(
         textContextConversationKey,
       );
@@ -587,7 +604,15 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             !(deps.hasUploadedPdfInCurrentWebChatConversation?.() ?? false))
         : false;
 
-      const forcedSkillIds = deps.consumeForcedSkillIds?.();
+      const consumedForcedSkillIds = deps.consumeForcedSkillIds?.() || [];
+      const forcedSkillIds = Array.from(
+        new Set([
+          ...consumedForcedSkillIds,
+          ...(codexNativeSkillText.forcedSkillId
+            ? [codexNativeSkillText.forcedSkillId]
+            : []),
+        ]),
+      );
       if (shouldRetainClaudeRuntime) {
         await deps.retainClaudeRuntime?.(deps.body, item);
       }
@@ -625,7 +650,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         modelAttachments: selectedFiles.length ? modelFiles : undefined,
         runtimeMode,
         pdfModePaperKeys: pdfModeKeySet.size > 0 ? pdfModeKeySet : undefined,
-        forcedSkillIds,
+        forcedSkillIds: forcedSkillIds.length ? forcedSkillIds : undefined,
         pdfUploadSystemMessages: pdfUploadSystemMessages.length
           ? pdfUploadSystemMessages
           : undefined,

@@ -130,6 +130,7 @@ describe("sendFlowController", function () {
     let lastSentImages: string[] | undefined;
     let lastSentAttachments: ChatAttachment[] | undefined;
     let lastSentModelAttachments: ChatAttachment[] | undefined;
+    let lastSentForcedSkillIds: string[] | undefined;
     let lastSentContextSource: ResolvedContextSource | null | undefined;
     let lastEditRuntimeMode = "";
     let lastEditImages: string[] | undefined;
@@ -220,6 +221,7 @@ describe("sendFlowController", function () {
         lastSentImages = opts.images;
         lastSentAttachments = opts.attachments;
         lastSentModelAttachments = opts.modelAttachments;
+        lastSentForcedSkillIds = opts.forcedSkillIds;
         lastSentCollectionContexts = opts.selectedCollectionContexts;
         lastSentTagContexts = opts.selectedTagContexts;
         lastSentContextSource = opts.contextSource;
@@ -284,6 +286,7 @@ describe("sendFlowController", function () {
         lastSentImages,
         lastSentAttachments,
         lastSentModelAttachments,
+        lastSentForcedSkillIds,
         lastSentCollectionContexts,
         lastSentTagContexts,
         lastSentContextSource,
@@ -942,10 +945,12 @@ describe("sendFlowController", function () {
 
     await controller.doSend();
 
+    const lastSend = getLastSend();
     assert.equal(
-      getLastSend().lastSentQuestion,
+      lastSend.lastSentQuestion,
       "$write-note\n\nplease draft this note",
     );
+    assert.deepEqual(lastSend.lastSentForcedSkillIds, ["write-note"]);
   });
 
   it("keeps slash skill text unchanged outside Codex app-server mode", async function () {

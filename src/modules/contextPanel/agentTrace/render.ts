@@ -2137,7 +2137,8 @@ function buildAgentTraceRequestChips(
       .filter((entry): entry is AgentTraceDetail => Boolean(entry));
     chips.push({
       iconName: "paper",
-      label: paperContexts.length === 1 ? "Paper" : `${paperContexts.length} papers`,
+      label:
+        paperContexts.length === 1 ? "Paper" : `${paperContexts.length} papers`,
       title: paperContexts.map((entry) => entry.title).join("\n"),
       details,
     });
@@ -2504,7 +2505,9 @@ function readTraceStringField(
   return null;
 }
 
-function buildFileIoTraceCodeBlock(args: Record<string, unknown>): string | undefined {
+function buildFileIoTraceCodeBlock(
+  args: Record<string, unknown>,
+): string | undefined {
   const filePath = readTraceStringField(args, [
     "filePath",
     "path",
@@ -2530,6 +2533,10 @@ function summarizeAgentTraceToolCall(
     name === "Skill" && typeof a.skill === "string" && a.skill.trim()
       ? a.skill.trim()
       : null;
+  const skillSource =
+    name === "Skill" && typeof a.source === "string" ? a.source.trim() : "";
+  const skillVerb =
+    skillSource === "codex-native-slash" ? "Invoked Skill" : "Using Skill";
   const fallbackFileIoSummary =
     name === "file_io" ? summarizeFileIOCall(args) : null;
   const text =
@@ -2538,7 +2545,7 @@ function summarizeAgentTraceToolCall(
       { label, args, request },
     ) ||
     fallbackFileIoSummary ||
-    (skillName ? `Using Skill: ${skillName}` : `Using ${label}`);
+    (skillName ? `${skillVerb}: ${skillName}` : `Using ${label}`);
 
   // Show code block for shell commands and file I/O
   let codeBlock: string | undefined;

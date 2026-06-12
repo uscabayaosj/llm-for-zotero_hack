@@ -3086,4 +3086,32 @@ describe("agentTrace render", function () {
       actionTexts.indexOf("Using Skill: write-note"),
     );
   });
+
+  it("labels explicit Codex native slash skills as invoked", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "Skill",
+          args: { skill: "evidence-based-qa", source: "codex-native-slash" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Invoked Skill: evidence-based-qa");
+    assert.notInclude(actionTexts, "Using Skill: evidence-based-qa");
+  });
 });

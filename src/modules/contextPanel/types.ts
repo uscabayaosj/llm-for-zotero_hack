@@ -67,6 +67,8 @@ export interface Message {
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  /** Skill IDs explicitly selected via slash command for this turn. */
+  forcedSkillIds?: string[];
   collectionContextsExpanded?: boolean;
   tagContextsExpanded?: boolean;
   paperContextsExpanded?: boolean;

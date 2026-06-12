@@ -6,6 +6,7 @@ import type {
 import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 import { buildAgentMemoryBlock } from "../store/conversationMemory";
 import { getAllSkills } from "../skills";
+import type { AgentSkill } from "../skills";
 import { classifyWriteNoteDestination } from "../writeNoteDestination";
 
 import { resolveProviderCapabilities } from "../../providers";
@@ -268,18 +269,46 @@ function collectToolGuidanceInstructions(
   ];
 }
 
+function formatSkillGuidanceBlock(
+  skill: AgentSkill,
+  activationSource: string,
+): string {
+  const lines = [
+    `### Skill: ${skill.id}`,
+    `Description: ${skill.description || "No description provided."}`,
+    `Activation: ${activationSource}`,
+    "Instructions:",
+    skill.instruction.trim(),
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
 function collectSkillGuidanceInstructions(
+  request: AgentRuntimeRequest,
   matchedSkillIds: ReadonlyArray<string>,
 ): string[] {
-  const instructions = new Set<string>();
+  const blocks: string[] = [];
   const activeSkillIds = new Set(matchedSkillIds);
+  const forcedSkillIds = new Set(request.forcedSkillIds || []);
   for (const skill of getAllSkills()) {
     if (!activeSkillIds.has(skill.id)) continue;
     const instruction = skill.instruction.trim();
-    if (instruction) instructions.add(instruction);
+    if (!instruction) continue;
+    blocks.push(
+      formatSkillGuidanceBlock(
+        skill,
+        forcedSkillIds.has(skill.id)
+          ? "explicit slash selection"
+          : "automatic match",
+      ),
+    );
   }
-  if (!instructions.size) return [];
-  return ["Skill guidance loaded for this turn:", ...instructions];
+  if (!blocks.length) return [];
+  return [
+    "Active skills for this turn:",
+    "Treat each skill below as a separate workflow module. If multiple skills are active, first decide which part of the user's request each skill covers. Prefer explicitly selected slash skills when they are relevant. If skill instructions conflict, follow the user's explicit request and the available tool/safety constraints.",
+    ...blocks,
+  ];
 }
 
 function buildTurnGuidanceBlock(instructions: string[]): string {
@@ -407,7 +436,7 @@ export async function buildAgentInitialMessages(
     autoReadInstruction,
     ...workflowParityInstructions,
     ...collectToolGuidanceInstructions(request, tools),
-    ...collectSkillGuidanceInstructions(matchedSkillIds),
+    ...collectSkillGuidanceInstructions(request, matchedSkillIds),
   ]);
   const coverageBlock = buildAgentCoverageContextBlock({
     conversationKey: request.conversationKey,

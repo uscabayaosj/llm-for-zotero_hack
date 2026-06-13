@@ -58,6 +58,13 @@ type ActionProfile = {
   authMode?: ModelProviderAuthMode;
   providerProtocol?: ProviderProtocol;
 };
+type ActionMenuTrigger = "/" | "$";
+type ActiveActionToken = {
+  query: string;
+  slashStart: number;
+  caretEnd: number;
+  trigger: ActionMenuTrigger;
+};
 
 type ActionCommandControllerDeps = {
   body: Element;
@@ -70,11 +77,7 @@ type ActionCommandControllerDeps = {
   actionHitlPanel: HTMLDivElement | null;
   chatBox: HTMLDivElement | null;
   getItem: () => Zotero.Item | null;
-  getActiveActionToken: () => {
-    query: string;
-    slashStart: number;
-    caretEnd: number;
-  } | null;
+  getActiveActionToken: () => ActiveActionToken | null;
   persistDraftInputForCurrentConversation: () => void;
   shouldRenderDynamicSlashMenu: () => boolean;
   shouldRenderSkillSlashMenu: () => boolean;
@@ -119,7 +122,10 @@ export function createActionCommandController(
   closeActionPicker: () => void;
   moveActionPickerSelection: (delta: number) => void;
   selectActiveActionPickerItem: () => Promise<void>;
-  renderDynamicSlashMenuSections: (query?: string) => void;
+  renderDynamicSlashMenuSections: (
+    query?: string,
+    trigger?: ActionMenuTrigger,
+  ) => void;
   scheduleActionPickerTrigger: () => void;
   closeSlashMenu: () => void;
   openSlashMenuWithSelection: () => void;
@@ -183,6 +189,15 @@ export function createActionCommandController(
       .forEach((element: Element) => element.remove());
   };
 
+  const setBaseSlashItemsVisible = (visible: boolean): void => {
+    if (!slashMenu) return;
+    Array.from(slashMenu.querySelectorAll("[data-slash-base-item]")).forEach(
+      (element) => {
+        (element as HTMLElement).style.display = visible ? "" : "none";
+      },
+    );
+  };
+
   const getVisibleSlashItems = (): HTMLButtonElement[] => {
     if (!slashMenu) return [];
     const win = body.ownerDocument?.defaultView;
@@ -234,6 +249,7 @@ export function createActionCommandController(
   const closeSlashMenu = () => {
     slashMenuActiveIndex = -1;
     clearAgentSlashItems();
+    setBaseSlashItemsVisible(true);
     if (slashMenu) {
       Array.from(slashMenu.querySelectorAll(".llm-action-picker-item")).forEach(
         (el) => (el as HTMLButtonElement).removeAttribute("aria-selected"),
@@ -323,7 +339,21 @@ export function createActionCommandController(
     renderActionPicker();
   };
 
-  const renderDynamicSlashMenuSections = (query = "") => {
+  const renderDynamicSlashMenuSections = (
+    query = "",
+    trigger: ActionMenuTrigger = "/",
+  ) => {
+    if (trigger === "$") {
+      clearAgentSlashItems();
+      setBaseSlashItemsVisible(false);
+      if (deps.shouldRenderSkillSlashMenu()) {
+        renderSkillsInSlashMenu(query);
+      } else {
+        clearSkillSlashItems();
+      }
+      return;
+    }
+    setBaseSlashItemsVisible(true);
     if (!deps.shouldRenderDynamicSlashMenu()) {
       clearAgentSlashItems();
       clearSkillSlashItems();
@@ -357,7 +387,14 @@ export function createActionCommandController(
       closeSlashMenu();
       return;
     }
-    renderDynamicSlashMenuSections(token.query.toLowerCase().trim());
+    if (token.trigger === "$" && !deps.shouldRenderSkillSlashMenu()) {
+      closeSlashMenu();
+      return;
+    }
+    renderDynamicSlashMenuSections(
+      token.query.toLowerCase().trim(),
+      token.trigger,
+    );
     if (!isFloatingMenuOpen(slashMenu)) {
       deps.closeRetryModelMenu();
       deps.closeModelMenu();
@@ -875,29 +912,17 @@ export function createActionCommandController(
     inputBox.dispatchEvent(new EventCtor("input", { bubbles: true }));
   };
 
-  const insertCodexNativeSkillMention = (skill: AgentSkill): void => {
-    clearForcedSkill();
-    clearCommandChip();
-    const existing = inputBox.value.trim();
-    inputBox.value = existing
-      ? `$${skill.id}\n\n${existing}`
-      : `$${skill.id}\n\n`;
-    inputBox.focus({ preventScroll: true });
-    const pos = inputBox.value.length;
-    inputBox.setSelectionRange(pos, pos);
-    deps.persistDraftInputForCurrentConversation();
-    dispatchComposerInput();
-  };
-
   const handleSkillSelection = (skill: AgentSkill): void => {
-    if (deps.getSelectedProfile()?.authMode === "codex_app_server") {
-      insertCodexNativeSkillMention(skill);
-      return;
-    }
     clearForcedSkill();
     clearCommandChip();
     forcedSkillId = skill.id;
-    if (deps.getCurrentRuntimeMode() !== "agent" && getAgentModeEnabled()) {
+    const isCodexAppServerSkill =
+      deps.getSelectedProfile()?.authMode === "codex_app_server";
+    if (
+      !isCodexAppServerSkill &&
+      deps.getCurrentRuntimeMode() !== "agent" &&
+      getAgentModeEnabled()
+    ) {
       deps.setCurrentRuntimeMode("agent");
     }
     const row = body.querySelector("#llm-command-row");
@@ -911,7 +936,6 @@ export function createActionCommandController(
       inputBox.dataset.originalPlaceholder = inputBox.placeholder;
     }
     inputBox.placeholder = "";
-    inputBox.value = "";
     inputBox.focus({ preventScroll: true });
     dispatchComposerInput();
   };

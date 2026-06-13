@@ -274,6 +274,7 @@ import {
   ZOTERO_NOTE_CONTENT_TYPE,
   normalizePaperSearchText,
   parsePaperSearchSlashToken,
+  parseSkillSearchDollarToken,
   parseAtSearchToken,
   type PaperBrowseCollectionCandidate,
   type PaperSearchAttachmentCandidate,
@@ -489,6 +490,11 @@ import {
 } from "../../codexAppServer/portal";
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
 import { validateConversationScope } from "../../shared/conversationRegistry";
+
+type ActionMenuTrigger = "/" | "$";
+type ActiveActionToken = PaperSearchSlashToken & {
+  trigger: ActionMenuTrigger;
+};
 
 setQueuedFollowUpBodySyncCallback((body) => {
   try {
@@ -5502,12 +5508,21 @@ export function setupHandlers(
     addZoteroItemsAsPaperContext,
   } = paperPickerController;
   closePaperPicker = closePaperPickerFromController;
-  const getActiveActionToken = (): PaperSearchSlashToken | null => {
+  const getActiveActionToken = (): ActiveActionToken | null => {
     const caretEnd =
       typeof inputBox.selectionStart === "number"
         ? inputBox.selectionStart
         : inputBox.value.length;
-    return parsePaperSearchSlashToken(inputBox.value, caretEnd);
+    const slashToken = parsePaperSearchSlashToken(inputBox.value, caretEnd);
+    const dollarToken = parseSkillSearchDollarToken(inputBox.value, caretEnd);
+    if (slashToken && dollarToken) {
+      return slashToken.slashStart > dollarToken.slashStart
+        ? { ...slashToken, trigger: "/" }
+        : { ...dollarToken, trigger: "$" };
+    }
+    if (dollarToken) return { ...dollarToken, trigger: "$" };
+    if (slashToken) return { ...slashToken, trigger: "/" };
+    return null;
   };
   let doSend: (options?: {
     overrideText?: string;
@@ -5706,6 +5721,10 @@ export function setupHandlers(
       scheduleActionPickerTrigger();
     });
   }
+
+  const resetComposerInputHeight = (): void => {
+    inputBox.style.height = "";
+  };
 
   let queuedFollowUpDrainTimer: number | null = null;
 
@@ -5927,6 +5946,7 @@ export function setupHandlers(
         }
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
+    onComposerDraftCleared: resetComposerInputHeight,
     consumeForcedSkillIds,
   });
   doSend = sendFlowController.doSend;

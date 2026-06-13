@@ -122,7 +122,9 @@ describe("sendFlowController", function () {
     let retainTextCalled = 0;
     let persistDraftInputCalls = 0;
     let setActiveEditSessionCalls = 0;
+    let composerDraftClearedCalls = 0;
     let lastSentQuestion = "";
+    let lastSentDisplayQuestion: string | undefined;
     let lastRuntimeMode = "";
     let lastSentAuthMode = "";
     let lastSentProviderProtocol = "";
@@ -133,6 +135,7 @@ describe("sendFlowController", function () {
     let lastSentForcedSkillIds: string[] | undefined;
     let lastSentContextSource: ResolvedContextSource | null | undefined;
     let lastEditRuntimeMode = "";
+    let lastEditDisplayQuestion = "";
     let lastEditImages: string[] | undefined;
     let lastEditAttachments: ChatAttachment[] | undefined;
     let lastEditModelAttachments: ChatAttachment[] | undefined;
@@ -202,6 +205,7 @@ describe("sendFlowController", function () {
       editLatestUserMessageAndRetry: async (opts: any) => {
         editCalled += 1;
         lastEditRuntimeMode = opts.targetRuntimeMode || "";
+        lastEditDisplayQuestion = opts.displayQuestion || "";
         lastEditImages = opts.screenshotImages;
         lastEditAttachments = opts.attachments;
         lastEditModelAttachments = opts.modelAttachments;
@@ -214,6 +218,7 @@ describe("sendFlowController", function () {
       sendQuestion: async (opts: any) => {
         sendCalled += 1;
         lastSentQuestion = opts.question;
+        lastSentDisplayQuestion = opts.displayQuestion;
         lastRuntimeMode = opts.runtimeMode || "";
         lastSentAuthMode = opts.authMode || "";
         lastSentProviderProtocol = opts.providerProtocol || "";
@@ -258,6 +263,9 @@ describe("sendFlowController", function () {
         statuses.push({ message, level });
       },
       editStaleStatusText: "stale",
+      onComposerDraftCleared: () => {
+        composerDraftClearedCalls += 1;
+      },
       ...overrides,
     };
 
@@ -275,10 +283,12 @@ describe("sendFlowController", function () {
         retainTextCalled,
         persistDraftInputCalls,
         setActiveEditSessionCalls,
+        composerDraftClearedCalls,
       }),
       getDraftValue: () => draftValue,
       getLastSend: () => ({
         lastSentQuestion,
+        lastSentDisplayQuestion,
         lastRuntimeMode,
         lastSentAuthMode,
         lastSentProviderProtocol,
@@ -292,6 +302,7 @@ describe("sendFlowController", function () {
         lastSentContextSource,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
+      getLastEditDisplayQuestion: () => lastEditDisplayQuestion,
       getLastEditImages: () => lastEditImages,
       getLastEditAttachments: () => lastEditAttachments,
       getLastEditModelAttachments: () => lastEditModelAttachments,
@@ -317,6 +328,14 @@ describe("sendFlowController", function () {
     assert.equal(counts.retainPaperStateCalled, 1);
     assert.equal(counts.retainFileCalled, 1);
     assert.equal(counts.retainTextCalled, 1);
+  });
+
+  it("resets the composer draft height after a normal send clears the input", async function () {
+    const { controller, getCounts } = createBaseDeps();
+
+    await controller.doSend();
+
+    assert.equal(getCounts().composerDraftClearedCalls, 1);
   });
 
   it("awaits the resolved context source before selecting paper contexts", async function () {
@@ -444,6 +463,7 @@ describe("sendFlowController", function () {
     assert.equal(getLastSend().lastSentQuestion, "queued follow-up");
     assert.equal(inputBox.value, "draft typed while waiting");
     assert.equal(getCounts().persistDraftInputCalls, 0);
+    assert.equal(getCounts().composerDraftClearedCalls, 0);
   });
 
   it("uses retain-pinned callbacks for edit-latest flow", async function () {
@@ -475,6 +495,27 @@ describe("sendFlowController", function () {
     assert.equal(counts.retainTextCalled, 1);
     assert.isAtLeast(counts.setActiveEditSessionCalls, 1);
     assert.equal(getLastEditRuntimeMode(), "chat");
+  });
+
+  it("resets the composer draft height after an edit retry clears the input", async function () {
+    const { controller, getCounts } = createBaseDeps({
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().composerDraftClearedCalls, 1);
   });
 
   it("passes the current runtime mode into latest-turn edit retries", async function () {
@@ -743,6 +784,7 @@ describe("sendFlowController", function () {
 
     assert.equal(getCounts().sendCalled, 0);
     assert.equal(getCounts().editCalled, 0);
+    assert.equal(getCounts().composerDraftClearedCalls, 0);
     assert.equal(inputBox.value, "ask question");
     assert.deepEqual(getLastStatus(), {
       message: FULL_PDF_UNSUPPORTED_MESSAGE,
@@ -919,6 +961,42 @@ describe("sendFlowController", function () {
     assert.equal(lastSend.lastSentModelProviderLabel, "Codex");
   });
 
+  it("translates chip-selected Codex app-server skills only in the submitted question", async function () {
+    setUserSkills([makeTestSkill("write-note")]);
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      consumeForcedSkillIds: () => ["write-note"],
+      isAgentMode: () => true,
+      isCodexConversationSystem: () => true,
+      getSelectedProfile: () => ({
+        entryId: "codex_app_server::gpt-5.4",
+        model: "gpt-5.4",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "please draft this note";
+
+    await controller.doSend();
+
+    const lastSend = getLastSend();
+    assert.equal(
+      lastSend.lastSentQuestion,
+      "$write-note\n\nplease draft this note",
+    );
+    assert.equal(lastSend.lastSentDisplayQuestion, "please draft this note");
+    assert.deepEqual(lastSend.lastSentForcedSkillIds, ["write-note"]);
+  });
+
   it("converts slash skill sends to native $skill mentions for Codex app-server", async function () {
     setUserSkills([makeTestSkill("write-note")]);
     const { controller, inputBox, getLastSend } = createBaseDeps({
@@ -942,6 +1020,40 @@ describe("sendFlowController", function () {
       buildModelPromptWithFileContext: (question: string) => question,
     });
     inputBox.value = "/write-note please draft this note";
+
+    await controller.doSend();
+
+    const lastSend = getLastSend();
+    assert.equal(
+      lastSend.lastSentQuestion,
+      "$write-note\n\nplease draft this note",
+    );
+    assert.deepEqual(lastSend.lastSentForcedSkillIds, ["write-note"]);
+  });
+
+  it("keeps raw native $skill sends from being double-prefixed", async function () {
+    setUserSkills([makeTestSkill("write-note")]);
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      isAgentMode: () => true,
+      isCodexConversationSystem: () => true,
+      getSelectedProfile: () => ({
+        entryId: "codex_app_server::gpt-5.4",
+        model: "gpt-5.4",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "$write-note\n\nplease draft this note";
 
     await controller.doSend();
 

@@ -168,6 +168,7 @@ type SendFlowControllerDeps = {
   autoUnlockGlobalChat: () => void;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   editStaleStatusText: string;
+  onComposerDraftCleared?: () => void;
   /** Consume forced skill IDs from slash menu selection. Returns the IDs and clears state. */
   consumeForcedSkillIds?: () => string[] | undefined;
   // [webchat]
@@ -209,6 +210,20 @@ function resolveCodexNativeSkillText(
     text: rest ? `$${skillId}\n\n${rest}` : `$${skillId}`,
     forcedSkillId: skillId,
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function prependCodexNativeSkillMention(
+  question: string,
+  skillId: string,
+): string {
+  const trimmedQuestion = question.trim();
+  const nativeSkillPrefix = new RegExp(`^\\$${escapeRegExp(skillId)}(?:\\s|$)`);
+  if (nativeSkillPrefix.test(trimmedQuestion)) return question;
+  return trimmedQuestion ? `$${skillId}\n\n${question}` : `$${skillId}`;
 }
 
 export function createSendFlowController(deps: SendFlowControllerDeps): {
@@ -554,6 +569,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
 
         if (!options?.preserveInputDraft) {
           deps.inputBox.value = "";
+          deps.onComposerDraftCleared?.();
           deps.persistDraftInput();
         }
         deps.retainPinnedImageState(item.id);
@@ -579,6 +595,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
 
       if (!options?.preserveInputDraft) {
         deps.inputBox.value = "";
+        deps.onComposerDraftCleared?.();
         deps.persistDraftInput();
       }
       deps.retainPinnedImageState(item.id);
@@ -613,6 +630,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             : []),
         ]),
       );
+      const questionForSend =
+        selectedProfile?.authMode === "codex_app_server" && forcedSkillIds[0]
+          ? prependCodexNativeSkillMention(composedQuestion, forcedSkillIds[0])
+          : composedQuestion;
       if (shouldRetainClaudeRuntime) {
         await deps.retainClaudeRuntime?.(deps.body, item);
       }
@@ -620,7 +641,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         body: deps.body,
         item,
         contextSource,
-        question: composedQuestion,
+        question: questionForSend,
         images,
         model: selectedProfile?.model,
         apiBase: selectedProfile?.apiBase,

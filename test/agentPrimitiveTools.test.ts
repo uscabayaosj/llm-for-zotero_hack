@@ -9,6 +9,7 @@ import { createQueryLibraryTool } from "../src/agent/tools/read/queryLibrary";
 import { createReadLibraryTool } from "../src/agent/tools/read/readLibrary";
 import { createReadPaperTool } from "../src/agent/tools/read/readPaper";
 import { createSearchPaperTool } from "../src/agent/tools/read/searchPaper";
+import { getPagedOperationId } from "../src/agent/actions/pagedWorkflow";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
 import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
@@ -595,10 +596,7 @@ describe("primitive agent tools", function () {
     assert.include(systemText, "library_read");
     assert.include(systemText, "paper_read");
     assert.include(systemText, "library_update");
-    assert.include(
-      systemText,
-      "use workflow:'answer' and answer in chat",
-    );
+    assert.include(systemText, "use workflow:'answer' and answer in chat");
     assert.notInclude(systemText, "web_search");
     assert.notInclude(systemText, "search_literature_online");
     assert.notInclude(systemText, "query_library");
@@ -1252,7 +1250,7 @@ describe("primitive agent tools", function () {
       const commandWrite = tool.validate({ command: "python3 analyze.py" });
       assert.isTrue(commandWrite.ok);
       if (!commandWrite.ok) return;
-      assert.isTrue(
+      assert.isFalse(
         await tool.shouldRequireConfirmation?.(commandWrite.value, context),
       );
 
@@ -1311,7 +1309,9 @@ describe("primitive agent tools", function () {
         conversationKey: 43_003,
       },
     };
-    const command = commandTool.validate({ command: "python3 analyze.py" });
+    const command = commandTool.validate({
+      command: 'printf "Content" > /tmp/from-command-context.md',
+    });
     const fileForCommandContext = fileTool.validate({
       action: "write",
       filePath: "/tmp/from-command-context.md",
@@ -1348,7 +1348,7 @@ describe("primitive agent tools", function () {
         content: "Content",
       });
       const commandForFileContext = commandTool.validate({
-        command: "python3 analyze.py",
+        command: 'printf "Content" >> /tmp/new-command-output.md',
       });
       assert.isTrue(file.ok);
       assert.isTrue(commandForFileContext.ok);
@@ -1798,6 +1798,54 @@ env.log('updated');
     assert.sameMembers(Array.from(fakeItem.tags), ["existing", "new-tag"]);
     assert.sameMembers(Array.from(fakeItem.collections), [5, 9]);
     assert.exists(peekUndoEntry(baseContext.request.conversationKey));
+  });
+
+  it("apply_tags paged actions render through the shared review-card layout", function () {
+    const tool = createApplyTagsTool({
+      getPaperTargetsByItemIds: () => [
+        {
+          itemId: 101,
+          itemType: "journalArticle",
+          title: "Auto Tag Paper",
+          firstCreator: "Example",
+          year: "2026",
+          tags: [],
+          collectionIds: [],
+          attachments: [],
+        },
+      ],
+      getItem: () => createFakeZoteroItem() as never,
+      getEditableArticleMetadata: () =>
+        makeMetadataSnapshot(101, "Auto Tag Paper"),
+    } as never);
+
+    const validated = tool.validate({
+      action: "add",
+      id: getPagedOperationId(
+        "auto_tag",
+        { pageIndex: 1, totalPages: 2 },
+        { pageSize: 20, tagsPerPaper: 5 },
+      ),
+      assignments: [{ itemId: 101, tags: ["memory", "navigation"] }],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const pending = tool.createPendingAction?.(validated.value, baseContext);
+    assert.equal(pending?.mode, "review");
+    assert.equal(pending?.defaultActionId, "next");
+    assert.sameMembers(
+      pending?.fields
+        .filter((field) => field.type === "select")
+        .map((field) => field.id) || [],
+      ["tagsPerPaper", "pageSize"],
+    );
+    assert.includeMembers(pending?.actions?.map((action) => action.id) || [], [
+      "confirm",
+      "refresh",
+      "cancel",
+      "next",
+    ]);
   });
 
   it("undo_last_action reverts a zotero_script snapshot", async function () {

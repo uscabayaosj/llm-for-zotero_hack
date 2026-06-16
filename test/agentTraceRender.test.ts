@@ -2274,6 +2274,169 @@ describe("agentTrace render", function () {
     );
   });
 
+  it("renders paged review controls with refresh in the card header and navigation split across the footer", function () {
+    const action: AgentPendingAction = {
+      toolName: "move_to_collection",
+      mode: "review",
+      title: "Page 2 of 5: Add to collection",
+      description: "Select the destination collection for each paper.",
+      actions: [
+        { id: "previous", label: "Previous page", style: "secondary" },
+        { id: "confirm", label: "Confirm", style: "primary" },
+        { id: "refresh", label: "Refresh", style: "secondary" },
+        { id: "cancel", label: "Cancel", style: "secondary" },
+        { id: "next", label: "Next page", style: "secondary" },
+      ],
+      defaultActionId: "next",
+      cancelActionId: "cancel",
+      fields: [
+        {
+          type: "select",
+          id: "tagsPerPaper",
+          label: "Tags per paper",
+          value: "5",
+          options: [
+            { id: "1", label: "1" },
+            { id: "2", label: "2" },
+            { id: "3", label: "3" },
+            { id: "4", label: "4" },
+            { id: "5", label: "5" },
+            { id: "6", label: "6" },
+          ],
+        },
+        {
+          type: "select",
+          id: "pageSize",
+          label: "Items on this page",
+          value: "20",
+          options: [
+            { id: "10", label: "10" },
+            { id: "20", label: "20" },
+            { id: "50", label: "50" },
+            { id: "100", label: "100" },
+          ],
+        },
+      ],
+    };
+
+    const card = renderPendingActionCard(fakeDocument, {
+      requestId: "paged-review",
+      action,
+    }) as unknown as FakeElement;
+
+    assert.exists(card.findByClass("llm-agent-hitl-refresh-btn"));
+    assert.isNull(card.findByClass("llm-agent-hitl-action-choices"));
+    assert.equal(
+      card.findByClass("llm-agent-hitl-header")?.textContent,
+      "Action required",
+    );
+    const topControls = card.findByClass("llm-agent-hitl-paged-top-controls");
+    assert.equal(
+      (
+        topControls
+          ?.findByClass("llm-agent-hitl-paged-top-field")
+          ?.findAllByTag("select")[0] as
+          | (FakeElement & { value?: string })
+          | undefined
+      )?.value,
+      "5",
+    );
+    assert.equal(
+      topControls
+        ?.findByClass("llm-agent-hitl-paged-top-field")
+        ?.findAllByTag("label")[0]?.textContent,
+      "of tags per paper",
+    );
+
+    const footer = card.findByClass("llm-agent-hitl-paged-actions");
+    const left = footer?.findByClass("llm-agent-hitl-paged-actions-left");
+    const center = footer?.findByClass("llm-agent-hitl-paged-actions-center");
+    const right = footer?.findByClass("llm-agent-hitl-paged-actions-right");
+
+    assert.exists(footer);
+    assert.equal(left?.findAllByTag("button")[0]?.textContent, "Previous page");
+    assert.equal(right?.findAllByTag("button")[0]?.textContent, "Next page");
+    assert.equal(
+      center?.findByClass("llm-agent-hitl-page-indicator")?.textContent,
+      "Page 2 of 5",
+    );
+    assert.equal(
+      center
+        ?.findByClass("llm-agent-hitl-paged-footer-field")
+        ?.findAllByTag("label")[0]?.textContent,
+      "items on this page",
+    );
+    assert.equal(
+      center
+        ?.findByClass("llm-agent-hitl-paged-footer-field")
+        ?.findAllByTag("label")[0]?.title,
+      "Items on this page",
+    );
+    assert.equal(
+      center
+        ?.findByClass("llm-agent-hitl-paged-footer-field")
+        ?.findAllByTag("select")[0]
+        ?.findAllByTag("option")[1]?.textContent,
+      "20",
+    );
+  });
+
+  it("wraps pending review actions in a single filled shell", function () {
+    const action: AgentPendingAction = {
+      toolName: "move_to_collection",
+      mode: "review",
+      title: "Page 1 of 5: Add to collection",
+      description: "Select the destination collection for each paper.",
+      actions: [
+        { id: "confirm", label: "Confirm", style: "primary" },
+        { id: "cancel", label: "Cancel", style: "secondary" },
+        { id: "next", label: "Next page", style: "secondary" },
+      ],
+      defaultActionId: "next",
+      cancelActionId: "cancel",
+      fields: [
+        {
+          type: "select",
+          id: "pageSize",
+          label: "Items on this page",
+          value: "20",
+          options: [{ id: "20", label: "20" }],
+        },
+      ],
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "confirmation_required",
+        payload: {
+          type: "confirmation_required",
+          requestId: "pending-review",
+          action,
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+      },
+      events,
+    }) as unknown as FakeElement;
+    const shell = trace.findByClass("llm-agent-pending-action-shell");
+
+    assert.isTrue(
+      trace.classList.contains("llm-agent-activity-with-pending-action"),
+    );
+    assert.exists(shell);
+    assert.exists(shell?.findByClass("llm-agent-hitl-card"));
+  });
+
   it("removes repetitive filler chatter between tool steps", function () {
     const events: AgentRunEventRecord[] = [
       {

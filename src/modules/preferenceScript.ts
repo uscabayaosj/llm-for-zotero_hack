@@ -2111,9 +2111,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     }
     const standaloneWin = addon?.data?.standaloneWindow as Window | undefined;
     if (standaloneWin && standaloneWin.document) {
-      standaloneWin.document.querySelectorAll("#llm-main").forEach((n: Element) =>
-        push(n as HTMLElement),
-      );
+      standaloneWin.document
+        .querySelectorAll("#llm-main")
+        .forEach((n: Element) => push(n as HTMLElement));
       push(
         standaloneWin.document.getElementById(
           "llmforzotero-standalone-chat-root",
@@ -2466,8 +2466,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       setNativeZoteroMcpToolsEnabled(codexAppServerMcpEnableInput.checked);
       renderCodexMcpStatus(
         codexAppServerMcpEnableInput.checked
-          ? t("Zotero MCP tools enabled for native Codex and Claude Code turns.")
-          : t("Zotero MCP tools disabled for native Codex and Claude Code turns."),
+          ? t(
+              "Zotero MCP tools enabled for native Codex and Claude Code turns.",
+            )
+          : t(
+              "Zotero MCP tools disabled for native Codex and Claude Code turns.",
+            ),
       );
     });
   }

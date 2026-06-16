@@ -3873,6 +3873,22 @@
   gap: 10px;
 }
 
+.llm-agent-pending-action-shell {
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 16px;
+  background: var(--material-background);
+}
+
+.llm-agent-pending-action-shell > .llm-agent-hitl-card {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .llm-agent-reasoning {
   --llm-thinking-rail: color-mix(
     in srgb,
@@ -4394,6 +4410,26 @@ label.llm-search-results-item:hover {
   flex-direction: column;
   gap: 8px;
   margin-top: 2px;
+  position: relative;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--stroke-secondary);
+  background: var(--material-background);
+  color: var(--fill-primary);
+}
+
+.llm-agent-hitl-card[data-paged-review="true"] {
+  container-type: inline-size;
+}
+
+.llm-agent-hitl-card-transition {
+  min-height: 132px;
+  justify-content: center;
+}
+
+.llm-agent-hitl-transition-typing {
+  margin-top: 4px;
+  justify-content: flex-start;
 }
 
 .llm-agent-hitl-header {
@@ -4402,6 +4438,12 @@ label.llm-search-results-item:hover {
   letter-spacing: var(--llm-action-label-letter-spacing);
   text-transform: uppercase;
   color: var(--fill-tertiary);
+}
+
+.llm-agent-hitl-card[data-paged-review="true"] .llm-agent-hitl-header,
+.llm-agent-hitl-card[data-paged-review="true"] .llm-agent-hitl-title,
+.llm-agent-hitl-card[data-paged-review="true"] .llm-agent-hitl-description {
+  padding-right: 38px;
 }
 
 .llm-agent-hitl-title {
@@ -4445,6 +4487,103 @@ label.llm-search-results-item:hover {
 
 .llm-agent-hitl-page-input:disabled {
   opacity: 0.7;
+}
+
+.llm-agent-hitl-paged-top-controls:empty {
+  display: none;
+}
+
+.llm-agent-hitl-paged-top-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  min-height: 0;
+}
+
+.llm-agent-hitl-paged-top-field,
+.llm-agent-hitl-paged-footer-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+}
+
+.llm-agent-hitl-paged-top-field .llm-agent-hitl-label,
+.llm-agent-hitl-paged-footer-field .llm-agent-hitl-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--llm-fs-10);
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.llm-agent-hitl-paged-top-field .llm-agent-hitl-page-input,
+.llm-agent-hitl-paged-footer-field .llm-agent-hitl-page-input {
+  appearance: none;
+  -moz-appearance: none;
+  flex: 0 0 50px;
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--fill-quaternary);
+  text-align: center;
+  text-align-last: center;
+}
+
+.llm-agent-hitl-refresh-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 999px;
+  background: var(--fill-quaternary);
+  color: var(--fill-secondary);
+  cursor: pointer;
+}
+
+.llm-agent-hitl-refresh-btn::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  mask-image: url("icons/action-retry.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-retry.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.llm-agent-hitl-refresh-btn:hover:not(:disabled),
+.llm-agent-hitl-refresh-btn:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.llm-agent-hitl-refresh-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+  outline-offset: 2px;
+}
+
+.llm-agent-hitl-refresh-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .llm-agent-hitl-input {
@@ -4992,6 +5131,106 @@ label.llm-search-results-item:hover {
   gap: 6px;
 }
 
+.llm-agent-hitl-paged-actions {
+  display: grid;
+  grid-template-areas:
+    "confirm page cancel"
+    "left items right";
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 10px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.llm-agent-hitl-paged-actions-slot {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.llm-agent-hitl-paged-actions .llm-agent-hitl-btn {
+  position: static;
+  flex: 0 0 auto;
+}
+
+.llm-agent-hitl-paged-actions-left {
+  grid-area: left;
+  justify-content: flex-start;
+}
+
+.llm-agent-hitl-paged-actions-center {
+  display: contents;
+}
+
+.llm-agent-hitl-paged-actions-right {
+  grid-area: right;
+  justify-content: flex-end;
+}
+
+.llm-agent-hitl-paged-confirm-btn {
+  grid-area: confirm;
+  justify-self: end;
+}
+
+.llm-agent-hitl-paged-cancel-btn {
+  grid-area: cancel;
+  justify-self: start;
+}
+
+.llm-agent-hitl-page-indicator {
+  grid-area: page;
+  flex: 0 0 auto;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.llm-agent-hitl-paged-footer-controls {
+  grid-area: items;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@container (min-width: 640px) {
+  .llm-agent-hitl-paged-actions {
+    grid-template-areas: "left center right";
+    grid-template-columns: minmax(96px, 1fr) minmax(0, auto) minmax(96px, 1fr);
+    gap: 12px;
+  }
+
+  .llm-agent-hitl-paged-actions-center {
+    grid-area: center;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-self: center;
+    max-width: 100%;
+  }
+}
+
+@container (max-width: 420px) {
+  .llm-agent-hitl-paged-actions {
+    column-gap: 6px;
+  }
+
+  .llm-agent-hitl-paged-footer-field .llm-agent-hitl-label {
+    display: none;
+  }
+
+  .llm-agent-hitl-paged-actions .llm-agent-hitl-btn {
+    padding-inline: 8px;
+  }
+}
+
 .llm-agent-hitl-btn {
   min-height: 28px;
   padding: 0 10px;
@@ -5000,6 +5239,10 @@ label.llm-search-results-item:hover {
   border: 1px solid var(--color-accent);
   background: var(--color-accent);
   color: #fff;
+}
+
+.llm-agent-hitl-paged-nav-btn {
+  white-space: nowrap;
 }
 
 .llm-agent-hitl-btn-alt {
@@ -8021,6 +8264,23 @@ label.llm-search-results-item:hover {
      squeezed by sibling flex pressure). Leave it at natural size and let
      the messages container scroll. */
   flex: 0 0 auto;
+}
+
+.llm-action-inline-card-review,
+.llm-action-inline-card-status {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 16px;
+  background: var(--material-background);
+}
+
+.llm-action-inline-card-review > .llm-agent-hitl-card,
+.llm-action-inline-card-status > .llm-agent-hitl-card {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* ── Action progress indicator (in-thread "working" card) ─────────────── */

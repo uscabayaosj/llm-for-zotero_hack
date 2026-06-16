@@ -1245,13 +1245,8 @@ export function buildAssistantResponseActionTarget(params: {
   conversationKey: number;
   selectedText?: string;
 }): ResponseActionTarget | null {
-  const {
-    item,
-    message,
-    pairedUserMessage,
-    conversationKey,
-    selectedText,
-  } = params;
+  const { item, message, pairedUserMessage, conversationKey, selectedText } =
+    params;
   const menuContent = resolveAssistantResponseMenuContent(
     message,
     selectedText || "",
@@ -1283,9 +1278,7 @@ function buildAssistantResponseDeleteTarget(params: {
   contentTarget: ResponseActionTarget | null;
 }): ResponseActionTarget | null {
   const pairedUser =
-    params.pairedUserMessage?.role === "user"
-      ? params.pairedUserMessage
-      : null;
+    params.pairedUserMessage?.role === "user" ? params.pairedUserMessage : null;
   if (!pairedUser) return null;
   return (
     params.contentTarget || {
@@ -2674,7 +2667,7 @@ function showNativeMcpActionCard(
     }
     ui.chatBox.querySelector(".llm-action-inline-card")?.remove();
     const wrapper = ownerDoc.createElement("div");
-    wrapper.className = "llm-action-inline-card";
+    wrapper.className = "llm-action-inline-card llm-action-inline-card-review";
     wrapper.dataset.requestId = requestId;
     wrapper.appendChild(
       renderPendingActionCard(ownerDoc, { requestId, action }),

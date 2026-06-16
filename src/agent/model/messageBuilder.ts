@@ -402,6 +402,28 @@ function buildWriteNoteFileInstruction(
   return "";
 }
 
+function buildForcedSkillWholeLibraryInstruction(
+  request: AgentRuntimeRequest,
+): string {
+  if (!request.forcedSkillIds?.length) return "";
+  if (request.conversationKind === "paper") return "";
+  const hasExplicitContext = Boolean(
+    request.selectedPaperContexts?.length ||
+    request.fullTextPaperContexts?.length ||
+    request.pinnedPaperContexts?.length ||
+    request.selectedCollectionContexts?.length ||
+    request.selectedTagContexts?.length ||
+    request.selectedTextSources?.length ||
+    request.attachments?.length ||
+    request.screenshots?.length,
+  );
+  if (hasExplicitContext) return "";
+  return (
+    "TURN RULE: The user explicitly selected a skill in library chat without selecting a narrower context. " +
+    "Treat the intended context as the whole Zotero library, and use library-scoped tools or searches accordingly."
+  );
+}
+
 function buildRuntimePlatformSection(): string {
   return buildRuntimePlatformGuidanceText();
 }
@@ -431,6 +453,7 @@ export async function buildAgentInitialMessages(
   const workflowParityInstructions = [
     buildFigureMineruInstruction(request, matchedSkillIds),
     buildWriteNoteFileInstruction(request, matchedSkillIds),
+    buildForcedSkillWholeLibraryInstruction(request),
   ].filter(Boolean);
   const turnGuidanceBlock = buildTurnGuidanceBlock([
     autoReadInstruction,

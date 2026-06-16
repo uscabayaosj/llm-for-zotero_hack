@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataField,
@@ -74,7 +78,7 @@ export const completeMetadataAction: AgentAction<
   CompleteMetadataOutput
 > = {
   name: "complete_metadata",
-  modes: ["paper", "library"],
+  modes: ["paper"],
   paperScopeProfile: completeMetadataPaperScopeProfile,
   description:
     "Audit targeted papers for missing bibliographic metadata, fetch canonical metadata from external sources, " +
@@ -95,7 +99,8 @@ export const completeMetadataAction: AgentAction<
       scope: {
         type: "string",
         enum: ["all", "collection", "tag"],
-        description: "Which papers to consider when explicit itemIds, collectionIds, or tagNames are not provided.",
+        description:
+          "Which papers to consider when explicit itemIds, collectionIds, or tagNames are not provided.",
       },
       collectionId: {
         type: "number",
@@ -114,7 +119,8 @@ export const completeMetadataAction: AgentAction<
       tagScopes: {
         type: "array",
         items: { type: "string", enum: ["allTagged", "untagged"] },
-        description: "Special tag scopes whose matching papers should be targeted.",
+        description:
+          "Special tag scopes whose matching papers should be targeted.",
       },
       includeAutomaticTags: {
         type: "boolean",
@@ -207,8 +213,11 @@ export const completeMetadataAction: AgentAction<
         continue;
       }
 
-      const doi = getMetadataField(entry.metadata, "DOI")
-        ?.replace(/^https?:\/\/doi\.org\//i, "") || undefined;
+      const doi =
+        getMetadataField(entry.metadata, "DOI")?.replace(
+          /^https?:\/\/doi\.org\//i,
+          "",
+        ) || undefined;
       const title = getMetadataTitle(entry.metadata) || entry.title;
       if (!doi && !title) {
         continue;
@@ -244,7 +253,9 @@ export const completeMetadataAction: AgentAction<
       }
 
       const metaContent = metaResult.content as Record<string, unknown>;
-      const results = Array.isArray(metaContent.results) ? metaContent.results : [];
+      const results = Array.isArray(metaContent.results)
+        ? metaContent.results
+        : [];
       const externalMeta = results[0] as Record<string, unknown> | undefined;
       if (!externalMeta) continue;
 
@@ -279,13 +290,16 @@ export const completeMetadataAction: AgentAction<
           updated: 0,
           skipped: targets.length,
           errors: errorCount,
-          items: targets.map((target) => itemOutputs.get(target.itemId) || {
-            itemId: target.itemId,
-            title: target.title,
-            missingFields: [],
-            patchedFields: [],
-            updated: false,
-          }),
+          items: targets.map(
+            (target) =>
+              itemOutputs.get(target.itemId) || {
+                itemId: target.itemId,
+                title: target.title,
+                missingFields: [],
+                patchedFields: [],
+                updated: false,
+              },
+          ),
         },
       };
     }
@@ -314,7 +328,9 @@ export const completeMetadataAction: AgentAction<
     const updatedCount = mutateResult.ok
       ? Number(
           mutateContent.appliedCount ||
-          (Array.isArray(mutateContent.results) ? mutateContent.results.length : updateCandidates.length),
+            (Array.isArray(mutateContent.results)
+              ? mutateContent.results.length
+              : updateCandidates.length),
         )
       : 0;
 
@@ -345,13 +361,16 @@ export const completeMetadataAction: AgentAction<
         updated: updatedCount,
         skipped: Math.max(0, targets.length - updatedCount),
         errors: errorCount,
-        items: targets.map((target) => itemOutputs.get(target.itemId) || {
-          itemId: target.itemId,
-          title: target.title,
-          missingFields: [],
-          patchedFields: [],
-          updated: false,
-        }),
+        items: targets.map(
+          (target) =>
+            itemOutputs.get(target.itemId) || {
+              itemId: target.itemId,
+              title: target.title,
+              missingFields: [],
+              patchedFields: [],
+              updated: false,
+            },
+        ),
       },
     };
   },
@@ -372,7 +391,9 @@ async function readMetadataEntries(
   );
 
   if (!readResult.ok) {
-    throw new Error(`Failed to read targeted papers: ${JSON.stringify(readResult.content)}`);
+    throw new Error(
+      `Failed to read targeted papers: ${JSON.stringify(readResult.content)}`,
+    );
   }
 
   const readContent = readResult.content as Record<string, unknown>;
@@ -384,21 +405,32 @@ async function readMetadataEntries(
       : {};
 
   return targets.map((target) => {
-    const itemEntry = readResults[String(target.itemId)] as Record<string, unknown> | undefined;
+    const itemEntry = readResults[String(target.itemId)] as
+      | Record<string, unknown>
+      | undefined;
     return {
       itemId: target.itemId,
-      title: getMetadataTitle(itemEntry?.metadata) || target.title || `Item ${target.itemId}`,
+      title:
+        getMetadataTitle(itemEntry?.metadata) ||
+        target.title ||
+        `Item ${target.itemId}`,
       metadata: itemEntry?.metadata,
       tags: Array.isArray(itemEntry?.tags) ? itemEntry.tags : [],
-      attachments: Array.isArray(itemEntry?.attachments) ? itemEntry.attachments : [],
+      attachments: Array.isArray(itemEntry?.attachments)
+        ? itemEntry.attachments
+        : [],
     };
   });
 }
 
 function detectMissingFields(entry: MetadataReadEntry): string[] {
   const missingFields: string[] = [];
-  if (!getMetadataField(entry.metadata, "abstractNote")) missingFields.push("abstract");
-  if (!getMetadataField(entry.metadata, "DOI") && !getMetadataField(entry.metadata, "url")) {
+  if (!getMetadataField(entry.metadata, "abstractNote"))
+    missingFields.push("abstract");
+  if (
+    !getMetadataField(entry.metadata, "DOI") &&
+    !getMetadataField(entry.metadata, "url")
+  ) {
     missingFields.push("DOI/URL");
   }
   if (!hasMetadataCreators(entry.metadata)) {

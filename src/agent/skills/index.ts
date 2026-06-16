@@ -15,10 +15,7 @@
  */
 import { matchesSkill, parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
-import {
-  isSkillContextEligible,
-  type SkillRoutingRequest,
-} from "./contextEligibility";
+import type { SkillRoutingRequest } from "./contextEligibility";
 import {
   isNotesDirectoryConfigured,
   getNotesDirectoryNickname,
@@ -184,7 +181,7 @@ export function getMatchedSkillIds(
       const isAutoMatched =
         contextForced.has(skill.id) || baseMatched.has(skill.id);
       if (!isAutoMatched || skill.activation === "manual") return false;
-      return isSkillContextEligible(skill, request);
+      return true;
     })
     .map((skill) => skill.id);
 

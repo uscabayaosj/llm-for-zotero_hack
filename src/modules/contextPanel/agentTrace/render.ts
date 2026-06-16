@@ -1462,6 +1462,27 @@ function getPendingActionButton(action: AgentPendingAction, actionId: string) {
   );
 }
 
+function isPagedReviewAction(action: AgentPendingAction): boolean {
+  if (action.mode !== "review" || !Array.isArray(action.actions)) return false;
+  const actionIds = new Set(action.actions.map((entry) => entry.id));
+  return (
+    actionIds.has("confirm") &&
+    actionIds.has("cancel") &&
+    (actionIds.has("previous") ||
+      actionIds.has("next") ||
+      actionIds.has("refresh")) &&
+    action.fields.some(
+      (field) =>
+        field.type === "select" &&
+        (field.id === "pageSize" || field.id === "tagsPerPaper"),
+    )
+  );
+}
+
+function getPagedActionPageLabel(title: string): string {
+  return title.match(/\bPage\s+\d+\s+of\s+\d+\b/i)?.[0] || "";
+}
+
 function getPendingActionExecutionMode(
   action: AgentPendingAction,
   actionId: string,
@@ -1541,11 +1562,18 @@ export function renderPendingActionCard(
   const card = doc.createElement("div");
   card.className = "llm-agent-hitl-card";
   card.dataset.requestId = pending.requestId;
+  const normalizedActions = normalizePendingActions(pending.action);
+  const isPagedReviewCard = isPagedReviewAction(pending.action);
+  if (isPagedReviewCard) {
+    card.dataset.pagedReview = "true";
+  }
 
   const header = doc.createElement("div");
   header.className = "llm-agent-hitl-header";
   header.textContent =
-    pending.action.mode === "review" ? "Review required" : "Action required";
+    pending.action.mode === "review" && !isPagedReviewCard
+      ? "Review required"
+      : "Action required";
   card.appendChild(header);
 
   const title = doc.createElement("div");
@@ -1560,7 +1588,18 @@ export function renderPendingActionCard(
     card.appendChild(description);
   }
 
-  const normalizedActions = normalizePendingActions(pending.action);
+  const pagedTopControls = isPagedReviewCard ? doc.createElement("div") : null;
+  if (pagedTopControls) {
+    pagedTopControls.className = "llm-agent-hitl-paged-top-controls";
+    card.appendChild(pagedTopControls);
+  }
+  const pagedFooterCenterControls = isPagedReviewCard
+    ? doc.createElement("div")
+    : null;
+  if (pagedFooterCenterControls) {
+    pagedFooterCenterControls.className =
+      "llm-agent-hitl-paged-footer-controls";
+  }
   const buttonLayout = getPendingActionButtonLayout(pending.action);
   let activeActionId = normalizedActions.defaultActionId;
   const liveFieldBindings = new Map<
@@ -1705,8 +1744,18 @@ export function renderPendingActionCard(
     if (field.type === "select") {
       const label = doc.createElement("label");
       label.className = "llm-agent-hitl-label";
-      label.textContent = field.label;
-      fieldContainer.appendChild(label);
+      const isPagedPageSizeField = isPagedReviewCard && field.id === "pageSize";
+      const isPagedTagsField = isPagedReviewCard && field.id === "tagsPerPaper";
+      const isPagedInlineSelect = isPagedPageSizeField || isPagedTagsField;
+      if (isPagedPageSizeField) {
+        label.textContent = "items on this page";
+        label.title = field.label;
+      } else if (isPagedTagsField) {
+        label.textContent = "of tags per paper";
+        label.title = field.label;
+      } else {
+        label.textContent = field.label;
+      }
 
       const select = doc.createElement("select");
       select.className = "llm-agent-hitl-page-input";
@@ -1717,7 +1766,11 @@ export function renderPendingActionCard(
         select.appendChild(optionEl);
       }
       select.value = field.value || field.options[0]?.id || "";
-      fieldContainer.appendChild(select);
+      if (isPagedInlineSelect) {
+        fieldContainer.append(select, label);
+      } else {
+        fieldContainer.append(label, select);
+      }
       fieldAccessors.push({
         field,
         container: fieldContainer,
@@ -1737,7 +1790,23 @@ export function renderPendingActionCard(
           select.addEventListener("change", callback);
         },
       });
-      card.appendChild(fieldContainer);
+      if (
+        isPagedReviewCard &&
+        field.id === "tagsPerPaper" &&
+        pagedTopControls
+      ) {
+        fieldContainer.className += " llm-agent-hitl-paged-top-field";
+        pagedTopControls.appendChild(fieldContainer);
+      } else if (
+        isPagedReviewCard &&
+        field.id === "pageSize" &&
+        pagedFooterCenterControls
+      ) {
+        fieldContainer.className += " llm-agent-hitl-paged-footer-field";
+        pagedFooterCenterControls.appendChild(fieldContainer);
+      } else {
+        card.appendChild(fieldContainer);
+      }
       continue;
     }
 
@@ -1924,23 +1993,29 @@ export function renderPendingActionCard(
         field.requiredForActionIds.includes(actionId);
       return hasScopedVisibility || hasScopedRequirement;
     });
-  const handleExecute = () => {
+  const executeAction = (actionId = activeActionId) => {
+    activeActionId = actionId;
     setButtonsDisabled(true);
     const payload = Object.fromEntries(
       fieldAccessors.map((accessor) => [accessor.id, accessor.getValue()]),
     );
+    const activeAction = getActionById(actionId);
     getAgentRuntime().resolveConfirmation(pending.requestId, {
-      approved: activeActionId !== normalizedActions.cancelActionId,
-      actionId: activeActionId,
+      approved:
+        activeAction?.approved ?? actionId !== normalizedActions.cancelActionId,
+      actionId,
       data: payload,
     });
+  };
+  const handleExecute = () => {
+    executeAction(activeActionId);
   };
   let lastChooserActionId =
     normalizedActions.primaryActions.find(
       (action) => !actionNeedsSeparateSubmit(action.id),
     )?.id || normalizedActions.defaultActionId;
   let actionChooser: HTMLDivElement | null = null;
-  if (buttonLayout.hasActionChooser) {
+  if (buttonLayout.hasActionChooser && !isPagedReviewCard) {
     actionChooser = doc.createElement("div");
     actionChooser.className = "llm-agent-hitl-action-choices";
     for (const action of normalizedActions.primaryActions) {
@@ -2062,7 +2137,7 @@ export function renderPendingActionCard(
       executeButton.disabled = !isValid;
     }
   };
-  if (buttonLayout.showsFooterExecuteButton) {
+  if (!isPagedReviewCard && buttonLayout.showsFooterExecuteButton) {
     executeButton = doc.createElement("button");
     executeButton.type = "button";
     executeButton.dataset.kind = "save";
@@ -2075,7 +2150,7 @@ export function renderPendingActionCard(
     actionRow.appendChild(executeButton);
   }
 
-  if (buttonLayout.hasActionChooser) {
+  if (!isPagedReviewCard && buttonLayout.hasActionChooser) {
     backButton = doc.createElement("button");
     backButton.type = "button";
     backButton.dataset.kind = "back";
@@ -2090,7 +2165,86 @@ export function renderPendingActionCard(
     actionRow.appendChild(backButton);
   }
 
-  if (normalizedActions.cancelAction) {
+  const createPendingActionButton = (
+    actionId: string,
+    className: string,
+  ): HTMLButtonElement | null => {
+    const action = getActionById(actionId);
+    if (!action) return null;
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.dataset.actionId = actionId;
+    button.className = className;
+    button.textContent = action.label;
+    button.addEventListener("click", () => {
+      executeAction(actionId);
+    });
+    buttons.push(button);
+    return button;
+  };
+
+  if (isPagedReviewCard) {
+    const refreshButton = createPendingActionButton(
+      "refresh",
+      "llm-agent-hitl-refresh-btn",
+    );
+    if (refreshButton) {
+      refreshButton.textContent = "";
+      refreshButton.title = getActionById("refresh")?.label || "Refresh";
+      refreshButton.setAttribute("aria-label", refreshButton.title);
+      card.appendChild(refreshButton);
+    }
+
+    const pagedActions = doc.createElement("div");
+    pagedActions.className = "llm-agent-hitl-paged-actions";
+
+    const left = doc.createElement("div");
+    left.className =
+      "llm-agent-hitl-paged-actions-slot llm-agent-hitl-paged-actions-left";
+    const previousButton = createPendingActionButton(
+      "previous",
+      "llm-agent-hitl-btn llm-agent-hitl-btn-secondary llm-agent-hitl-paged-nav-btn llm-agent-hitl-paged-previous-btn",
+    );
+    if (previousButton) left.appendChild(previousButton);
+
+    const center = doc.createElement("div");
+    center.className =
+      "llm-agent-hitl-paged-actions-slot llm-agent-hitl-paged-actions-center";
+    const confirmButton = createPendingActionButton(
+      "confirm",
+      "llm-agent-hitl-btn llm-agent-hitl-paged-confirm-btn",
+    );
+    if (confirmButton) center.appendChild(confirmButton);
+    const pageLabel = getPagedActionPageLabel(pending.action.title);
+    if (pageLabel) {
+      const pageIndicator = doc.createElement("span");
+      pageIndicator.className = "llm-agent-hitl-page-indicator";
+      pageIndicator.textContent = pageLabel;
+      center.appendChild(pageIndicator);
+    }
+    if (pagedFooterCenterControls?.children.length) {
+      center.appendChild(pagedFooterCenterControls);
+    }
+    const cancelButton = createPendingActionButton(
+      "cancel",
+      "llm-agent-hitl-btn llm-agent-hitl-btn-secondary llm-agent-hitl-paged-cancel-btn",
+    );
+    if (cancelButton) center.appendChild(cancelButton);
+
+    const right = doc.createElement("div");
+    right.className =
+      "llm-agent-hitl-paged-actions-slot llm-agent-hitl-paged-actions-right";
+    const nextButton = createPendingActionButton(
+      "next",
+      "llm-agent-hitl-btn llm-agent-hitl-paged-nav-btn llm-agent-hitl-paged-next-btn",
+    );
+    if (nextButton) right.appendChild(nextButton);
+
+    pagedActions.append(left, center, right);
+    card.appendChild(pagedActions);
+  }
+
+  if (!isPagedReviewCard && normalizedActions.cancelAction) {
     const cancelButton = doc.createElement("button");
     cancelButton.type = "button";
     cancelButton.dataset.kind = "cancel";
@@ -2109,7 +2263,7 @@ export function renderPendingActionCard(
     buttons.push(cancelButton);
     actionRow.appendChild(cancelButton);
   }
-  if (actionRow.childElementCount > 0) {
+  if (!isPagedReviewCard && actionRow.children.length > 0) {
     card.appendChild(actionRow);
   }
   syncActionUi();
@@ -3431,6 +3585,9 @@ export function renderAgentTrace({
     onInterleavedText?.();
   }
   const pending = getPendingConfirmation(events);
+  if (pending) {
+    wrap.classList.add("llm-agent-activity-with-pending-action");
+  }
   const hasFinalResponse = events.some(
     (entry) => entry.payload.type === "final",
   );
@@ -3591,7 +3748,10 @@ export function renderAgentTrace({
   }
 
   if (pending) {
-    wrap.appendChild(renderPendingActionCard(doc, pending));
+    const pendingShell = doc.createElement("div");
+    pendingShell.className = "llm-agent-pending-action-shell";
+    pendingShell.appendChild(renderPendingActionCard(doc, pending));
+    wrap.appendChild(pendingShell);
   }
 
   return wrap;

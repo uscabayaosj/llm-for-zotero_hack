@@ -39,6 +39,7 @@ export type PaperScopedActionTarget = {
   title: string;
   firstCreator?: string;
   year?: string;
+  dateAdded?: string;
   tags: string[];
   collectionIds: number[];
   hasPdf: boolean;
@@ -90,20 +91,23 @@ function normalizeStringArray(values: unknown): string[] {
   return out;
 }
 
-function normalizeTagScopes(
-  values: unknown,
-): Array<"allTagged" | "untagged"> {
+function normalizeTagScopes(values: unknown): Array<"allTagged" | "untagged"> {
   if (!Array.isArray(values)) return [];
   const out: Array<"allTagged" | "untagged"> = [];
   for (const value of values) {
-    if ((value === "allTagged" || value === "untagged") && !out.includes(value)) {
+    if (
+      (value === "allTagged" || value === "untagged") &&
+      !out.includes(value)
+    ) {
       out.push(value);
     }
   }
   return out;
 }
 
-function normalizeTagContext(ref: TagContextRef | undefined): TagContextRef | null {
+function normalizeTagContext(
+  ref: TagContextRef | undefined,
+): TagContextRef | null {
   if (!ref) return null;
   const libraryID = Number.isFinite(ref.libraryID)
     ? Math.floor(ref.libraryID)
@@ -189,7 +193,8 @@ export function normalizePaperScopedActionInput(
   const tagScopes = normalizeTagScopes(input?.tagScopes);
   if (tagNames.length) normalized.tagNames = tagNames;
   if (tagScopes.length) normalized.tagScopes = tagScopes;
-  if (input?.includeAutomaticTags === true) normalized.includeAutomaticTags = true;
+  if (input?.includeAutomaticTags === true)
+    normalized.includeAutomaticTags = true;
   if (
     input?.scope === "all" ||
     input?.scope === "collection" ||
@@ -206,8 +211,12 @@ export function resolvePaperScopedSelection(
   requestContext: ActionRequestContext | undefined,
 ): PaperScopedSelection {
   const itemIds = normalizePositiveIntArray([
-    ...((requestContext?.selectedPaperContexts || []).map((entry) => entry.itemId)),
-    ...((requestContext?.fullTextPaperContexts || []).map((entry) => entry.itemId)),
+    ...(requestContext?.selectedPaperContexts || []).map(
+      (entry) => entry.itemId,
+    ),
+    ...(requestContext?.fullTextPaperContexts || []).map(
+      (entry) => entry.itemId,
+    ),
   ]);
   const collectionIds = normalizePositiveIntArray(
     (requestContext?.selectedCollectionContexts || []).map(
@@ -242,7 +251,8 @@ function buildSelectionScopeInput(
   }
   const input: PaperScopedActionInput = {};
   if (selection.itemIds.length) input.itemIds = selection.itemIds;
-  if (selection.collectionIds.length) input.collectionIds = selection.collectionIds;
+  if (selection.collectionIds.length)
+    input.collectionIds = selection.collectionIds;
   if (includeTags) {
     const tagNames = selection.tagContexts
       .filter((entry) => !entry.scope)
@@ -252,7 +262,9 @@ function buildSelectionScopeInput(
       .filter((scope): scope is "allTagged" | "untagged" => Boolean(scope));
     if (tagNames.length) input.tagNames = tagNames;
     if (tagScopes.length) input.tagScopes = tagScopes;
-    if (selection.tagContexts.some((entry) => entry.includeAutomatic === true)) {
+    if (
+      selection.tagContexts.some((entry) => entry.includeAutomatic === true)
+    ) {
       input.includeAutomaticTags = true;
     }
   }
@@ -275,7 +287,9 @@ function buildMissingSelectionError(
   return "No paper, collection, or tag context is selected in this chat.";
 }
 
-function describeCollection(candidate: PaperScopedActionCollectionCandidate): string {
+function describeCollection(
+  candidate: PaperScopedActionCollectionCandidate,
+): string {
   return candidate.path || candidate.name;
 }
 
@@ -417,7 +431,7 @@ function resolveDefaultInput(
   ) {
     return {
       kind: "input",
-      input: { itemIds: [requestContext.activeItemId] },
+      input: buildCurrentPaperInput(profile, requestContext.activeItemId),
     };
   }
 
@@ -441,11 +455,18 @@ function resolveDefaultInput(
   ) {
     return {
       kind: "input",
-      input: { itemIds: [requestContext.activeItemId] },
+      input: buildCurrentPaperInput(profile, requestContext.activeItemId),
     };
   }
 
   return { kind: "scope_required" };
+}
+
+function buildCurrentPaperInput(
+  profile: PaperScopedActionProfile,
+  itemId: number,
+): PaperScopedActionInput {
+  return profile.targetMode === "single" ? { itemId } : { itemIds: [itemId] };
 }
 
 function buildUnsupportedScopeError(
@@ -487,10 +508,7 @@ export function resolvePaperScopedCommandInput(
   }
 
   const normalized = normalizeText(trimmed);
-  if (
-    normalized === "this paper" ||
-    normalized === "current paper"
-  ) {
+  if (normalized === "this paper" || normalized === "current paper") {
     if (!profile.allowedScopes.includes("current")) {
       return buildUnsupportedScopeError(profile);
     }
@@ -502,7 +520,7 @@ export function resolvePaperScopedCommandInput(
     }
     return {
       kind: "input",
-      input: { itemIds: [requestContext.activeItemId] },
+      input: buildCurrentPaperInput(profile, requestContext.activeItemId),
     };
   }
 
@@ -526,12 +544,34 @@ export function resolvePaperScopedCommandInput(
     return { kind: "input", input: selectionInput };
   }
 
-  const firstMatch = /^(?:for\s+)?(?:first|top)\s+(\d+)\s+papers?$/i.exec(trimmed);
-  if (firstMatch || (profile.supportsLimit && /^(\d+)$/.exec(trimmed))) {
+  const firstMatch = /^(?:for\s+)?(?:first|top)\s+(\d+)\s+papers?$/i.exec(
+    trimmed,
+  );
+  const bareLimitMatch = profile.supportsLimit ? /^(\d+)$/.exec(trimmed) : null;
+  if (
+    bareLimitMatch &&
+    profile.targetMode === "single" &&
+    profile.allowedScopes.includes("current")
+  ) {
+    if (!requestContext?.activeItemId) {
+      return {
+        kind: "error",
+        error: "No active paper is available in this chat.",
+      };
+    }
+    return {
+      kind: "input",
+      input: {
+        ...buildCurrentPaperInput(profile, requestContext.activeItemId),
+        limit: Math.max(1, Math.floor(Number(bareLimitMatch[1]) || 0)),
+      },
+    };
+  }
+  if (firstMatch || bareLimitMatch) {
     if (!profile.allowedScopes.includes("all") || !profile.supportsLimit) {
       return buildUnsupportedScopeError(profile);
     }
-    const match = firstMatch || /^(\d+)$/.exec(trimmed);
+    const match = firstMatch || bareLimitMatch;
     return {
       kind: "input",
       input: {
@@ -581,20 +621,28 @@ function mapPaperTarget(target: LibraryPaperTarget): PaperScopedActionTarget {
     title: target.title,
     firstCreator: target.firstCreator,
     year: target.year,
+    dateAdded: target.dateAdded,
     tags: Array.isArray(target.tags) ? target.tags : [],
-    collectionIds: Array.isArray(target.collectionIds) ? target.collectionIds : [],
+    collectionIds: Array.isArray(target.collectionIds)
+      ? target.collectionIds
+      : [],
     hasPdf: true,
   };
 }
 
-function mapBibliographicTarget(target: LibraryItemTarget): PaperScopedActionTarget {
+function mapBibliographicTarget(
+  target: LibraryItemTarget,
+): PaperScopedActionTarget {
   return {
     itemId: target.itemId,
     title: target.title,
     firstCreator: target.firstCreator,
     year: target.year,
+    dateAdded: target.dateAdded,
     tags: Array.isArray(target.tags) ? target.tags : [],
-    collectionIds: Array.isArray(target.collectionIds) ? target.collectionIds : [],
+    collectionIds: Array.isArray(target.collectionIds)
+      ? target.collectionIds
+      : [],
     hasPdf: Array.isArray(target.attachments)
       ? target.attachments.some(
           (attachment) => attachment.contentType === "application/pdf",
@@ -628,7 +676,9 @@ function getTargetsByItemIds(
   itemIds: number[],
 ): PaperScopedActionTarget[] {
   if (profile.paperRequirement === "pdf_backed") {
-    return ctx.zoteroGateway.getPaperTargetsByItemIds(itemIds).map(mapPaperTarget);
+    return ctx.zoteroGateway
+      .getPaperTargetsByItemIds(itemIds)
+      .map(mapPaperTarget);
   }
   return ctx.zoteroGateway
     .getBibliographicItemTargetsByItemIds(itemIds)

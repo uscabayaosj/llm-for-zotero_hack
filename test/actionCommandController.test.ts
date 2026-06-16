@@ -1,18 +1,30 @@
 import { assert } from "chai";
 import { setUserSkills, type AgentSkill } from "../src/agent/skills";
-import { createActionCommandController } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandController";
+import {
+  attachActionCompletionEscapeDismissal,
+  createActionCommandController,
+  isPagedLibraryActionForMode,
+  isPagedReviewNavigationResolution,
+  renderActionTransitionCard,
+  shouldExecuteAgentActionImmediatelyFromSlash,
+} from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandController";
+import type { AgentPendingAction } from "../src/agent/types";
 
 class FakeEvent {
   defaultPrevented = false;
+  propagationStopped = false;
 
-  constructor(public readonly type: string) {}
+  constructor(
+    public readonly type: string,
+    public readonly key = "",
+  ) {}
 
   preventDefault(): void {
     this.defaultPrevented = true;
   }
 
   stopPropagation(): void {
-    // No propagation model is needed for these controller tests.
+    this.propagationStopped = true;
   }
 }
 
@@ -182,6 +194,11 @@ class FakeElement {
 }
 
 class FakeDocument {
+  private readonly listeners = new Map<
+    string,
+    Array<(event: FakeEvent) => void>
+  >();
+
   readonly defaultView = {
     Event: FakeEvent,
     getComputedStyle: (element: FakeElement) => ({
@@ -191,6 +208,35 @@ class FakeDocument {
 
   createElement(tagName: string): FakeElement {
     return new FakeElement(this, tagName.toLowerCase());
+  }
+
+  addEventListener(
+    type: string,
+    listener: (event: FakeEvent) => void,
+    _options?: unknown,
+  ): void {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: (event: FakeEvent) => void,
+    _options?: unknown,
+  ): void {
+    const listeners = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      listeners.filter((entry) => entry !== listener),
+    );
+  }
+
+  dispatchEvent(event: FakeEvent): boolean {
+    for (const listener of this.listeners.get(event.type) || []) {
+      listener(event);
+    }
+    return !event.defaultPrevented;
   }
 }
 
@@ -343,6 +389,127 @@ function createControllerHarness(
 describe("actionCommandController", function () {
   afterEach(function () {
     setUserSkills([]);
+  });
+
+  it("routes immediate action chips by chat mode", function () {
+    assert.isFalse(isPagedLibraryActionForMode("auto_tag", "paper"));
+    assert.isTrue(isPagedLibraryActionForMode("auto_tag", "library"));
+    assert.isTrue(
+      shouldExecuteAgentActionImmediatelyFromSlash("auto_tag", "paper", true),
+    );
+    assert.isTrue(
+      shouldExecuteAgentActionImmediatelyFromSlash(
+        "complete_metadata",
+        "paper",
+        true,
+      ),
+    );
+    assert.isTrue(
+      shouldExecuteAgentActionImmediatelyFromSlash(
+        "discover_related",
+        "paper",
+        true,
+      ),
+    );
+    assert.isTrue(
+      shouldExecuteAgentActionImmediatelyFromSlash("auto_tag", "library", true),
+    );
+    assert.isFalse(
+      shouldExecuteAgentActionImmediatelyFromSlash(
+        "discover_related",
+        "library",
+        true,
+      ),
+    );
+  });
+
+  it("recognizes paged review navigation as a transition instead of a close", function () {
+    const action: AgentPendingAction = {
+      toolName: "apply_tags",
+      mode: "review",
+      title: "Page 1 of 3: Add tags",
+      actions: [
+        { id: "confirm", label: "Confirm" },
+        { id: "cancel", label: "Cancel", approved: false },
+        { id: "next", label: "Next page", approved: false },
+        { id: "refresh", label: "Refresh", approved: false },
+      ],
+      fields: [],
+    };
+
+    assert.isTrue(
+      isPagedReviewNavigationResolution(action, {
+        approved: false,
+        actionId: "next",
+      }),
+    );
+    assert.isTrue(
+      isPagedReviewNavigationResolution(action, {
+        approved: false,
+        actionId: "refresh",
+      }),
+    );
+    assert.isFalse(
+      isPagedReviewNavigationResolution(action, {
+        approved: false,
+        actionId: "cancel",
+      }),
+    );
+    assert.isFalse(
+      isPagedReviewNavigationResolution(action, {
+        approved: true,
+        actionId: "confirm",
+      }),
+    );
+  });
+
+  it("renders a paged review transition status card", function () {
+    const doc = new FakeDocument();
+    const card = renderActionTransitionCard(
+      doc as unknown as Document,
+      "previous",
+    ) as unknown as FakeElement;
+
+    assert.equal(card.getAttribute("role"), "status");
+    assert.equal(card.getAttribute("aria-live"), "polite");
+    assert.equal(
+      card.querySelector(".llm-agent-hitl-header")?.textContent,
+      "Working",
+    );
+    assert.equal(
+      card.querySelector(".llm-agent-hitl-title")?.textContent,
+      "Rendering previous page",
+    );
+    assert.include(
+      card.querySelector(".llm-agent-hitl-description")?.textContent || "",
+      "previous review page",
+    );
+  });
+
+  it("dismisses action completion status on Escape and unregisters the listener", function () {
+    const doc = new FakeDocument();
+    let dismissCalls = 0;
+    const cleanup = attachActionCompletionEscapeDismissal(
+      doc as unknown as Document,
+      () => {
+        dismissCalls += 1;
+      },
+    );
+
+    const enterEvent = new FakeEvent("keydown", "Enter");
+    doc.dispatchEvent(enterEvent);
+    assert.equal(dismissCalls, 0);
+    assert.isFalse(enterEvent.defaultPrevented);
+
+    const escapeEvent = new FakeEvent("keydown", "Escape");
+    doc.dispatchEvent(escapeEvent);
+    assert.equal(dismissCalls, 1);
+    assert.isTrue(escapeEvent.defaultPrevented);
+    assert.isTrue(escapeEvent.propagationStopped);
+
+    cleanup();
+    doc.dispatchEvent(new FakeEvent("keydown", "Escape"));
+    assert.equal(dismissCalls, 1);
   });
 
   it("shows a skill chip instead of inserting a $skill draft in Codex app-server mode", function () {

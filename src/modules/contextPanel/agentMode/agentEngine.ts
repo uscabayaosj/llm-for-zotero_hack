@@ -254,7 +254,7 @@ function showInlineConfirmationCard(
     return;
   }
   const wrapper = ownerDoc.createElement("div");
-  wrapper.className = "llm-action-inline-card";
+  wrapper.className = "llm-action-inline-card llm-action-inline-card-review";
   wrapper.dataset.requestId = requestId;
   wrapper.appendChild(renderPendingActionCard(ownerDoc, { requestId, action }));
   chatBox.appendChild(wrapper);

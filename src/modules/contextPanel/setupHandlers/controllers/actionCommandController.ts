@@ -1,8 +1,4 @@
-import {
-  getAllSkills,
-  getSkillContextEligibility,
-  type SkillRoutingRequest,
-} from "../../../../agent/skills";
+import { getAllSkills } from "../../../../agent/skills";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
@@ -18,8 +14,13 @@ import type { ModelProviderAuthMode } from "../../../../utils/modelProviders";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import { getAgentModeEnabled } from "../../prefHelpers";
 import {
+  ACTION_COMPLETION_DISMISS_MS,
+  formatActionCompletionCountdown,
   formatActionLabel,
+  resolveActionCompletionFeedback,
   resolveActionCompletionStatusText,
+  resolveActionFailureFeedback,
+  type ActionCompletionFeedback,
 } from "../../actionStatusText";
 import { buildPaperKey } from "../../pdfContext";
 import {
@@ -59,6 +60,152 @@ type ActionProfile = {
   providerProtocol?: ProviderProtocol;
 };
 type ActionMenuTrigger = "/" | "$";
+const PAGED_LIBRARY_ACTION_NAMES = new Set([
+  "audit_library",
+  "organize_unfiled",
+  "auto_tag",
+]);
+const PAGED_REVIEW_TRANSITION_ACTION_IDS = new Set([
+  "next",
+  "previous",
+  "refresh",
+]);
+const DEFAULT_PAGED_ACTION_PAGE_SIZE = 20;
+type ActionChatMode = "paper" | "library";
+
+export function isPagedLibraryActionForMode(
+  actionName: string,
+  mode: ActionChatMode,
+): boolean {
+  return mode === "library" && PAGED_LIBRARY_ACTION_NAMES.has(actionName);
+}
+
+export function shouldExecuteAgentActionImmediatelyFromSlash(
+  actionName: string,
+  mode: ActionChatMode,
+  hasPaperScopeProfile: boolean,
+): boolean {
+  return (
+    isPagedLibraryActionForMode(actionName, mode) ||
+    (mode === "paper" && hasPaperScopeProfile)
+  );
+}
+
+export function renderActionCompletionCard(
+  doc: Document,
+  feedback: ActionCompletionFeedback,
+  secondsRemaining = ACTION_COMPLETION_DISMISS_MS / 1000,
+): HTMLDivElement {
+  const card = doc.createElement("div");
+  card.className = "llm-agent-hitl-card llm-agent-hitl-card-complete";
+
+  const header = doc.createElement("div");
+  header.className = "llm-agent-hitl-header";
+  header.textContent = feedback.status === "failure" ? "Failed" : "Complete";
+  card.appendChild(header);
+
+  const title = doc.createElement("div");
+  title.className = "llm-agent-hitl-title";
+  title.textContent = feedback.title;
+  card.appendChild(title);
+
+  if (feedback.description) {
+    const description = doc.createElement("div");
+    description.className = "llm-agent-hitl-description";
+    description.textContent = feedback.description;
+    card.appendChild(description);
+  }
+
+  const countdown = doc.createElement("div");
+  countdown.className = "llm-agent-hitl-description";
+  countdown.setAttribute("data-action-completion-countdown", "true");
+  countdown.textContent = formatActionCompletionCountdown(secondsRemaining);
+  card.appendChild(countdown);
+
+  return card;
+}
+
+export function attachActionCompletionEscapeDismissal(
+  doc: Document,
+  onDismiss: () => void,
+): () => void {
+  const handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    onDismiss();
+  };
+  doc.addEventListener("keydown", handleKeyDown, true);
+  return () => doc.removeEventListener("keydown", handleKeyDown, true);
+}
+
+export function isPagedReviewNavigationResolution(
+  action: AgentPendingAction,
+  resolution: AgentConfirmationResolution,
+): boolean {
+  if (resolution.approved || action.mode !== "review") return false;
+  const actionId = resolution.actionId || "";
+  if (!PAGED_REVIEW_TRANSITION_ACTION_IDS.has(actionId)) return false;
+  return Boolean(action.actions?.some((entry) => entry.id === actionId));
+}
+
+export function getPagedReviewTransitionText(actionId: string | undefined): {
+  title: string;
+  description: string;
+} {
+  if (actionId === "previous") {
+    return {
+      title: "Rendering previous page",
+      description: "Preparing the previous review page.",
+    };
+  }
+  if (actionId === "refresh") {
+    return {
+      title: "Refreshing review page",
+      description: "Reloading the library state and recalculating this page.",
+    };
+  }
+  return {
+    title: "Rendering next page",
+    description: "Preparing the next review page.",
+  };
+}
+
+export function renderActionTransitionCard(
+  doc: Document,
+  actionId?: string,
+): HTMLDivElement {
+  const card = doc.createElement("div");
+  card.className = "llm-agent-hitl-card llm-agent-hitl-card-transition";
+  card.setAttribute("role", "status");
+  card.setAttribute("aria-live", "polite");
+
+  const header = doc.createElement("div");
+  header.className = "llm-agent-hitl-header";
+  header.textContent = "Working";
+  card.appendChild(header);
+
+  const { title: titleText, description: descriptionText } =
+    getPagedReviewTransitionText(actionId);
+  const title = doc.createElement("div");
+  title.className = "llm-agent-hitl-title";
+  title.textContent = titleText;
+  card.appendChild(title);
+
+  const description = doc.createElement("div");
+  description.className = "llm-agent-hitl-description";
+  description.textContent = descriptionText;
+  card.appendChild(description);
+
+  const typing = doc.createElement("div");
+  typing.className = "llm-typing llm-agent-hitl-transition-typing";
+  typing.setAttribute("aria-hidden", "true");
+  typing.innerHTML =
+    '<span class="llm-typing-dot"></span><span class="llm-typing-dot"></span><span class="llm-typing-dot"></span>';
+  card.appendChild(typing);
+
+  return card;
+}
 type ActiveActionToken = {
   query: string;
   slashStart: number;
@@ -86,6 +233,7 @@ type ActionCommandControllerDeps = {
   getCurrentRuntimeMode: () => string;
   setCurrentRuntimeMode: (mode: "chat" | "agent") => void;
   getCurrentLibraryID: () => number;
+  getConversationKey?: () => number | null;
   resolveCurrentPaperBaseItem: () => Zotero.Item | null;
   getAllEffectivePaperContexts: (item: Zotero.Item) => PaperContextRef[];
   getEffectivePdfModePaperContexts: (
@@ -158,6 +306,10 @@ export function createActionCommandController(
   let forcedSkillBadge: HTMLElement | null = null;
   let activeCommandAction: ActionPickerItem | null = null;
   let activeCommandBadge: HTMLElement | null = null;
+  let actionCompletionDismissTimer: ReturnType<typeof setTimeout> | null = null;
+  let actionCompletionCountdownTimer: ReturnType<typeof setInterval> | null =
+    null;
+  let actionCompletionEscapeCleanup: (() => void) | null = null;
 
   const setStatus = (message: string, level: StatusLevel) => {
     deps.setStatusMessage?.(message, level);
@@ -424,12 +576,46 @@ export function createActionCommandController(
     }
   };
 
+  const clearActionCompletionTimers = () => {
+    if (actionCompletionDismissTimer) {
+      clearTimeout(actionCompletionDismissTimer);
+      actionCompletionDismissTimer = null;
+    }
+    if (actionCompletionCountdownTimer) {
+      clearInterval(actionCompletionCountdownTimer);
+      actionCompletionCountdownTimer = null;
+    }
+    actionCompletionEscapeCleanup?.();
+    actionCompletionEscapeCleanup = null;
+  };
+
   const closeActionHitlPanel = () => {
+    clearActionCompletionTimers();
     if (actionHitlPanel) {
       actionHitlPanel.style.display = "none";
       actionHitlPanel.innerHTML = "";
     }
     chatBox?.querySelector(".llm-action-inline-card")?.remove();
+    syncHasActionCardAttr();
+  };
+
+  const showPagedReviewTransitionCard = (actionId?: string): void => {
+    const ownerDoc = body.ownerDocument;
+    if (!ownerDoc || !chatBox) return;
+    clearActionCompletionTimers();
+    let wrapper = chatBox.querySelector(
+      ".llm-action-inline-card-review",
+    ) as HTMLDivElement | null;
+    if (!wrapper) {
+      chatBox.querySelector(".llm-action-inline-card")?.remove();
+      wrapper = ownerDoc.createElement("div");
+      wrapper.className =
+        "llm-action-inline-card llm-action-inline-card-review";
+      chatBox.appendChild(wrapper);
+    }
+    wrapper.innerHTML = "";
+    wrapper.appendChild(renderActionTransitionCard(ownerDoc, actionId));
+    chatBox.scrollTop = chatBox.scrollHeight;
     syncHasActionCardAttr();
   };
 
@@ -439,14 +625,22 @@ export function createActionCommandController(
   ): Promise<AgentConfirmationResolution> =>
     new Promise((resolve) => {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        closeActionHitlPanel();
+        if (!resolution.approved) {
+          if (isPagedReviewNavigationResolution(action, resolution)) {
+            showPagedReviewTransitionCard(resolution.actionId);
+          } else {
+            closeActionHitlPanel();
+          }
+        }
         resolve(resolution);
       });
       const ownerDoc = body.ownerDocument;
       if (!ownerDoc || !chatBox) return;
+      clearActionCompletionTimers();
       chatBox.querySelector(".llm-action-inline-card")?.remove();
       const wrapper = ownerDoc.createElement("div");
-      wrapper.className = "llm-action-inline-card";
+      wrapper.className =
+        "llm-action-inline-card llm-action-inline-card-review";
       wrapper.appendChild(
         renderPendingActionCard(ownerDoc, { requestId, action }),
       );
@@ -454,6 +648,51 @@ export function createActionCommandController(
       chatBox.scrollTop = chatBox.scrollHeight;
       syncHasActionCardAttr();
     });
+
+  const showActionCompletionCard = (
+    feedback: ActionCompletionFeedback,
+  ): void => {
+    const ownerDoc = body.ownerDocument;
+    if (!ownerDoc || !chatBox) return;
+    clearActionCompletionTimers();
+    chatBox.querySelector(".llm-action-progress-card")?.remove();
+    chatBox.querySelector(".llm-action-inline-card")?.remove();
+    const wrapper = ownerDoc.createElement("div");
+    wrapper.className = "llm-action-inline-card llm-action-inline-card-status";
+    const totalMs = feedback.autoDismissMs || ACTION_COMPLETION_DISMISS_MS;
+    const startedAt = Date.now();
+    const card = renderActionCompletionCard(ownerDoc, feedback, totalMs / 1000);
+    wrapper.appendChild(card);
+    chatBox.appendChild(wrapper);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    syncHasActionCardAttr();
+
+    const countdownEl = wrapper.querySelector(
+      "[data-action-completion-countdown]",
+    );
+    const updateCountdown = () => {
+      const remainingSeconds = Math.max(
+        1,
+        Math.ceil((startedAt + totalMs - Date.now()) / 1000),
+      );
+      if (countdownEl) {
+        countdownEl.textContent =
+          formatActionCompletionCountdown(remainingSeconds);
+      }
+    };
+    updateCountdown();
+    const dismissCompletionCard = () => {
+      if (wrapper.isConnected) wrapper.remove();
+      clearActionCompletionTimers();
+      syncHasActionCardAttr();
+    };
+    actionCompletionEscapeCleanup = attachActionCompletionEscapeDismissal(
+      ownerDoc,
+      dismissCompletionCard,
+    );
+    actionCompletionCountdownTimer = setInterval(updateCountdown, 1000);
+    actionCompletionDismissTimer = setTimeout(dismissCompletionCard, totalMs);
+  };
 
   const createActionProgressIndicator = (actionName: string) => {
     const ownerDoc = body.ownerDocument;
@@ -748,6 +987,7 @@ export function createActionCommandController(
   const executeAgentAction = async (
     action: ActionPickerItem,
     parsedInput?: Record<string, unknown>,
+    userQuery?: string,
   ): Promise<void> => {
     inputBox.focus({ preventScroll: true });
     try {
@@ -760,6 +1000,8 @@ export function createActionCommandController(
     const paperScopeProfile = getAgentApi().getPaperScopedActionProfile(
       action.name,
     );
+    const requestContext = buildActionRequestContext();
+    const actionMode = requestContext.mode;
     let input: Record<string, unknown>;
     if (parsedInput) {
       input = parsedInput;
@@ -786,7 +1028,12 @@ export function createActionCommandController(
         );
       }
       input = buildActionInput(action.name, action.inputSchema, extraFields);
-      if (paperScopeProfile) {
+      if (isPagedLibraryActionForMode(action.name, actionMode)) {
+        input = {
+          ...input,
+          ...parseCommandParams(action.name, "", actionMode),
+        };
+      } else if (paperScopeProfile) {
         const resolvedInput = await resolvePaperScopedActionInput(
           action.name,
           "",
@@ -805,6 +1052,10 @@ export function createActionCommandController(
         }
       }
     }
+    const trimmedUserQuery = userQuery?.trim();
+    if (trimmedUserQuery && input.userQuery === undefined) {
+      input.userQuery = trimmedUserQuery;
+    }
     setStatus(`Running: ${formatActionLabel(action.name)}...`, "ready");
     const progressIndicator = createActionProgressIndicator(action.name);
     let lastProgressSummary = "";
@@ -820,12 +1071,13 @@ export function createActionCommandController(
             providerProtocol: selectedProfile.providerProtocol,
           }
         : undefined;
-      const result = await agentApi.runAction(action.name, input, {
+      const commonOptions = {
         libraryID: deps.getCurrentLibraryID(),
-        requestContext: buildActionRequestContext(),
-        confirmationMode: "native_ui",
+        requestContext,
         llm: actionLlmConfig,
-        onProgress: (event) => {
+        onProgress: (
+          event: import("../../../../agent/actions").ActionProgressEvent,
+        ) => {
           if (event.type === "step_start") {
             progressIndicator.setStep(event.step, event.index, event.total);
             setStatus(`${event.step} (${event.index}/${event.total})`, "ready");
@@ -839,6 +1091,15 @@ export function createActionCommandController(
             progressIndicator.hide();
           }
         },
+      };
+      if (isPagedLibraryActionForMode(action.name, actionMode)) {
+        agentApi
+          .getZoteroGateway()
+          .invalidateLibrarySearchCache?.(deps.getCurrentLibraryID());
+      }
+      const result = await agentApi.runAction(action.name, input, {
+        ...commonOptions,
+        confirmationMode: "native_ui",
         requestConfirmation: (requestId, pendingAction) =>
           showActionHitlCard(requestId, pendingAction),
       });
@@ -851,9 +1112,36 @@ export function createActionCommandController(
           : `${formatActionLabel(action.name)} failed: ${result.error}`,
         result.ok ? "ready" : "error",
       );
+      if (result.ok) {
+        progressIndicator.remove();
+        showActionCompletionCard(
+          resolveActionCompletionFeedback({
+            actionName: action.name,
+            output: result.output,
+            lastProgressSummary,
+          }),
+        );
+      } else {
+        closeActionHitlPanel();
+        showActionCompletionCard(
+          resolveActionFailureFeedback({
+            actionName: action.name,
+            error: result.error,
+            lastProgressSummary,
+          }),
+        );
+      }
     } catch (error) {
+      closeActionHitlPanel();
       deps.logError("LLM: action picker run error", error);
       setStatus(`Error: ${String(error)}`, "error");
+      showActionCompletionCard(
+        resolveActionFailureFeedback({
+          actionName: action.name,
+          error,
+          lastProgressSummary,
+        }),
+      );
     } finally {
       progressIndicator.remove();
     }
@@ -885,25 +1173,6 @@ export function createActionCommandController(
       inputBox.placeholder = inputBox.dataset.originalPlaceholder;
       delete inputBox.dataset.originalPlaceholder;
     }
-  };
-
-  const buildSkillRoutingRequest = (): SkillRoutingRequest => {
-    const currentItem = deps.getItem();
-    const selectedPaperContexts = currentItem
-      ? deps.getAllEffectivePaperContexts(currentItem)
-      : [];
-    const selectedCollectionContexts = currentItem
-      ? selectedCollectionContextCache.get(currentItem.id) || []
-      : [];
-    const selectedTagContexts = currentItem
-      ? selectedTagContextCache.get(currentItem.id) || []
-      : [];
-    return {
-      userText: inputBox.value || "",
-      selectedPaperContexts,
-      selectedCollectionContexts,
-      selectedTagContexts,
-    };
   };
 
   const dispatchComposerInput = (): void => {
@@ -961,20 +1230,43 @@ export function createActionCommandController(
   };
 
   const parseCommandParams = (
-    _actionName: string,
+    actionName: string,
     params: string,
+    mode: ActionChatMode = buildActionRequestContext().mode,
   ): Record<string, unknown> => {
-    const input: Record<string, unknown> = {};
+    const isPagedLibraryAction = isPagedLibraryActionForMode(actionName, mode);
+    const input: Record<string, unknown> = isPagedLibraryAction
+      ? {
+          scope: "all",
+          pageSize: DEFAULT_PAGED_ACTION_PAGE_SIZE,
+        }
+      : {};
+    if (params.trim()) {
+      input.userQuery = params.trim();
+    }
     if (!params) return input;
     const lower = params.toLowerCase();
-    const firstNMatch = /(?:for\s+)?(?:first|top)\s+(\d+)\s*items?/i.exec(
+    const pageSizeMatch = /(?:page\s*size|per\s*page|show)\s+(\d+)/i.exec(
       params,
     );
+    if (pageSizeMatch && isPagedLibraryAction) {
+      input.pageSize = parseInt(pageSizeMatch[1], 10);
+      return input;
+    }
+    const firstNMatch =
+      /(?:for\s+)?(?:first|top)\s+(\d+)\s*(?:items?|papers?)?/i.exec(params);
     if (firstNMatch) {
       input.limit = parseInt(firstNMatch[1], 10);
       return input;
     }
-    const lastNMatch = /(?:for\s+)?last\s+(\d+)\s*items?/i.exec(params);
+    const limitMatch = /(?:limit|cap)\s+(\d+)/i.exec(params);
+    if (limitMatch) {
+      input.limit = parseInt(limitMatch[1], 10);
+      return input;
+    }
+    const lastNMatch = /(?:for\s+)?last\s+(\d+)\s*(?:items?|papers?)?/i.exec(
+      params,
+    );
     if (lastNMatch) {
       input.limit = parseInt(lastNMatch[1], 10);
       return input;
@@ -994,7 +1286,13 @@ export function createActionCommandController(
       return input;
     }
     const bareNumber = /^(\d+)$/.exec(params.trim());
-    if (bareNumber) input.limit = parseInt(bareNumber[1], 10);
+    if (bareNumber) {
+      if (isPagedLibraryAction) {
+        input.pageSize = parseInt(bareNumber[1], 10);
+      } else {
+        input.limit = parseInt(bareNumber[1], 10);
+      }
+    }
     return input;
   };
 
@@ -1027,7 +1325,8 @@ export function createActionCommandController(
       if (!ownerDoc || !chatBox) return;
       chatBox.querySelector(".llm-action-inline-card")?.remove();
       const wrapper = ownerDoc.createElement("div");
-      wrapper.className = "llm-action-inline-card";
+      wrapper.className =
+        "llm-action-inline-card llm-action-inline-card-review";
       wrapper.appendChild(
         renderPendingActionCard(ownerDoc, {
           requestId,
@@ -1076,26 +1375,6 @@ export function createActionCommandController(
       await deps.getDoSend()?.();
       return;
     }
-    if (
-      actionName === "library_statistics" ||
-      actionName === "literature_review"
-    ) {
-      if (deps.getCurrentRuntimeMode() !== "agent" && getAgentModeEnabled()) {
-        deps.setCurrentRuntimeMode("agent");
-      }
-      inputBox.dataset.commandAction = actionName;
-      inputBox.dataset.commandParams = params.trim();
-      inputBox.value =
-        actionName === "library_statistics"
-          ? params.trim()
-            ? `Show my library statistics: ${params.trim()}`
-            : "Show my library statistics and give me a comprehensive overview."
-          : params.trim()
-            ? `Conduct a literature review on: ${params.trim()}`
-            : "I'd like to do a literature review.";
-      await deps.getDoSend()?.();
-      return;
-    }
     let allActions: ActionPickerItem[] = [];
     try {
       await initAgentSubsystem();
@@ -1111,8 +1390,16 @@ export function createActionCommandController(
       setStatus(`Unknown action: ${actionName}`, "error");
       return;
     }
+    const actionMode = buildActionRequestContext().mode;
     const paperScopeProfile =
       getAgentApi().getPaperScopedActionProfile(actionName);
+    if (isPagedLibraryActionForMode(actionName, actionMode)) {
+      void executeAgentAction(
+        action,
+        parseCommandParams(actionName, params, actionMode),
+      );
+      return;
+    }
     if (paperScopeProfile) {
       const resolvedInput = await resolvePaperScopedActionInput(
         actionName,
@@ -1128,10 +1415,13 @@ export function createActionCommandController(
             )
           : resolvedInput;
       if (!input) return;
-      void executeAgentAction(action, input);
+      void executeAgentAction(action, {
+        ...input,
+        ...(params.trim() ? { userQuery: params.trim() } : {}),
+      });
       return;
     }
-    let input = parseCommandParams(actionName, params);
+    let input = parseCommandParams(actionName, params, actionMode);
     const needsScopeConfirm =
       actionName !== "organize_unfiled" && actionName !== "discover_related";
     if (needsScopeConfirm && !params.trim()) {
@@ -1150,7 +1440,6 @@ export function createActionCommandController(
     clearSkillSlashItems();
     const allSkills = getAllSkills();
     if (!allSkills.length) return;
-    const skillRoutingRequest = buildSkillRoutingRequest();
     const filtered = query
       ? allSkills.filter(
           (skill: AgentSkill) =>
@@ -1174,31 +1463,20 @@ export function createActionCommandController(
     sectionLabel.textContent = t("Skills");
     list.insertBefore(sectionLabel, baseAnchor);
     filtered.forEach((skill: AgentSkill) => {
-      const eligibility = getSkillContextEligibility(
-        skill,
-        skillRoutingRequest,
-      );
       const button = mkSkillEl(
         "button",
         "llm-action-picker-item",
       ) as HTMLButtonElement;
       button.type = "button";
-      button.disabled = !eligibility.eligible;
-      button.setAttribute(
-        "aria-disabled",
-        eligibility.eligible ? "false" : "true",
-      );
-      button.title = eligibility.eligible
-        ? skill.description || skill.id
-        : `${skill.description || skill.id} (${eligibility.reason})`;
+      button.disabled = false;
+      button.setAttribute("aria-disabled", "false");
+      button.title = skill.description || skill.id;
       const titleEl = ownerDoc.createElement("span");
       titleEl.className = "llm-action-picker-title";
       titleEl.textContent = skill.id;
       const descEl = ownerDoc.createElement("span");
       descEl.className = "llm-action-picker-description";
-      descEl.textContent = eligibility.eligible
-        ? skill.description
-        : eligibility.reason;
+      descEl.textContent = skill.description;
       const badgeEl = ownerDoc.createElement("span");
       badgeEl.className = "llm-action-picker-badge";
       badgeEl.textContent = t(
@@ -1401,6 +1679,27 @@ export function createActionCommandController(
         event.stopPropagation();
         consumeActiveActionToken();
         closeSlashMenu();
+        const userQuery = inputBox.value.trim();
+        const actionMode = buildActionRequestContext().mode;
+        const hasPaperScopeProfile = Boolean(
+          getAgentApi().getPaperScopedActionProfile(action.name),
+        );
+        if (
+          shouldExecuteAgentActionImmediatelyFromSlash(
+            action.name,
+            actionMode,
+            hasPaperScopeProfile,
+          )
+        ) {
+          const parsedInput = isPagedLibraryActionForMode(
+            action.name,
+            actionMode,
+          )
+            ? parseCommandParams(action.name, "", actionMode)
+            : undefined;
+          void executeAgentAction(action, parsedInput, userQuery);
+          return;
+        }
         insertCommandToken(action);
       });
       list.insertBefore(button, baseLabel);

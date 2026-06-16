@@ -9,6 +9,12 @@
 import type { PaperContextRef } from "../../../shared/types";
 import type { AgentToolDefinition } from "../../types";
 import {
+  buildPagedReviewActionConfig,
+  buildPageSizeSelectField,
+  readPagedOperationLabel,
+  readPagedOperationMeta,
+} from "../../actions/pagedWorkflow";
+import {
   LibraryMutationService,
   type UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
@@ -248,7 +254,7 @@ export function createUpdateMetadataTool(
     },
 
     acceptInheritedApproval: async (_input, approval) => {
-      // Accept review-mode approvals from search_literature_online review cards
+      // Accept review-mode approvals from literature_search review cards.
       return (
         approval.sourceMode === "review" &&
         (approval.sourceActionId === "apply_direct" ||
@@ -258,6 +264,8 @@ export function createUpdateMetadataTool(
 
     createPendingAction(input, context) {
       const isBatch = input.operations.length > 1;
+      const pageMeta = readPagedOperationMeta(input.operations[0]?.id);
+      const pageLabel = readPagedOperationLabel(input.operations[0]?.id);
       const reviewFields = input.operations
         .map((operation) => {
           const item = zoteroGateway.resolveMetadataItem({
@@ -281,8 +289,8 @@ export function createUpdateMetadataTool(
         .filter((f): f is NonNullable<typeof f> => Boolean(f));
 
       const title = isBatch
-        ? `Update metadata for ${input.operations.length} items`
-        : `Update metadata for ${(() => {
+        ? `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${input.operations.length} items`
+        : `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${(() => {
             const op = input.operations[0];
             const item = zoteroGateway.resolveMetadataItem({
               itemId: op.itemId,
@@ -305,8 +313,14 @@ export function createUpdateMetadataTool(
           ? "Review the proposed metadata changes below."
           : "Review the proposed field changes below.",
         confirmLabel: "Apply",
-        cancelLabel: "Cancel",
-        fields: reviewFields,
+        cancelLabel: pageLabel ? "Stop" : "Cancel",
+        fields: [
+          ...reviewFields,
+          ...(pageMeta ? [buildPageSizeSelectField(pageMeta.pageSize)] : []),
+        ],
+        ...(pageMeta
+          ? buildPagedReviewActionConfig(pageMeta, { includeRefresh: true })
+          : {}),
       };
     },
 

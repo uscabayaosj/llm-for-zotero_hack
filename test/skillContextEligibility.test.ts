@@ -43,7 +43,7 @@ describe("skill context eligibility", function () {
     setUserSkills([]);
   });
 
-  it("activates simple-paper-qa only when exactly one paper is in context", function () {
+  it("does not lock simple-paper-qa behind a one-paper context", function () {
     loadBuiltInSkills();
 
     assert.include(
@@ -53,11 +53,11 @@ describe("skill context eligibility", function () {
       }),
       "simple-paper-qa",
     );
-    assert.notInclude(
+    assert.include(
       getMatchedSkillIds({ userText: "summarize my library" }),
       "simple-paper-qa",
     );
-    assert.notInclude(
+    assert.include(
       getMatchedSkillIds({
         userText: "summarize these papers",
         selectedPaperContexts: [paperA, paperB],
@@ -66,7 +66,7 @@ describe("skill context eligibility", function () {
     );
   });
 
-  it("uses user wording to resolve one-paper plus collection context", function () {
+  it("allows paper and library skills to overlap when wording matches both", function () {
     loadBuiltInSkills();
 
     const paperTargeted = getMatchedSkillIds({
@@ -82,7 +82,7 @@ describe("skill context eligibility", function () {
       selectedCollectionContexts: [collection],
     });
     assert.include(collectionTargeted, "library-analysis");
-    assert.notInclude(collectionTargeted, "simple-paper-qa");
+    assert.include(collectionTargeted, "simple-paper-qa");
 
     const tagTargeted = getMatchedSkillIds({
       userText: "summarize this tag",
@@ -90,7 +90,7 @@ describe("skill context eligibility", function () {
       selectedTagContexts: [tag],
     });
     assert.include(tagTargeted, "library-analysis");
-    assert.notInclude(tagTargeted, "simple-paper-qa");
+    assert.include(tagTargeted, "simple-paper-qa");
   });
 
   it("routes paper sets and library corpora to their matching skills", function () {

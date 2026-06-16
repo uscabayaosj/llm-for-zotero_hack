@@ -684,6 +684,63 @@ describe("autoTag action", function () {
     });
   });
 
+  it("continues from the next unprocessed item when page size changes", async function () {
+    const registry = new AgentToolRegistry();
+    const executedPages: number[][] = [];
+    registerReviewApplyTagsTool(registry, (input) => {
+      executedPages.push(
+        input.assignments.map((assignment) => assignment.itemId),
+      );
+    });
+
+    let confirmationCount = 0;
+    const { ctx } = createActionContext(registry, {
+      zoteroGateway: {
+        listBibliographicItemTargets: async () => ({
+          items: Array.from({ length: 60 }, (_entry, index) =>
+            makeBibliographicTarget(
+              index + 1,
+              `Neural Memory Paper ${index + 1}`,
+            ),
+          ),
+          totalCount: 60,
+        }),
+        listLibraryTags: async () => [{ name: "neural memory", type: 0 }],
+        getEditableArticleMetadata: () => ({
+          fields: {
+            abstractNote: "A neural memory paper with learning dynamics",
+          },
+        }),
+        getItem: (itemId: number) => ({ id: itemId }),
+      } as never,
+      requestConfirmation: async () => {
+        confirmationCount += 1;
+        return {
+          approved: true,
+          actionId: "confirm",
+          data: confirmationCount === 1 ? { pageSize: 50 } : {},
+        };
+      },
+    });
+
+    const result = await autoTagAction.execute(
+      { scope: "all", pageSize: 20 },
+      ctx,
+    );
+
+    assert.isTrue(result.ok);
+    assert.deepEqual(executedPages, [
+      Array.from({ length: 20 }, (_entry, index) => 60 - index),
+      Array.from({ length: 40 }, (_entry, index) => 40 - index),
+    ]);
+    if (!result.ok) return;
+    assert.deepInclude(result.output, {
+      targeted: 60,
+      tagged: 60,
+      skipped: 0,
+    });
+  });
+
   it("cancels without applying current-page tags", async function () {
     const registry = new AgentToolRegistry();
     let executeCalls = 0;

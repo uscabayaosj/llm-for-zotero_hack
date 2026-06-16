@@ -6,7 +6,9 @@ import type {
 import { callTool } from "./executor";
 import {
   formatActionPageLabel,
+  getPagedActionOptionsForStartOffset,
   getPagedActionOptions,
+  getPagedActionPageCursorForOffset,
   getPagedActionPages,
   getPagedOperationId,
   isUserCancelledToolResult,
@@ -95,6 +97,10 @@ export const organizeUnfiledAction: AgentAction<
     ctx: ActionExecutionContext,
   ): Promise<ActionResult<OrganizeUnfiledOutput>> {
     let options = getPagedActionOptions(input);
+    const windowEndOffset =
+      options.limit !== undefined
+        ? options.startOffset + options.limit
+        : undefined;
 
     ctx.onProgress({
       type: "step_start",
@@ -231,27 +237,36 @@ export const organizeUnfiledAction: AgentAction<
           ? normalizeActionPageSize(confirmationData.pageSize)
           : options.pageSize;
       const refreshPages = async (
-        nextCursor: number,
+        targetOffset: number,
         refreshOptions?: { reloadTargets?: boolean },
       ): Promise<void> => {
-        options = { ...options, pageSize: requestedPageSize };
+        const pageSizeChanged = requestedPageSize !== options.pageSize;
+        options = pageSizeChanged
+          ? getPagedActionOptionsForStartOffset(
+              { ...options, pageSize: requestedPageSize },
+              targetOffset,
+              windowEndOffset,
+            )
+          : { ...options, pageSize: requestedPageSize };
         if (refreshOptions?.reloadTargets) {
           await reloadUnfiledPages();
         } else {
           pages = getPagedActionPages(unfiledItems, options);
         }
-        pageCursor = Math.max(0, Math.min(nextCursor, pages.length - 1));
+        pageCursor = getPagedActionPageCursorForOffset(pages, targetOffset);
       };
       if (confirmationActionId === "previous") {
-        await refreshPages(pageCursor - 1);
+        await refreshPages(
+          Math.max(options.startOffset, page.offset - requestedPageSize),
+        );
         continue;
       }
       if (confirmationActionId === "refresh") {
-        await refreshPages(pageCursor, { reloadTargets: true });
+        await refreshPages(page.offset, { reloadTargets: true });
         continue;
       }
       if (confirmationActionId === "next") {
-        await refreshPages(pageCursor + 1);
+        await refreshPages(page.offset + page.items.length);
         continue;
       }
       if (confirmationActionId === "cancel") {
@@ -285,11 +300,11 @@ export const organizeUnfiledAction: AgentAction<
             confirmed = true;
             break;
           }
-          await refreshPages(pageCursor + 1);
+          await refreshPages(page.offset + page.items.length);
           continue;
         }
         if (requestedPageSize !== options.pageSize) {
-          await refreshPages(pageCursor + 1);
+          await refreshPages(page.offset + page.items.length);
         } else {
           pageCursor += 1;
         }

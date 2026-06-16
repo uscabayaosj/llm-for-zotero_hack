@@ -20,6 +20,10 @@ import {
   getMetadataTitle,
   hasMetadataCreators,
 } from "./metadataSnapshot";
+import {
+  isUserCancelledToolResult,
+  readToolResultError,
+} from "./pagedWorkflow";
 
 type CompleteMetadataInput = PaperScopedActionInput;
 
@@ -53,6 +57,11 @@ type UpdateCandidate = {
   missingFields: string[];
   patchedFields: string[];
   patch: EditableArticleMetadataPatch;
+};
+
+type MetadataCapabilityFilter = {
+  isFieldSupported?: (fieldName: EditableArticleMetadataField) => boolean;
+  supportsCreators?: () => boolean;
 };
 
 const completeMetadataPaperScopeProfile: PaperScopedActionProfile = {
@@ -259,7 +268,11 @@ export const completeMetadataAction: AgentAction<
       const externalMeta = results[0] as Record<string, unknown> | undefined;
       if (!externalMeta) continue;
 
-      const patch = buildMetadataPatch(entry.metadata, externalMeta.patch);
+      const patch = buildMetadataPatch(
+        entry.metadata,
+        externalMeta.patch,
+        buildMetadataCapabilityFilter(ctx, entry.itemId),
+      );
       const patchedFields = Object.keys(patch);
       if (!patchedFields.length) continue;
 
@@ -323,6 +336,8 @@ export const completeMetadataAction: AgentAction<
       ctx,
       "Updating metadata",
     );
+    const mutateError = readToolResultError(mutateResult);
+    const stopped = isUserCancelledToolResult(mutateResult);
 
     const mutateContent = mutateResult.content as Record<string, unknown>;
     const updatedCount = mutateResult.ok
@@ -351,8 +366,17 @@ export const completeMetadataAction: AgentAction<
       step: "Applying metadata updates",
       summary: mutateResult.ok
         ? `Updated ${updatedCount} paper${updatedCount === 1 ? "" : "s"}`
-        : "Update was denied or failed",
+        : stopped
+          ? "Stopped by user"
+          : mutateError || "Metadata update failed",
     });
+
+    if (!mutateResult.ok && !stopped) {
+      return {
+        ok: false,
+        error: mutateError || "Metadata update failed",
+      };
+    }
 
     return {
       ok: true,
@@ -451,9 +475,38 @@ function detectMissingFields(entry: MetadataReadEntry): string[] {
   return missingFields;
 }
 
+function buildMetadataCapabilityFilter(
+  ctx: ActionExecutionContext,
+  itemId: number,
+): MetadataCapabilityFilter {
+  const gateway = ctx.zoteroGateway as unknown as {
+    getItem?: (itemId?: number) => Zotero.Item | null | undefined;
+    isEditableArticleMetadataFieldSupported?: (
+      item: Zotero.Item | null | undefined,
+      fieldName: EditableArticleMetadataField,
+    ) => boolean;
+    supportsEditableArticleCreators?: (
+      item: Zotero.Item | null | undefined,
+    ) => boolean;
+  };
+  const item =
+    typeof gateway.getItem === "function" ? gateway.getItem(itemId) : null;
+  return {
+    isFieldSupported: (fieldName) =>
+      typeof gateway.isEditableArticleMetadataFieldSupported === "function"
+        ? gateway.isEditableArticleMetadataFieldSupported(item, fieldName)
+        : true,
+    supportsCreators: () =>
+      typeof gateway.supportsEditableArticleCreators === "function"
+        ? gateway.supportsEditableArticleCreators(item)
+        : true,
+  };
+}
+
 function buildMetadataPatch(
   currentMetadata: unknown,
   rawPatch: unknown,
+  capabilities: MetadataCapabilityFilter = {},
 ): EditableArticleMetadataPatch {
   const sourcePatch = rawPatch as EditableArticleMetadataPatch | undefined;
   if (!sourcePatch || Object.keys(sourcePatch).length === 0) {
@@ -462,13 +515,18 @@ function buildMetadataPatch(
 
   const patch: EditableArticleMetadataPatch = {};
   for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
+    if (capabilities.isFieldSupported?.(fieldName) === false) continue;
     const currentValue = getMetadataField(currentMetadata, fieldName);
     const newValue = sourcePatch[fieldName as EditableArticleMetadataField];
     if (!currentValue && newValue) {
       patch[fieldName as EditableArticleMetadataField] = newValue;
     }
   }
-  if (!hasMetadataCreators(currentMetadata) && sourcePatch.creators?.length) {
+  if (
+    capabilities.supportsCreators?.() !== false &&
+    !hasMetadataCreators(currentMetadata) &&
+    sourcePatch.creators?.length
+  ) {
     patch.creators = sourcePatch.creators;
   }
   return patch;

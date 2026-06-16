@@ -191,7 +191,7 @@ describe("skill context eligibility", function () {
     );
   });
 
-  it("suppresses automatic simple paper QA when evidence QA is explicit", function () {
+  it("preserves automatic simple paper QA when evidence QA is explicit", function () {
     loadBuiltInSkills();
 
     assert.deepEqual(
@@ -200,7 +200,7 @@ describe("skill context eligibility", function () {
         selectedPaperContexts: [paperA],
         forcedSkillIds: ["evidence-based-qa"],
       }),
-      ["evidence-based-qa"],
+      ["simple-paper-qa", "evidence-based-qa"],
     );
   });
 });

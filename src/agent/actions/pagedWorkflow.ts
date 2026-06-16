@@ -109,7 +109,9 @@ export function applyPagedActionWindow<T>(
 ): T[] {
   const fromOffset =
     options.startOffset > 0 ? items.slice(options.startOffset) : items;
-  return options.limit ? fromOffset.slice(0, options.limit) : fromOffset;
+  return options.limit !== undefined
+    ? fromOffset.slice(0, options.limit)
+    : fromOffset;
 }
 
 export function getPagedActionPages<T>(
@@ -128,6 +130,40 @@ export function getPagedActionPages<T>(
     });
   }
   return pages;
+}
+
+export function getPagedActionPageCursorForOffset<T>(
+  pages: ReadonlyArray<PagedActionPage<T>>,
+  absoluteOffset: number,
+): number {
+  if (!pages.length) return 0;
+  const targetOffset = Math.max(0, Math.floor(absoluteOffset));
+  const containingIndex = pages.findIndex(
+    (page) =>
+      targetOffset >= page.offset &&
+      targetOffset < page.offset + page.items.length,
+  );
+  if (containingIndex >= 0) return containingIndex;
+
+  const nextIndex = pages.findIndex((page) => targetOffset < page.offset);
+  if (nextIndex >= 0) return nextIndex;
+  return pages.length - 1;
+}
+
+export function getPagedActionOptionsForStartOffset(
+  options: PagedActionOptions,
+  startOffset: number,
+  windowEndOffset?: number,
+): PagedActionOptions {
+  const normalizedStartOffset = normalizeActionStartOffset(startOffset);
+  const nextOptions: PagedActionOptions = {
+    ...options,
+    startOffset: normalizedStartOffset,
+  };
+  if (windowEndOffset !== undefined) {
+    nextOptions.limit = Math.max(0, windowEndOffset - normalizedStartOffset);
+  }
+  return nextOptions;
 }
 
 export function formatActionPageLabel(page: {

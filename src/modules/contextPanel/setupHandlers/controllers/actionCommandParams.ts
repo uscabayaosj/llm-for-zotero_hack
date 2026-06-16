@@ -83,11 +83,7 @@ export function parseCommandParams(
   }
   const bareNumber = /^(\d+)$/.exec(params.trim());
   if (bareNumber) {
-    if (isPagedLibraryAction) {
-      input.pageSize = parseInt(bareNumber[1], 10);
-    } else {
-      input.limit = parseInt(bareNumber[1], 10);
-    }
+    input.limit = parseInt(bareNumber[1], 10);
   }
   return input;
 }

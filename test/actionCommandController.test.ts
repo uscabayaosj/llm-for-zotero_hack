@@ -8,6 +8,7 @@ import {
   renderActionTransitionCard,
   shouldExecuteAgentActionImmediatelyFromSlash,
 } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandController";
+import { parseCommandParams } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandParams";
 import type { AgentPendingAction } from "../src/agent/types";
 
 class FakeEvent {
@@ -421,6 +422,27 @@ describe("actionCommandController", function () {
         true,
       ),
     );
+  });
+
+  it("parses bare numeric paged library action params as limits", function () {
+    assert.deepEqual(parseCommandParams("auto_tag", "10", "library"), {
+      scope: "all",
+      pageSize: 20,
+      userQuery: "10",
+      limit: 10,
+    });
+    assert.deepEqual(
+      parseCommandParams("auto_tag", "page size 10", "library"),
+      {
+        scope: "all",
+        pageSize: 10,
+        userQuery: "page size 10",
+      },
+    );
+    assert.deepEqual(parseCommandParams("auto_tag", "10", "paper"), {
+      userQuery: "10",
+      limit: 10,
+    });
   });
 
   it("recognizes paged review navigation as a transition instead of a close", function () {

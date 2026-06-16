@@ -7,7 +7,6 @@ import { invokeResponseMenuActionButton } from "../src/modules/contextPanel/chat
 import {
   responseMenuTarget,
   type ResponseActionTarget,
-  setResponseActionRunner,
   setResponseMenuTarget,
 } from "../src/modules/contextPanel/state";
 
@@ -147,7 +146,6 @@ describe("menu action controller note routing", function () {
   });
 
   afterEach(function () {
-    setResponseActionRunner(null);
     setResponseMenuTarget(null);
     if (originalZotero) {
       globalScope.Zotero = originalZotero;
@@ -720,6 +718,153 @@ describe("menu action controller note routing", function () {
         conversationKey: 9,
         userTimestamp: 100,
         assistantTimestamp: 200,
+      },
+    ]);
+  });
+
+  it("keeps footer response actions scoped to their owning panel body", async function () {
+    const bodyA = new FakeElement();
+    const bodyB = new FakeElement();
+    const currentItem = {
+      id: 42,
+      libraryID: 1,
+    } as unknown as Zotero.Item;
+    const deletionsA: unknown[] = [];
+    const deletionsB: unknown[] = [];
+    const targetA: ResponseActionTarget = {
+      item: currentItem,
+      contentText: "",
+      queryText: "Question A",
+      modelName: "Codex",
+      conversationKey: 101,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
+    const targetB: ResponseActionTarget = {
+      item: currentItem,
+      contentText: "",
+      queryText: "Question B",
+      modelName: "Codex",
+      conversationKey: 202,
+      userTimestamp: 300,
+      assistantTimestamp: 400,
+    };
+
+    attachMenuActionController({
+      body: bodyA as unknown as Element,
+      status: new FakeElement() as unknown as HTMLElement,
+      responseMenu: null,
+      responseMenuCopyBtn: null,
+      responseMenuNoteBtn: null,
+      responseMenuDeleteBtn: null,
+      promptMenu: null,
+      promptMenuDeleteBtn: null,
+      exportMenu: null,
+      exportMenuCopyBtn: null,
+      exportMenuNoteBtn: null,
+      exportBtn: null,
+      popoutBtn: null,
+      settingsBtn: null,
+      preferencesPaneId: "llm-for-zotero-test-a",
+      getItem: () => currentItem,
+      getResponseMenuTarget: () => responseMenuTarget,
+      getPromptMenuTarget: () => null,
+      getCurrentLibraryID: () => 1,
+      getConversationSystem: () => "codex",
+      getCurrentRuntimeModeForItem: () => "agent",
+      isGlobalMode: () => true,
+      ensureConversationLoaded: async () => {},
+      getConversationKey: () => 101,
+      getHistory: () => [
+        { role: "user", text: "Question A", timestamp: 100 },
+        { role: "assistant", text: "Answer A", timestamp: 200 },
+      ],
+      resolveActiveNoteSession: () => null,
+      closeResponseMenu: () => {},
+      closePromptMenu: () => {},
+      closeExportMenu: () => {},
+      closeRetryModelMenu: () => {},
+      closeSlashMenu: () => {},
+      closeHistoryNewMenu: () => {},
+      closeHistoryMenu: () => {},
+      queueTurnDeletion: async (queuedTarget) => {
+        deletionsA.push(queuedTarget);
+      },
+      logError: () => {},
+    });
+    attachMenuActionController({
+      body: bodyB as unknown as Element,
+      status: new FakeElement() as unknown as HTMLElement,
+      responseMenu: null,
+      responseMenuCopyBtn: null,
+      responseMenuNoteBtn: null,
+      responseMenuDeleteBtn: null,
+      promptMenu: null,
+      promptMenuDeleteBtn: null,
+      exportMenu: null,
+      exportMenuCopyBtn: null,
+      exportMenuNoteBtn: null,
+      exportBtn: null,
+      popoutBtn: null,
+      settingsBtn: null,
+      preferencesPaneId: "llm-for-zotero-test-b",
+      getItem: () => currentItem,
+      getResponseMenuTarget: () => responseMenuTarget,
+      getPromptMenuTarget: () => null,
+      getCurrentLibraryID: () => 1,
+      getConversationSystem: () => "codex",
+      getCurrentRuntimeModeForItem: () => "agent",
+      isGlobalMode: () => true,
+      ensureConversationLoaded: async () => {},
+      getConversationKey: () => 202,
+      getHistory: () => [
+        { role: "user", text: "Question B", timestamp: 300 },
+        { role: "assistant", text: "Answer B", timestamp: 400 },
+      ],
+      resolveActiveNoteSession: () => null,
+      closeResponseMenu: () => {},
+      closePromptMenu: () => {},
+      closeExportMenu: () => {},
+      closeRetryModelMenu: () => {},
+      closeSlashMenu: () => {},
+      closeHistoryNewMenu: () => {},
+      closeHistoryMenu: () => {},
+      queueTurnDeletion: async (queuedTarget) => {
+        deletionsB.push(queuedTarget);
+      },
+      logError: () => {},
+    });
+
+    const invoked = invokeResponseMenuActionButton({
+      body: bodyA as unknown as Element,
+      action: "delete",
+      target: targetA,
+    });
+    await flushAsyncEvents();
+
+    assert.isTrue(invoked);
+    assert.deepEqual(deletionsA, [
+      {
+        conversationKey: 101,
+        userTimestamp: 100,
+        assistantTimestamp: 200,
+      },
+    ]);
+    assert.deepEqual(deletionsB, []);
+
+    const invokedB = invokeResponseMenuActionButton({
+      body: bodyB as unknown as Element,
+      action: "delete",
+      target: targetB,
+    });
+    await flushAsyncEvents();
+
+    assert.isTrue(invokedB);
+    assert.deepEqual(deletionsB, [
+      {
+        conversationKey: 202,
+        userTimestamp: 300,
+        assistantTimestamp: 400,
       },
     ]);
   });

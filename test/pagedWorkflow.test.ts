@@ -5,6 +5,8 @@ import {
   MAX_ACTION_PAGE_SIZE,
   MAX_TAGS_PER_PAPER,
   buildPagedReviewActionConfig,
+  getPagedActionOptionsForStartOffset,
+  getPagedActionPageCursorForOffset,
   getPagedActionPages,
   getPagedOperationId,
   normalizeActionPageSize,
@@ -56,6 +58,42 @@ describe("paged action workflow helpers", function () {
     assert.deepEqual(
       pages.map((page) => page.totalPages),
       [3, 3, 3],
+    );
+  });
+
+  it("maps absolute offsets after paged review page-size changes", function () {
+    const items = Array.from({ length: 45 }, (_entry, index) => index + 1);
+    const pages = getPagedActionPages(items, {
+      pageSize: 20,
+      startOffset: 0,
+    });
+
+    assert.equal(getPagedActionPageCursorForOffset(pages, 0), 0);
+    assert.equal(getPagedActionPageCursorForOffset(pages, 20), 1);
+    assert.equal(getPagedActionPageCursorForOffset(pages, 44), 2);
+    assert.equal(getPagedActionPageCursorForOffset(pages, 100), 2);
+
+    const shifted = getPagedActionOptionsForStartOffset(
+      { pageSize: 50, startOffset: 0, limit: 45 },
+      20,
+      45,
+    );
+    assert.deepEqual(shifted, { pageSize: 50, startOffset: 20, limit: 25 });
+    assert.deepEqual(getPagedActionPages(items, shifted)[0]?.items, [
+      21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+      39, 40, 41, 42, 43, 44, 45,
+    ]);
+
+    assert.deepEqual(
+      getPagedActionPages(
+        items,
+        getPagedActionOptionsForStartOffset(
+          { pageSize: 50, startOffset: 20, limit: 25 },
+          45,
+          45,
+        ),
+      ),
+      [],
     );
   });
 

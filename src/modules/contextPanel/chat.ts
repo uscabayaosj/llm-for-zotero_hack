@@ -1293,9 +1293,9 @@ export function invokeResponseMenuActionButton(params: {
   action: ResponseActionKind;
   target: ResponseActionTarget | null;
 }): boolean {
-  const { action, target } = params;
+  const { action, body, target } = params;
   if (!target) return false;
-  const runner = getResponseActionRunner();
+  const runner = getResponseActionRunner(body);
   if (!runner) return false;
   setResponseMenuTarget(target);
   void runner(action, target);

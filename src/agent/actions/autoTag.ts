@@ -7,6 +7,8 @@ import { callTool } from "./executor";
 import {
   formatActionPageLabel,
   getPagedActionOptions,
+  getPagedActionPageCursorForOffset,
+  getPagedActionOptionsForStartOffset,
   getPagedActionPages,
   getPagedOperationId,
   isUserCancelledToolResult,
@@ -148,6 +150,11 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
     ctx: ActionExecutionContext,
   ): Promise<ActionResult<AutoTagOutput>> {
     let options = getPagedActionOptions(input);
+    const initialStartOffset = options.startOffset;
+    const windowEndOffset =
+      options.limit !== undefined
+        ? options.startOffset + options.limit
+        : undefined;
     let tagsPerPaper = normalizeTagsPerPaper(
       input.tagsPerPaper ?? DEFAULT_TAGS_PER_ITEM,
     );
@@ -163,16 +170,21 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
     let pages = getPagedActionPages<TargetPaper>([], options);
     let pagedTargetCount = 0;
     let existingTags: string[] = [];
+    const countTargetWindow = (): number => {
+      const start = Math.min(initialStartOffset, targetPapers.length);
+      const end =
+        windowEndOffset !== undefined
+          ? Math.min(windowEndOffset, targetPapers.length)
+          : targetPapers.length;
+      return Math.max(0, end - start);
+    };
     const reloadTargets = async (): Promise<void> => {
       ctx.zoteroGateway.invalidateLibrarySearchCache?.(ctx.libraryID);
       targetPapers = (await resolveTargetPapers(input, ctx)).sort(
         compareTargetPaperDateAddedDesc,
       );
       pages = getPagedActionPages(targetPapers, options);
-      pagedTargetCount = pages.reduce(
-        (count, page) => count + page.items.length,
-        0,
-      );
+      pagedTargetCount = countTargetWindow();
       existingTags = await fetchExistingLibraryTags(ctx);
     };
     await reloadTargets();
@@ -285,32 +297,37 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
           ? normalizeTagsPerPaper(confirmationData.tagsPerPaper)
           : tagsPerPaper;
       const refreshPages = async (
-        nextCursor: number,
+        targetOffset: number,
         refreshOptions?: { reloadTargets?: boolean },
       ): Promise<void> => {
-        options = { ...options, pageSize: requestedPageSize };
+        const pageSizeChanged = requestedPageSize !== options.pageSize;
+        options = pageSizeChanged
+          ? getPagedActionOptionsForStartOffset(
+              { ...options, pageSize: requestedPageSize },
+              targetOffset,
+              windowEndOffset,
+            )
+          : { ...options, pageSize: requestedPageSize };
         tagsPerPaper = requestedTagsPerPaper;
         if (refreshOptions?.reloadTargets) {
           await reloadTargets();
         } else {
           pages = getPagedActionPages(targetPapers, options);
-          pagedTargetCount = pages.reduce(
-            (count, currentPage) => count + currentPage.items.length,
-            0,
-          );
         }
-        pageCursor = Math.max(0, Math.min(nextCursor, pages.length - 1));
+        pageCursor = getPagedActionPageCursorForOffset(pages, targetOffset);
       };
       if (confirmationActionId === "previous") {
-        await refreshPages(pageCursor - 1);
+        await refreshPages(
+          Math.max(options.startOffset, page.offset - requestedPageSize),
+        );
         continue;
       }
       if (confirmationActionId === "refresh") {
-        await refreshPages(pageCursor, { reloadTargets: true });
+        await refreshPages(page.offset, { reloadTargets: true });
         continue;
       }
       if (confirmationActionId === "next") {
-        await refreshPages(pageCursor + 1);
+        await refreshPages(page.offset + page.items.length);
         continue;
       }
       if (confirmationActionId === "cancel") {
@@ -345,11 +362,11 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
             confirmed = true;
             break;
           }
-          await refreshPages(pageCursor + 1);
+          await refreshPages(page.offset + page.items.length);
           continue;
         }
         if (requestedPageSize !== options.pageSize) {
-          await refreshPages(pageCursor + 1);
+          await refreshPages(page.offset + page.items.length);
         } else {
           pageCursor += 1;
         }

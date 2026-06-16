@@ -383,7 +383,7 @@ export function attachMenuActionController(
     if (deps.status) setStatus(deps.status, message, level);
   };
 
-  setResponseActionRunner((action, target) =>
+  setResponseActionRunner(deps.body, (action, target) =>
     runResponseMenuAction(deps, action, target, setStatusMessage),
   );
 

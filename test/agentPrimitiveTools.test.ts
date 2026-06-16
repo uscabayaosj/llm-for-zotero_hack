@@ -13,6 +13,7 @@ import { getPagedOperationId } from "../src/agent/actions/pagedWorkflow";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
 import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
+import { createUpdateMetadataTool } from "../src/agent/tools/write/updateMetadata";
 import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import { createUndoLastActionTool } from "../src/agent/tools/write/undoLastAction";
 import { createZoteroScriptTool } from "../src/agent/tools/write/zoteroScript";
@@ -573,6 +574,47 @@ describe("primitive agent tools", function () {
     });
     const entry = (result as { results: Record<string, any> }).results["7"];
     assert.equal(entry.title, "Collection Paper");
+  });
+
+  it("update_metadata refuses to write an item outside the active library", async function () {
+    let updateCalled = false;
+    const foreignItem = {
+      id: 7,
+      libraryID: 2,
+    };
+    const tool = createUpdateMetadataTool({
+      resolveMetadataItem: () => foreignItem,
+      getEditableArticleMetadata: () => makeMetadataSnapshot(7, "Foreign Item"),
+      updateArticleMetadata: async () => {
+        updateCalled = true;
+        return {
+          status: "updated",
+          itemId: 7,
+          title: "Foreign Item",
+          changedFields: ["title"],
+        };
+      },
+    } as never);
+
+    const validated = tool.validate({
+      itemId: 7,
+      metadata: { title: "Should Not Apply" },
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    try {
+      await tool.execute(validated.value, baseContext);
+      assert.fail(
+        "Expected update_metadata to reject the foreign-library item",
+      );
+    } catch (error) {
+      assert.include(
+        error instanceof Error ? error.message : String(error),
+        "active library is 1",
+      );
+    }
+    assert.isFalse(updateCalled);
   });
 
   it("builds system instructions around semantic tool names", async function () {

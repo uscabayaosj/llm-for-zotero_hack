@@ -36,6 +36,7 @@ export type PaperScopedSelection = {
 
 export type PaperScopedActionTarget = {
   itemId: number;
+  libraryID?: number;
   title: string;
   firstCreator?: string;
   year?: string;
@@ -618,6 +619,7 @@ export function resolvePaperScopedCommandInput(
 function mapPaperTarget(target: LibraryPaperTarget): PaperScopedActionTarget {
   return {
     itemId: target.itemId,
+    libraryID: target.libraryID,
     title: target.title,
     firstCreator: target.firstCreator,
     year: target.year,
@@ -635,6 +637,7 @@ function mapBibliographicTarget(
 ): PaperScopedActionTarget {
   return {
     itemId: target.itemId,
+    libraryID: target.libraryID,
     title: target.title,
     firstCreator: target.firstCreator,
     year: target.year,
@@ -693,6 +696,23 @@ function filterTargetsByRequirement(
   return targets.filter((target) => target.hasPdf);
 }
 
+function filterTargetsByLibrary(
+  targets: PaperScopedActionTarget[],
+  libraryID: number,
+): PaperScopedActionTarget[] {
+  const normalizedLibraryID =
+    Number.isFinite(libraryID) && libraryID > 0 ? Math.floor(libraryID) : 0;
+  if (!normalizedLibraryID) return targets;
+  return targets.filter((target) => {
+    const targetLibraryID = Number(target.libraryID);
+    return (
+      !Number.isFinite(targetLibraryID) ||
+      targetLibraryID <= 0 ||
+      Math.floor(targetLibraryID) === normalizedLibraryID
+    );
+  });
+}
+
 function dedupeTargets(
   targets: PaperScopedActionTarget[],
 ): PaperScopedActionTarget[] {
@@ -713,6 +733,14 @@ async function listTargetsForTagContexts(
 ): Promise<PaperScopedActionTarget[]> {
   const targets: PaperScopedActionTarget[] = [];
   for (const tagContext of tagContexts) {
+    const tagLibraryID = Number(tagContext.libraryID);
+    if (
+      Number.isFinite(tagLibraryID) &&
+      tagLibraryID > 0 &&
+      Math.floor(tagLibraryID) !== ctx.libraryID
+    ) {
+      continue;
+    }
     const result = await ctx.zoteroGateway.listTagItemTargets({
       libraryID: ctx.libraryID,
       tagContext,
@@ -736,9 +764,12 @@ async function resolveTargetsForSelection(
   const filtered: PaperScopedActionTarget[] = [];
   if (selection.itemIds.length) {
     filtered.push(
-      ...filterTargetsByRequirement(
-        getTargetsByItemIds(ctx, profile, selection.itemIds),
-        profile,
+      ...filterTargetsByLibrary(
+        filterTargetsByRequirement(
+          getTargetsByItemIds(ctx, profile, selection.itemIds),
+          profile,
+        ),
+        ctx.libraryID,
       ),
     );
   }

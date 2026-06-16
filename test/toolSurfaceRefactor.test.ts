@@ -1327,7 +1327,7 @@ describe("semantic tool surface", function () {
     );
   });
 
-  it("explains multi-context skill eligibility requirements", function () {
+  it("keeps multi-context skills selectable without attached context", function () {
     const evidenceSkill = parseSkill(
       BUILTIN_SKILL_FILES["evidence-based-qa.md"],
     );
@@ -1335,18 +1335,11 @@ describe("semantic tool surface", function () {
 
     assert.deepEqual(
       getSkillContextEligibility(evidenceSkill, { userText: "" }),
-      {
-        eligible: false,
-        reason:
-          "Requires one paper or multiple papers or collection/library context",
-      },
+      { eligible: true },
     );
     assert.deepEqual(
       getSkillContextEligibility(compareSkill, { userText: "" }),
-      {
-        eligible: false,
-        reason: "Requires multiple papers or collection/library context",
-      },
+      { eligible: true },
     );
   });
 });

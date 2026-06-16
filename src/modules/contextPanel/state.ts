@@ -194,14 +194,21 @@ export function setResponseMenuTarget(value: typeof responseMenuTarget) {
   responseMenuTarget = value;
 }
 
-let responseActionRunner: ResponseActionRunner | null = null;
+const responseActionRunners = new WeakMap<Element, ResponseActionRunner>();
 export function setResponseActionRunner(
+  body: Element,
   value: ResponseActionRunner | null,
 ): void {
-  responseActionRunner = value;
+  if (value) {
+    responseActionRunners.set(body, value);
+  } else {
+    responseActionRunners.delete(body);
+  }
 }
-export function getResponseActionRunner(): ResponseActionRunner | null {
-  return responseActionRunner;
+export function getResponseActionRunner(
+  body: Element,
+): ResponseActionRunner | null {
+  return responseActionRunners.get(body) || null;
 }
 
 export let promptMenuTarget: {

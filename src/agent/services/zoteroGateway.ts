@@ -92,6 +92,7 @@ export type LibraryPaperTargetAttachment = {
 
 export type LibraryPaperTarget = {
   itemId: number;
+  libraryID?: number;
   title: string;
   firstCreator?: string;
   year?: string;
@@ -118,6 +119,7 @@ export type LibraryItemTargetAttachment = {
 
 export type LibraryItemTarget = {
   itemId: number;
+  libraryID?: number;
   itemType: string;
   title: string;
   firstCreator?: string;
@@ -489,6 +491,7 @@ function buildPaperTargetFromItem(
   if (!attachments.length) return null;
   return {
     itemId: target.id,
+    libraryID: Number(target.libraryID) || undefined,
     title:
       normalizeText(target.getField?.("title")) ||
       normalizeText(target.getDisplayTitle?.()) ||
@@ -513,6 +516,7 @@ function buildItemTargetFromItem(item: Zotero.Item): LibraryItemTarget | null {
     const title = resolveAnyAttachmentTitle(item, 0, 1);
     return {
       itemId: item.id,
+      libraryID: Number(item.libraryID) || undefined,
       itemType: "attachment",
       title,
       dateAdded: normalizeText(item.getField?.("dateAdded")) || undefined,
@@ -536,6 +540,7 @@ function buildItemTargetFromItem(item: Zotero.Item): LibraryItemTarget | null {
     );
     return {
       itemId: item.id,
+      libraryID: Number(item.libraryID) || undefined,
       itemType: "note",
       title: rawTitle || `Note ${item.id}`,
       dateAdded: normalizeText(item.getField?.("dateAdded")) || undefined,
@@ -551,6 +556,7 @@ function buildItemTargetFromItem(item: Zotero.Item): LibraryItemTarget | null {
   const allAtts = getAllChildAttachments(target);
   return {
     itemId: target.id,
+    libraryID: Number(target.libraryID) || undefined,
     itemType: getItemTypeName(target),
     title:
       normalizeText(target.getField?.("title")) ||

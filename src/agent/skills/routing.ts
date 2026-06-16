@@ -343,7 +343,8 @@ export function resolveSkillRouting(
   const withoutRedundantSimplePaperQa =
     matchedSkillIds.includes(EVIDENCE_BASED_QA_SKILL_ID) &&
     matchedSkillIds.includes(SIMPLE_PAPER_QA_SKILL_ID) &&
-    !forcedIds.has(SIMPLE_PAPER_QA_SKILL_ID)
+    !forcedIds.has(SIMPLE_PAPER_QA_SKILL_ID) &&
+    !forcedIds.has(EVIDENCE_BASED_QA_SKILL_ID)
       ? matchedSkillIds.filter((id) => id !== SIMPLE_PAPER_QA_SKILL_ID)
       : matchedSkillIds;
 

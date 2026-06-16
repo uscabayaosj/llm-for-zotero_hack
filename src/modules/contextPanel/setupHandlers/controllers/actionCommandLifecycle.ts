@@ -114,6 +114,20 @@ export function getPagedReviewTransitionText(actionId: string | undefined): {
   };
 }
 
+export function getActionTransitionText(actionId: string | undefined): {
+  title: string;
+  description: string;
+} {
+  const pagedText = getPagedReviewTransitionText(actionId);
+  if (actionId === "previous" || actionId === "refresh" || actionId === "next") {
+    return pagedText;
+  }
+  return {
+    title: "Working on approved action",
+    description: "Applying the approved action.",
+  };
+}
+
 export function renderActionTransitionCard(
   doc: Document,
   actionId?: string,
@@ -129,7 +143,7 @@ export function renderActionTransitionCard(
   card.appendChild(header);
 
   const { title: titleText, description: descriptionText } =
-    getPagedReviewTransitionText(actionId);
+    getActionTransitionText(actionId);
   const title = doc.createElement("div");
   title.className = "llm-agent-hitl-title";
   title.textContent = titleText;
@@ -154,9 +168,20 @@ export function createActionCommandLifecycle(params: {
   body: Element;
   actionHitlPanel: HTMLDivElement | null;
   chatBox: HTMLDivElement | null;
+  registerPendingConfirmation?: (
+    requestId: string,
+    resolve: (resolution: AgentConfirmationResolution) => void,
+  ) => void;
   syncHasActionCardAttr: () => void;
 }): ActionCommandLifecycle {
-  const { actionHitlPanel, body, chatBox, syncHasActionCardAttr } = params;
+  const {
+    actionHitlPanel,
+    body,
+    chatBox,
+    registerPendingConfirmation =
+      getAgentApi().registerPendingConfirmation,
+    syncHasActionCardAttr,
+  } = params;
   let actionCompletionDismissTimer: ReturnType<typeof setTimeout> | null = null;
   let actionCompletionCountdownTimer: ReturnType<typeof setInterval> | null =
     null;
@@ -210,13 +235,13 @@ export function createActionCommandLifecycle(params: {
     action: AgentPendingAction,
   ): Promise<AgentConfirmationResolution> =>
     new Promise((resolve) => {
-      getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        if (!resolution.approved) {
-          if (isPagedReviewNavigationResolution(action, resolution)) {
-            showPagedReviewTransitionCard(resolution.actionId);
-          } else {
-            closeActionHitlPanel();
-          }
+      registerPendingConfirmation(requestId, (resolution) => {
+        if (resolution.approved) {
+          showPagedReviewTransitionCard(resolution.actionId);
+        } else if (isPagedReviewNavigationResolution(action, resolution)) {
+          showPagedReviewTransitionCard(resolution.actionId);
+        } else {
+          closeActionHitlPanel();
         }
         resolve(resolution);
       });

@@ -238,6 +238,14 @@ async function executeCommand(params: {
 const DESTRUCTIVE_COMMANDS =
   /(?:^|\||\;|&&)\s*(?:(?:rm|rmdir|mv|rename|chmod|chown|sudo|mkfs|dd)\b|(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|git\s+(?:push|reset|checkout|switch|clean|rebase|filter-branch|rm|branch\s+-D|tag\s+-d)\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
 
+/** Downloading code and handing it directly to a shell should never auto-run. */
+const NETWORK_TO_SHELL_PATTERN =
+  /(?:(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash|zsh)\b|(?:sh|bash|zsh)\b[\s\S]*<\s*\(\s*(?:curl|wget)\b|(?:sh|bash|zsh)\b[\s\S]*(?:\$\(\s*(?:curl|wget)\b|`\s*(?:curl|wget)\b))/i;
+
+/** macOS/system automation commands can mutate external app or OS state. */
+const SYSTEM_AUTOMATION_PATTERN =
+  /(?:^|\||\;|&&)\s*(?:(?:osascript|launchctl)\b|defaults\s+(?:write|delete|import|rename)\b)/i;
+
 /** Append redirects are always an overwrite/append risk. */
 const APPEND_REDIRECT_PATTERN =
   /(?:^|[^<])(?:\d*>>|&>>)\s*(?:"[^"]+"|'[^']+'|[^\s;&|]+)/;
@@ -370,10 +378,24 @@ function isDestructiveCommand(command: string): boolean {
   return DESTRUCTIVE_COMMANDS.test(command.trim());
 }
 
+function isNetworkToShellCommand(command: string): boolean {
+  return NETWORK_TO_SHELL_PATTERN.test(command.trim());
+}
+
+function isSystemAutomationCommand(command: string): boolean {
+  return SYSTEM_AUTOMATION_PATTERN.test(command.trim());
+}
+
 async function getRunCommandConfirmationReason(
   input: Pick<RunCommandInput, "command" | "cwd">,
 ): Promise<string | null> {
   const command = input.command.trim();
+  if (isNetworkToShellCommand(command)) {
+    return "Command downloads code and passes it directly to a shell";
+  }
+  if (isSystemAutomationCommand(command)) {
+    return "Command may automate apps or modify operating system state";
+  }
   if (isDestructiveCommand(command)) {
     return "Command may delete, move, install, change permissions, mutate git history/remotes, or modify system state";
   }

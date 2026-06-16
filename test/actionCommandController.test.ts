@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { setUserSkills, type AgentSkill } from "../src/agent/skills";
+import { createActionCommandLifecycle } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandLifecycle";
 import {
   attachActionCompletionEscapeDismissal,
   createActionCommandController,
@@ -9,7 +10,10 @@ import {
   shouldExecuteAgentActionImmediatelyFromSlash,
 } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandController";
 import { parseCommandParams } from "../src/modules/contextPanel/setupHandlers/controllers/actionCommandParams";
-import type { AgentPendingAction } from "../src/agent/types";
+import type {
+  AgentConfirmationResolution,
+  AgentPendingAction,
+} from "../src/agent/types";
 
 class FakeEvent {
   defaultPrevented = false;
@@ -82,6 +86,7 @@ class FakeElement {
   clientHeight = 0;
   offsetTop = 0;
   offsetHeight = 0;
+  private innerHTMLValue = "";
 
   constructor(
     readonly ownerDocument: FakeDocument,
@@ -95,6 +100,19 @@ class FakeElement {
 
   get className(): string {
     return this.classNameValue || this.classList.toString();
+  }
+
+  set innerHTML(value: string) {
+    this.innerHTMLValue = value;
+    if (value === "") {
+      for (const child of this.children) child.parentElement = null;
+      this.children.length = 0;
+      this.textContent = "";
+    }
+  }
+
+  get innerHTML(): string {
+    return this.innerHTMLValue;
   }
 
   append(...nodes: Array<FakeElement | string>): void {
@@ -506,6 +524,68 @@ describe("actionCommandController", function () {
       card.querySelector(".llm-agent-hitl-description")?.textContent || "",
       "previous review page",
     );
+  });
+
+  it("replaces an approved action HITL card with a working state", async function () {
+    const doc = new FakeDocument();
+    const body = doc.createElement("div");
+    const chatBox = doc.createElement("div");
+    body.appendChild(chatBox);
+    let syncCalls = 0;
+    let resolveConfirmation:
+      | ((resolution: AgentConfirmationResolution) => void)
+      | null = null;
+    const lifecycle = createActionCommandLifecycle({
+      body: body as unknown as Element,
+      actionHitlPanel: null,
+      chatBox: chatBox as unknown as HTMLDivElement,
+      registerPendingConfirmation: (_requestId, resolve) => {
+        resolveConfirmation = resolve;
+      },
+      syncHasActionCardAttr: () => {
+        syncCalls += 1;
+      },
+    });
+
+    const pendingAction: AgentPendingAction = {
+      toolName: "apply_tags",
+      mode: "review",
+      title: "Add tags",
+      description: "Apply reviewed tags.",
+      confirmLabel: "Apply",
+      cancelLabel: "Cancel",
+      fields: [],
+      actions: [
+        { id: "confirm", label: "Apply", approved: true },
+        { id: "cancel", label: "Cancel", approved: false },
+      ],
+    };
+    const resolutionPromise = lifecycle.showActionHitlCard(
+      "action-confirm-1",
+      pendingAction,
+    );
+
+    assert.equal(
+      chatBox.querySelector(".llm-agent-hitl-title")?.textContent,
+      "Add tags",
+    );
+    assert.isFunction(resolveConfirmation);
+    resolveConfirmation?.({ approved: true, actionId: "confirm" });
+    const resolution = await resolutionPromise;
+
+    assert.deepEqual(resolution, {
+      approved: true,
+      actionId: "confirm",
+    });
+    assert.equal(
+      chatBox.querySelector(".llm-agent-hitl-title")?.textContent,
+      "Working on approved action",
+    );
+    assert.include(
+      chatBox.querySelector(".llm-agent-hitl-description")?.textContent || "",
+      "approved action",
+    );
+    assert.isAtLeast(syncCalls, 2);
   });
 
   it("dismisses action completion status on Escape and unregisters the listener", function () {

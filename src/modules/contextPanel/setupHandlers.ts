@@ -398,6 +398,7 @@ import { attachComposeCaptureController } from "./setupHandlers/controllers/comp
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
 import { createActionCommandController } from "./setupHandlers/controllers/actionCommandController";
+import { parseInlineActionCommand } from "./setupHandlers/controllers/actionCommandParams";
 import {
   createCoalescedFrameScheduler,
   getOrCreateKeyedInFlightTask,
@@ -5592,6 +5593,7 @@ export function setupHandlers(
     getActiveCommandAction,
     consumeForcedSkillIds,
     handleInlineCommand,
+    handleNaturalLanguageActionIntent,
     consumeActiveActionToken,
   } = actionCommandController;
   closeSlashMenu = closeActionSlashMenu;
@@ -6245,17 +6247,30 @@ export function setupHandlers(
       }
     }
     closeActionPicker();
+    const clearSubmittedCommandDraft = () => {
+      inputBox.value = "";
+      const EvtCtor =
+        (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
+      inputBox.dispatchEvent(new EvtCtor("input", { bubbles: true }));
+      persistDraftInputForCurrentConversation();
+    };
     // Intercept command chip: if a command chip is active, route to action execution
     const chipAction = getActiveCommandAction();
     if (chipAction) {
       const params = inputBox?.value?.trim() ?? "";
       clearCommandChip(); // also restores placeholder
-      inputBox.value = "";
-      const EvtCtor2 =
-        (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
-      inputBox.dispatchEvent(new EvtCtor2("input", { bubbles: true }));
-      persistDraftInputForCurrentConversation();
+      clearSubmittedCommandDraft();
       void handleInlineCommand(chipAction.name, params);
+      return;
+    }
+    if (await handleNaturalLanguageActionIntent(inputBox?.value ?? "")) {
+      return;
+    }
+    const inlineCommand = parseInlineActionCommand(inputBox?.value ?? "");
+    if (inlineCommand) {
+      closeSlashMenu();
+      clearSubmittedCommandDraft();
+      void handleInlineCommand(inlineCommand.actionName, inlineCommand.params);
       return;
     }
     await doSend();
@@ -6669,7 +6684,10 @@ export function setupHandlers(
       (requestId, resolution) =>
         getAgentApi().resolveConfirmation(requestId, resolution),
     );
-    if (options?.requireVisibleReviewCard && !cancelledReviewRequestIds.length) {
+    if (
+      options?.requireVisibleReviewCard &&
+      !cancelledReviewRequestIds.length
+    ) {
       return false;
     }
     syncHasActionCardAttr();

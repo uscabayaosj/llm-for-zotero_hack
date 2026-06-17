@@ -2,6 +2,7 @@ import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
 import { createElement } from "../../../../utils/domHelpers";
+import { callLLM } from "../../../../utils/llmClient";
 import type { ModelProviderAuthMode } from "../../../../utils/modelProviders";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import { getAgentModeEnabled } from "../../prefHelpers";
@@ -32,6 +33,8 @@ import {
 import {
   isPagedLibraryActionForMode,
   parseCommandParams,
+  resolveNaturalLanguageActionIntent,
+  resolvePagedCollectionScopeInput,
 } from "./actionCommandParams";
 export {
   isPagedLibraryActionForMode,
@@ -64,6 +67,7 @@ type ActionPickerItem = {
   name: string;
   description: string;
   inputSchema: object;
+  paperScopeProfile?: PaperScopedActionProfile;
 };
 type ActionProfile = {
   model?: string;
@@ -78,6 +82,17 @@ type ActiveActionToken = {
   slashStart: number;
   caretEnd: number;
   trigger: ActionMenuTrigger;
+};
+
+type LlmActionScopeChoice = {
+  status: "match" | "ambiguous" | "no_match" | "not_action";
+  actionName?: string;
+  scope?: "collection" | "tag" | "all";
+  collectionId?: number;
+  tagName?: string;
+  tagScope?: "allTagged" | "untagged";
+  confidence?: number;
+  reason?: string;
 };
 
 type ActionCommandControllerDeps = {
@@ -153,6 +168,7 @@ export function createActionCommandController(
   getActiveCommandAction: () => { name: string } | null;
   consumeForcedSkillIds: () => string[] | undefined;
   handleInlineCommand: (actionName: string, params: string) => Promise<void>;
+  handleNaturalLanguageActionIntent: (text: string) => Promise<boolean>;
   consumeActiveActionToken: () => boolean;
 } {
   const {
@@ -176,6 +192,252 @@ export function createActionCommandController(
 
   const setStatus = (message: string, level: StatusLevel) => {
     deps.setStatusMessage?.(message, level);
+  };
+
+  const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+    Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+  const getActionSchemaProperties = (
+    action: Pick<ActionPickerItem, "inputSchema">,
+  ): Record<string, unknown> => {
+    const schema = action.inputSchema;
+    if (!isPlainObject(schema) || !isPlainObject(schema.properties)) return {};
+    return schema.properties;
+  };
+
+  const getActionScopeEnum = (
+    action: Pick<ActionPickerItem, "inputSchema">,
+  ): string[] => {
+    const scope = getActionSchemaProperties(action).scope;
+    if (!isPlainObject(scope) || !Array.isArray(scope.enum)) return [];
+    return scope.enum.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+  };
+
+  const actionSupportsCollectionScope = (action: ActionPickerItem): boolean =>
+    Boolean(action.paperScopeProfile?.allowedScopes.includes("collection")) ||
+    (Boolean(getActionSchemaProperties(action).collectionId) &&
+      getActionScopeEnum(action).includes("collection"));
+
+  const actionSupportsTagScope = (action: ActionPickerItem): boolean =>
+    Boolean(action.paperScopeProfile?.allowedScopes.includes("tag"));
+
+  const normalizeIntentText = (text: string): string =>
+    text
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .replace(/[^\p{L}\p{N}/\s]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const stripActionLaunchPrefix = (text: string): string =>
+    text
+      .trim()
+      .replace(
+        /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:(?:run|start|launch|use|do|perform|execute)\s+)?/i,
+        "",
+      )
+      .trim();
+
+  const getActionAliases = (actionName: string): string[] => {
+    const aliases = new Set<string>([
+      actionName,
+      actionName.replace(/[_-]+/g, " "),
+    ]);
+    if (actionName === "auto_tag") {
+      aliases.add("auto tag");
+      aliases.add("autotag");
+    }
+    if (actionName === "audit_library") {
+      aliases.add("audit library");
+      aliases.add("audit");
+    }
+    return Array.from(aliases)
+      .map((alias) => normalizeIntentText(alias))
+      .filter(Boolean);
+  };
+
+  const textMentionsAction = (
+    text: string,
+    actions: ActionPickerItem[],
+  ): boolean => {
+    const normalizedTexts = [
+      normalizeIntentText(text),
+      normalizeIntentText(stripActionLaunchPrefix(text)),
+    ].filter(Boolean);
+    if (!normalizedTexts.length) return false;
+    return actions.some((action) =>
+      getActionAliases(action.name).some((alias) =>
+        normalizedTexts.some(
+          (normalized) =>
+            normalized === alias ||
+            normalized.startsWith(`${alias} `) ||
+            normalized.includes(`/${normalizeIntentText(action.name)}`),
+        ),
+      ),
+    );
+  };
+
+  const scoreCollectionCandidate = (
+    text: string,
+    collection: PaperScopedActionCollectionCandidate,
+  ): number => {
+    const tokens = new Set(
+      normalizeIntentText(text)
+        .split(/\s+/)
+        .filter((token) => token.length > 2),
+    );
+    const candidateTokens = normalizeIntentText(
+      `${collection.name} ${collection.path || ""}`,
+    )
+      .split(/\s+/)
+      .filter((token) => token.length > 2);
+    return candidateTokens.reduce(
+      (score, token) => score + (tokens.has(token) ? 1 : 0),
+      0,
+    );
+  };
+
+  const selectCollectionCandidatesForLlm = (
+    text: string,
+    collections: PaperScopedActionCollectionCandidate[],
+    requestContext: ActionRequestContext,
+  ): PaperScopedActionCollectionCandidate[] => {
+    const selectedIds = new Set(
+      (requestContext.selectedCollectionContexts || [])
+        .map((entry) => Number(entry.collectionId))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.floor(id)),
+    );
+    const selected = collections.filter((entry) =>
+      selectedIds.has(Math.floor(entry.collectionId)),
+    );
+    const scored = collections
+      .filter((entry) => !selectedIds.has(Math.floor(entry.collectionId)))
+      .map((entry) => ({ entry, score: scoreCollectionCandidate(text, entry) }))
+      .sort((left, right) => right.score - left.score);
+    const lexicalMatches = scored
+      .filter((entry) => entry.score > 0)
+      .map((entry) => entry.entry);
+    const fallback = scored.map((entry) => entry.entry);
+    const out = [...selected, ...lexicalMatches, ...fallback];
+    const seen = new Set<number>();
+    return out
+      .filter((entry) => {
+        const id = Math.floor(entry.collectionId);
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
+      .slice(0, 200);
+  };
+
+  const textHasScopeSignalForLlm = (params: {
+    text: string;
+    collectionCandidates: PaperScopedActionCollectionCandidate[];
+    tagCandidates: PaperScopedActionTagCandidate[];
+  }): boolean => {
+    const normalized = normalizeIntentText(params.text);
+    if (!normalized) return false;
+    if (
+      /\b(?:about|all|collection|current|entire|folder|library|scope|selected|selection|tag|whole)\b/u.test(
+        normalized,
+      )
+    ) {
+      return true;
+    }
+    const ignoredTokens = new Set([
+      "action",
+      "audit",
+      "auto",
+      "please",
+      "run",
+      "tag",
+    ]);
+    const signalTokens = new Set(
+      normalized
+        .split(/\s+/)
+        .filter((token) => token.length > 2 && !ignoredTokens.has(token)),
+    );
+    if (!signalTokens.size) return false;
+    const hasSignalToken = (value: string | undefined): boolean =>
+      normalizeIntentText(value || "")
+        .split(/\s+/)
+        .some((token) => token.length > 2 && signalTokens.has(token));
+    if (
+      params.collectionCandidates.some(
+        (entry) => hasSignalToken(entry.name) || hasSignalToken(entry.path),
+      )
+    ) {
+      return true;
+    }
+    return params.tagCandidates.some((entry) => hasSignalToken(entry.name));
+  };
+
+  const extractJsonObject = (text: string): Record<string, unknown> | null => {
+    const trimmed = text.trim();
+    const candidates = [
+      trimmed,
+      trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1),
+    ].filter((entry) => entry.startsWith("{") && entry.endsWith("}"));
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (isPlainObject(parsed)) return parsed;
+      } catch {
+        // Try the next candidate.
+      }
+    }
+    return null;
+  };
+
+  const parseLlmActionScopeChoice = (
+    raw: string,
+  ): LlmActionScopeChoice | null => {
+    const parsed = extractJsonObject(raw);
+    if (!parsed) return null;
+    const status = parsed.status;
+    if (
+      status !== "match" &&
+      status !== "ambiguous" &&
+      status !== "no_match" &&
+      status !== "not_action"
+    ) {
+      return null;
+    }
+    const scope =
+      parsed.scope === "collection" ||
+      parsed.scope === "tag" ||
+      parsed.scope === "all"
+        ? parsed.scope
+        : undefined;
+    const tagScope =
+      parsed.tagScope === "allTagged" || parsed.tagScope === "untagged"
+        ? parsed.tagScope
+        : undefined;
+    const collectionId = Number(parsed.collectionId);
+    const confidence = Number(parsed.confidence);
+    return {
+      status,
+      actionName:
+        typeof parsed.actionName === "string"
+          ? parsed.actionName.trim()
+          : undefined,
+      scope,
+      collectionId:
+        Number.isFinite(collectionId) && collectionId > 0
+          ? Math.floor(collectionId)
+          : undefined,
+      tagName:
+        typeof parsed.tagName === "string" && parsed.tagName.trim()
+          ? parsed.tagName.trim()
+          : undefined,
+      tagScope,
+      confidence: Number.isFinite(confidence) ? confidence : undefined,
+      reason:
+        typeof parsed.reason === "string" ? parsed.reason.trim() : undefined,
+    };
   };
 
   const consumeActiveActionToken = (): boolean => {
@@ -567,6 +829,267 @@ export function createActionCommandController(
     }
   };
 
+  const resolvePagedLibraryActionInput = (
+    actionName: string,
+    params: string,
+    actionMode: "paper" | "library",
+    baseInput?: Record<string, unknown>,
+  ): Record<string, unknown> | null => {
+    const input = {
+      ...parseCommandParams(actionName, params, actionMode),
+      ...(baseInput || {}),
+    };
+    try {
+      const resolution = resolvePagedCollectionScopeInput({
+        actionName,
+        rawParams: params,
+        baseInput: input,
+        collectionCandidates: getPaperScopedCollectionCandidates(),
+      });
+      if (resolution.kind === "error") {
+        setStatus(
+          resolution.error,
+          actionName === "organize_unfiled" ? "warning" : "error",
+        );
+        return null;
+      }
+      return resolution.input;
+    } catch (error) {
+      deps.logError(`LLM: failed to resolve /${actionName} input`, error);
+      setStatus("Agent system unavailable", "error");
+      return null;
+    }
+  };
+
+  const buildLlmScopeResolverPrompt = (params: {
+    text: string;
+    actions: ActionPickerItem[];
+    collections: PaperScopedActionCollectionCandidate[];
+    tags: PaperScopedActionTagCandidate[];
+    requestContext: ActionRequestContext;
+  }): string => {
+    const selectedCollections =
+      params.requestContext.selectedCollectionContexts || [];
+    const selectedTags = params.requestContext.selectedTagContexts || [];
+    return [
+      "Resolve whether the user wants to launch one Zotero library action and identify the requested scope.",
+      "Return ONLY a JSON object. No prose. No markdown.",
+      "Schema:",
+      '{"status":"match|ambiguous|no_match|not_action","actionName":"<action or empty>","scope":"collection|tag|all","collectionId":123,"tagName":"...","tagScope":"allTagged|untagged","confidence":0.0,"reason":"short"}',
+      "Rules:",
+      "- Only choose actionName from AVAILABLE_ACTIONS.",
+      "- Only choose collectionId from AVAILABLE_COLLECTIONS.",
+      "- Only choose tagName/tagScope from AVAILABLE_TAGS.",
+      "- Use selected scopes for words like this/current/selected.",
+      "- Resolve descriptive collection phrases semantically, e.g. 'the folder about dynamical systems'.",
+      "- Return status ambiguous if multiple listed collections/tags plausibly match.",
+      "- Return status no_match if the action is clear but no listed scope matches.",
+      "- Return status not_action if the user is asking a question about an action instead of asking to run it.",
+      "- Do not choose whole library unless the user explicitly says whole/all/entire library.",
+      "",
+      `USER_TEXT: ${params.text}`,
+      "",
+      "AVAILABLE_ACTIONS:",
+      ...params.actions.map((action) =>
+        JSON.stringify({
+          name: action.name,
+          collectionScope: actionSupportsCollectionScope(action),
+          tagScope: actionSupportsTagScope(action),
+        }),
+      ),
+      "",
+      "SELECTED_COLLECTIONS:",
+      ...(selectedCollections.length
+        ? selectedCollections.map((entry) =>
+            JSON.stringify({
+              collectionId: entry.collectionId,
+              name: entry.name,
+            }),
+          )
+        : ["[]"]),
+      "",
+      "SELECTED_TAGS:",
+      ...(selectedTags.length
+        ? selectedTags.map((entry) =>
+            JSON.stringify({
+              name: entry.name,
+              normalizedName: entry.normalizedName,
+              scope: entry.scope,
+              includeAutomatic: entry.includeAutomatic,
+            }),
+          )
+        : ["[]"]),
+      "",
+      "AVAILABLE_COLLECTIONS:",
+      ...params.collections.map((entry) =>
+        JSON.stringify({
+          collectionId: entry.collectionId,
+          name: entry.name,
+          path: entry.path || entry.name,
+        }),
+      ),
+      "",
+      "AVAILABLE_TAGS:",
+      ...(params.tags.length
+        ? params.tags.slice(0, 200).map((entry) =>
+            JSON.stringify({
+              name: entry.name,
+              type: entry.type,
+            }),
+          )
+        : ["[]"]),
+    ].join("\n");
+  };
+
+  const resolveLlmNaturalLanguageActionIntent = async (params: {
+    text: string;
+    actions: ActionPickerItem[];
+    requestContext: ActionRequestContext & { mode: "paper" | "library" };
+    collectionCandidates: PaperScopedActionCollectionCandidate[];
+    tagCandidates: PaperScopedActionTagCandidate[];
+  }) => {
+    const selectedProfile = deps.getSelectedProfile();
+    if (!selectedProfile?.model) {
+      return {
+        kind: "error" as const,
+        error:
+          "Could not infer the collection from this description because no model is configured. Select a folder chip or use collection <name>.",
+      };
+    }
+    if (
+      selectedProfile.authMode === "webchat" ||
+      selectedProfile.providerProtocol === "web_sync"
+    ) {
+      return {
+        kind: "error" as const,
+        error:
+          "Could not infer the collection from this description in WebChat mode. Select a folder chip or use collection <name>.",
+      };
+    }
+
+    const eligibleActions = params.actions.filter(
+      (action) =>
+        actionSupportsCollectionScope(action) || actionSupportsTagScope(action),
+    );
+    if (
+      !eligibleActions.length ||
+      !textMentionsAction(params.text, eligibleActions) ||
+      !textHasScopeSignalForLlm({
+        text: params.text,
+        collectionCandidates: params.collectionCandidates,
+        tagCandidates: params.tagCandidates,
+      })
+    ) {
+      return { kind: "none" as const };
+    }
+
+    const collections = selectCollectionCandidatesForLlm(
+      params.text,
+      params.collectionCandidates,
+      params.requestContext,
+    );
+    const prompt = buildLlmScopeResolverPrompt({
+      text: params.text,
+      actions: eligibleActions,
+      collections,
+      tags: params.tagCandidates,
+      requestContext: params.requestContext,
+    });
+    let raw: string;
+    try {
+      raw = await callLLM({
+        prompt,
+        model: selectedProfile.model,
+        apiBase: selectedProfile.apiBase || "",
+        apiKey: selectedProfile.apiKey,
+        authMode: selectedProfile.authMode,
+        providerProtocol: selectedProfile.providerProtocol,
+        temperature: 0,
+        maxTokens: 220,
+      });
+    } catch (error) {
+      deps.logError("LLM: failed to infer action scope", error);
+      return {
+        kind: "error" as const,
+        error:
+          "Could not infer the collection from this description. Select a folder chip or use collection <name>.",
+      };
+    }
+
+    const choice = parseLlmActionScopeChoice(raw);
+    if (!choice) {
+      return {
+        kind: "error" as const,
+        error:
+          "Could not parse the inferred action scope. Select a folder chip or use collection <name>.",
+      };
+    }
+    if (choice.status === "not_action") return { kind: "none" as const };
+    const action = eligibleActions.find(
+      (candidate) => candidate.name === choice.actionName,
+    );
+    if (!action) return { kind: "none" as const };
+    if (choice.status === "ambiguous") {
+      return {
+        kind: "error" as const,
+        error:
+          choice.reason ||
+          `The ${action.name} scope is ambiguous. Select a folder chip or name one collection exactly.`,
+      };
+    }
+    if (choice.status === "no_match") {
+      return {
+        kind: "error" as const,
+        error:
+          choice.reason ||
+          `Could not match that description to a ${action.name} scope.`,
+      };
+    }
+    if ((choice.confidence ?? 1) < 0.55) {
+      return {
+        kind: "error" as const,
+        error:
+          "The inferred action scope was too uncertain. Select a folder chip or name one collection exactly.",
+      };
+    }
+
+    let syntheticText = "";
+    if (choice.scope === "collection" && choice.collectionId) {
+      const collection = params.collectionCandidates.find(
+        (entry) => Math.floor(entry.collectionId) === choice.collectionId,
+      );
+      if (!collection) {
+        return {
+          kind: "error" as const,
+          error: `The inferred collection ${choice.collectionId} is not available.`,
+        };
+      }
+      syntheticText = `/${action.name} collection ${collection.path || collection.name}`;
+    } else if (choice.scope === "tag" && (choice.tagName || choice.tagScope)) {
+      syntheticText = `/${action.name} tag ${
+        choice.tagName ||
+        (choice.tagScope === "allTagged" ? "all tagged" : "untagged")
+      }`;
+    } else if (choice.scope === "all") {
+      syntheticText = `/${action.name} whole library`;
+    } else {
+      return {
+        kind: "error" as const,
+        error:
+          "The inferred action did not include a usable scope. Select a folder chip or use collection <name>.",
+      };
+    }
+
+    return resolveNaturalLanguageActionIntent({
+      text: syntheticText,
+      mode: params.requestContext.mode,
+      actions: eligibleActions,
+      requestContext: params.requestContext,
+      collectionCandidates: params.collectionCandidates,
+      tagCandidates: params.tagCandidates,
+    });
+  };
+
   const getPaperScopedPromptOptions = (
     profile: PaperScopedActionProfile,
   ): {
@@ -741,6 +1264,19 @@ export function createActionCommandController(
       }
     }
     const trimmedUserQuery = userQuery?.trim();
+    if (
+      trimmedUserQuery &&
+      isPagedLibraryActionForMode(action.name, actionMode)
+    ) {
+      const resolvedInput = resolvePagedLibraryActionInput(
+        action.name,
+        trimmedUserQuery,
+        actionMode,
+        input,
+      );
+      if (!resolvedInput) return;
+      input = resolvedInput;
+    }
     if (trimmedUserQuery && input.userQuery === undefined) {
       input.userQuery = trimmedUserQuery;
     }
@@ -785,6 +1321,75 @@ export function createActionCommandController(
     const EventCtor =
       (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
     inputBox.dispatchEvent(new EventCtor("input", { bubbles: true }));
+  };
+
+  const clearSubmittedActionDraft = (): void => {
+    inputBox.value = "";
+    dispatchComposerInput();
+    deps.persistDraftInputForCurrentConversation();
+  };
+
+  const handleNaturalLanguageActionIntent = async (
+    text: string,
+  ): Promise<boolean> => {
+    if (deps.isClaudeConversationSystem()) return false;
+    const requestContext = buildActionRequestContext();
+    if (requestContext.mode !== "library") return false;
+    try {
+      await initAgentSubsystem();
+      const actions = getAgentApi()
+        .listActions(requestContext.mode)
+        .map((action) => ({
+          ...action,
+          paperScopeProfile: getAgentApi().getPaperScopedActionProfile(
+            action.name,
+          ),
+        }));
+      const collectionCandidates = getPaperScopedCollectionCandidates();
+      const tagCandidates = await getPaperScopedTagCandidates();
+      const result = resolveNaturalLanguageActionIntent({
+        text,
+        mode: requestContext.mode,
+        actions,
+        requestContext,
+        collectionCandidates,
+        tagCandidates,
+      });
+      const resolvedResult =
+        result.kind === "none"
+          ? await resolveLlmNaturalLanguageActionIntent({
+              text,
+              actions,
+              requestContext,
+              collectionCandidates,
+              tagCandidates,
+            })
+          : result;
+      if (resolvedResult.kind === "none") return false;
+      if (resolvedResult.kind === "error") {
+        setStatus(resolvedResult.error, "error");
+        return true;
+      }
+      const action = actions.find(
+        (candidate) => candidate.name === resolvedResult.actionName,
+      );
+      if (!action) {
+        setStatus(`Unknown action: ${resolvedResult.actionName}`, "error");
+        return true;
+      }
+      closeSlashMenu();
+      clearSubmittedActionDraft();
+      void executeAgentAction(
+        action,
+        resolvedResult.input,
+        resolvedResult.userQuery,
+      );
+      return true;
+    } catch (error) {
+      deps.logError("LLM: failed to resolve natural action intent", error);
+      setStatus("Agent system unavailable", "error");
+      return true;
+    }
   };
 
   const handleSkillSelection = (skill: AgentSkill): void => {
@@ -921,10 +1526,13 @@ export function createActionCommandController(
     const paperScopeProfile =
       getAgentApi().getPaperScopedActionProfile(actionName);
     if (isPagedLibraryActionForMode(actionName, actionMode)) {
-      void executeAgentAction(
-        action,
-        parseCommandParams(actionName, params, actionMode),
+      const input = resolvePagedLibraryActionInput(
+        actionName,
+        params,
+        actionMode,
       );
+      if (!input) return;
+      void executeAgentAction(action, input);
       return;
     }
     if (paperScopeProfile) {
@@ -1024,6 +1632,7 @@ export function createActionCommandController(
       return ids;
     },
     handleInlineCommand,
+    handleNaturalLanguageActionIntent,
     consumeActiveActionToken,
   };
 }

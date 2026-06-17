@@ -107,7 +107,7 @@ describe("quoteCitations", function () {
     assert.include(rendered, "(王, 2024)");
   });
 
-  it("omits translated source-backed blockquotes that do not match trusted quote text", function () {
+  it("preserves unmatched source-backed blockquotes as plain quoted text", function () {
     const citation = buildQuoteCitation({
       quoteText: "Memory engrams are highly dynamic during consolidation.",
       citationLabel: "(Tomé, 2024)",
@@ -122,8 +122,25 @@ describe("quoteCitations", function () {
 
     assert.include(rendered, "解释");
     assert.include(rendered, "继续");
-    assert.notInclude(rendered, "记忆痕迹在巩固过程中");
-    assert.notInclude(rendered, "(Tomé, 2024)");
+    assert.include(rendered, "> 记忆痕迹在巩固过程中具有高度动态性。");
+    assert.include(rendered, "(Tomé, 2024)");
+    assert.notInclude(rendered, "[[quote:");
+  });
+
+  it("keeps quote lead-ins from becoming blank when a manual quote is unmatched", function () {
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      "CNNs apply the same computation across every pixel in an image — as the authors put it:\n\n> This is prohibitively expensive for large images or video.\n\n(Mnih et al., 2014)\n\nThis motivates recurrent attention.",
+      [],
+      { resolved: "preserve", unresolved: "omit" },
+    );
+
+    assert.include(rendered, "as the authors put it:");
+    assert.include(
+      rendered,
+      "> This is prohibitively expensive for large images or video.",
+    );
+    assert.include(rendered, "(Mnih et al., 2014)");
+    assert.include(rendered, "This motivates recurrent attention.");
   });
 
   it("canonicalizes exact manual source-backed blockquotes through trusted anchors", function () {
@@ -221,6 +238,23 @@ describe("quoteCitations", function () {
     assert.notInclude(sanitized, "[[source=");
     assert.notInclude(sanitized, "section=");
     assert.notInclude(sanitized, "chunk=");
+  });
+
+  it("preserves leaked source metadata quotes after full quote sanitization", function () {
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      '"our results provide evidence that the activity of dynamic engrams..." [[source=(Tomé, 2024), section=Dynamic and selective engrams emerge with memory consolidation, chunk=28]]',
+      [],
+      { resolved: "preserve", unresolved: "omit" },
+    );
+
+    assert.include(
+      rendered,
+      "> our results provide evidence that the activity of dynamic engrams...",
+    );
+    assert.include(rendered, "(Tomé, 2024)");
+    assert.notInclude(rendered, "[[source=");
+    assert.notInclude(rendered, "section=");
+    assert.notInclude(rendered, "chunk=");
   });
 
   it("extracts quote citations from nested tool content and JSON text payloads", function () {

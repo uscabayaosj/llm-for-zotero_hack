@@ -540,6 +540,10 @@ describe("semantic tool surface", function () {
     assert.equal(result?.contentStatus, "no_extractable_pdf_text");
     assert.include(String(result?.text || ""), "This abstract is enough");
     assert.equal(result?.sourceLabel, "(Charest, 2014)");
+    assert.lengthOf(
+      (output as { quoteCitations?: unknown[] }).quoteCitations || [],
+      0,
+    );
   });
 
   it("paper_read overview keeps MinerU failure warning while using Zotero metadata fallback", async function () {
@@ -766,6 +770,67 @@ describe("semantic tool surface", function () {
         },
       }),
       "Read paper overviews from 2 sources",
+    );
+  });
+
+  it("paper_read overview returns quote anchors for extractable paper text", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Recurrent Attention Paper",
+      firstCreator: "Mnih et al.",
+      year: "2014",
+    };
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async () => ({
+          backend: "raw_pdf_text",
+          text:
+            "[chunk 0]\nRecurrent models reduce computation by selecting only a sequence of image locations.\n\n" +
+            "[chunk 4]\nThe agent learns where to attend using reinforcement learning from task reward.",
+          citationLabel: "Mnih et al., 2014",
+          sourceLabel: "(Mnih et al., 2014)",
+          paperContext,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: Array<{
+        quoteCitationIds?: string[];
+        quoteAnchors?: string[];
+      }>;
+      quoteCitations?: Array<{
+        id: string;
+        quoteText: string;
+        citationLabel: string;
+      }>;
+    };
+
+    assert.lengthOf(output.quoteCitations || [], 2);
+    assert.equal(
+      output.quoteCitations?.[0]?.quoteText,
+      "Recurrent models reduce computation by selecting only a sequence of image locations.",
+    );
+    assert.equal(
+      output.quoteCitations?.[0]?.citationLabel,
+      "(Mnih et al., 2014)",
+    );
+    assert.deepEqual(
+      output.results?.[0]?.quoteCitationIds,
+      output.quoteCitations?.map((citation) => citation.id),
+    );
+    assert.deepEqual(
+      output.results?.[0]?.quoteAnchors,
+      output.quoteCitations?.map((citation) => `[[quote:${citation.id}]]`),
     );
   });
 

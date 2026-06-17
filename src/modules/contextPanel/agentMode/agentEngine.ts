@@ -176,6 +176,25 @@ function appendPendingFinalText(
   message.text = message.pendingFinalText || message.text;
 }
 
+export function mergeAgentToolResultQuoteCitations(
+  message: { quoteCitations?: QuoteCitation[] },
+  event: Pick<Extract<AgentEvent, { type: "tool_result" }>, "ok"> & {
+    content?: unknown;
+    artifacts?: unknown;
+  },
+): void {
+  if (!event.ok) return;
+  const toolQuoteCitations = mergeQuoteCitations(
+    extractQuoteCitationsFromToolContent(event.content),
+    extractQuoteCitationsFromToolContent(event.artifacts),
+  );
+  if (!toolQuoteCitations.length) return;
+  message.quoteCitations = mergeQuoteCitations(
+    message.quoteCitations,
+    toolQuoteCitations,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Types for panel helpers (defined inline to avoid importing from chat.ts)
 // ---------------------------------------------------------------------------
@@ -1115,16 +1134,7 @@ export async function sendAgentTurn(
           }
           case "tool_result": {
             if (!event.ok) break;
-            const toolQuoteCitations = mergeQuoteCitations(
-              extractQuoteCitationsFromToolContent(event.content),
-              extractQuoteCitationsFromToolContent(event.artifacts),
-            );
-            if (toolQuoteCitations.length) {
-              assistantMessage.quoteCitations = mergeQuoteCitations(
-                assistantMessage.quoteCitations,
-                toolQuoteCitations,
-              );
-            }
+            mergeAgentToolResultQuoteCitations(assistantMessage, event);
             const toolPaperContexts = deps.normalizePaperContexts([
               ...extractPaperContextCandidatesFromToolContent(event.content),
               ...extractPaperContextCandidatesFromToolContent(event.artifacts),
@@ -1759,16 +1769,7 @@ export async function retryAgentTurn(
           }
           case "tool_result": {
             if (!event.ok) break;
-            const toolQuoteCitations = mergeQuoteCitations(
-              extractQuoteCitationsFromToolContent(event.content),
-              extractQuoteCitationsFromToolContent(event.artifacts),
-            );
-            if (toolQuoteCitations.length) {
-              assistantMessage.quoteCitations = mergeQuoteCitations(
-                assistantMessage.quoteCitations,
-                toolQuoteCitations,
-              );
-            }
+            mergeAgentToolResultQuoteCitations(assistantMessage, event);
             const toolPaperContexts = deps.normalizePaperContexts([
               ...extractPaperContextCandidatesFromToolContent(event.content),
               ...extractPaperContextCandidatesFromToolContent(event.artifacts),

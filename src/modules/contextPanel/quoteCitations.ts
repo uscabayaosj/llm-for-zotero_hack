@@ -198,7 +198,26 @@ function replacementForSourceBackedQuote(params: {
   }
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   const trusted = findMatchingTrustedQuoteCitation(params);
-  return trusted ? `[[quote:${trusted.id}]]` : "";
+  return trusted
+    ? `[[quote:${trusted.id}]]`
+    : formatPlainSourceBackedQuoteMarkdown(
+        params.quoteText,
+        params.citationLabel,
+      );
+}
+
+function formatPlainSourceBackedQuoteMarkdown(
+  quoteText: string,
+  citationLabel: string,
+): string {
+  const normalizedQuote = normalizeMultilineText(quoteText);
+  const normalizedCitation = normalizeCitationLabel(citationLabel);
+  if (!normalizedQuote || !normalizedCitation) return "";
+  const quoteLines = normalizedQuote
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `${quoteLines}\n\n${normalizedCitation}`;
 }
 
 export function sanitizeUntrustedSourceBackedQuoteBlocks(
@@ -232,7 +251,9 @@ export function sanitizeUntrustedSourceBackedQuoteBlocks(
     while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
 
     const citationLabel =
-      cursor < lines.length ? parseStandaloneCitationLabel(lines[cursor]) : null;
+      cursor < lines.length
+        ? parseStandaloneCitationLabel(lines[cursor])
+        : null;
     if (citationLabel) {
       const replacement = replacementForSourceBackedQuote({
         quoteText,

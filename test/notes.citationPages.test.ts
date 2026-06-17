@@ -157,7 +157,7 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteHtml, "[quote unavailable]");
   });
 
-  it("omits untrusted leaked source metadata quotes from chat-history text", function () {
+  it("preserves untrusted leaked source metadata quotes in chat-history text", function () {
     const messages: Message[] = [
       {
         role: "assistant",
@@ -170,10 +170,10 @@ describe("notes citation page export", function () {
 
     const result = buildChatHistoryNotePayload(messages);
 
-    assert.notInclude(result.noteText, "our results provide evidence");
-    assert.notInclude(result.noteText, "(Tomé, 2024)");
-    assert.notInclude(result.noteHtml, "our results provide evidence");
-    assert.notInclude(result.noteHtml, "(Tomé, 2024)");
+    assert.include(result.noteText, "> our results provide evidence");
+    assert.include(result.noteText, "(Tomé, 2024)");
+    assert.include(result.noteHtml, "our results provide evidence");
+    assert.include(result.noteHtml, "(Tomé, 2024)");
     assert.notInclude(result.noteText, "[[source=");
     assert.notInclude(result.noteText, "section=");
     assert.notInclude(result.noteText, "chunk=");

@@ -659,6 +659,74 @@ function getNextElementSibling(element: Element): Element | null {
   return null;
 }
 
+function extractedCitationLabelsMatch(
+  left: ExtractedCitationLabel,
+  right: ExtractedCitationLabel,
+): boolean {
+  if (left.normalizedSourceLabel === right.normalizedSourceLabel) return true;
+  if (left.normalizedCitationLabel === right.normalizedCitationLabel)
+    return true;
+  if (
+    left.normalizedDisplayCitationLabel &&
+    left.normalizedDisplayCitationLabel === right.normalizedDisplayCitationLabel
+  ) {
+    return true;
+  }
+  return Boolean(
+    left.normalizedCitationKey &&
+    left.normalizedCitationKey === right.normalizedCitationKey,
+  );
+}
+
+function isStandaloneCitationElementForQuote(
+  element: Element,
+  extractedCitation: ExtractedCitationLabel,
+): boolean {
+  const parsed = extractStandalonePaperSourceLabel(element.textContent || "");
+  return Boolean(
+    parsed && extractedCitationLabelsMatch(parsed, extractedCitation),
+  );
+}
+
+function findConsumedCitationRemovalElement(
+  citationEl: Element,
+  extractedCitation: ExtractedCitationLabel,
+): Element | null {
+  if (!isStandaloneCitationElementForQuote(citationEl, extractedCitation)) {
+    return null;
+  }
+  let removalTarget: Element = citationEl;
+  let parent = citationEl.parentElement;
+  while (parent && !parent.classList.contains("llm-quote-card")) {
+    if (!isStandaloneCitationElementForQuote(parent, extractedCitation)) break;
+    removalTarget = parent;
+    parent = parent.parentElement;
+  }
+  return removalTarget;
+}
+
+function removeConsumedSourceBackedQuoteCitation(params: {
+  quoteCard: Element;
+  citationEl: Element;
+  extractedCitation: ExtractedCitationLabel;
+}): void {
+  const removalTarget = findConsumedCitationRemovalElement(
+    params.citationEl,
+    params.extractedCitation,
+  );
+  removalTarget?.parentNode?.removeChild(removalTarget);
+
+  let next = getNextElementSibling(params.quoteCard);
+  while (
+    next &&
+    isStandaloneCitationElementForQuote(next, params.extractedCitation)
+  ) {
+    const duplicate = next;
+    next = getNextElementSibling(next);
+    duplicate.parentNode?.removeChild(duplicate);
+  }
+}
+
 export function extractStandalonePaperSourceLabel(
   value: string,
 ): ExtractedCitationLabel | null {
@@ -2632,7 +2700,9 @@ function createQuoteCardElement(params: {
   citationContent: Node;
 }): HTMLElement {
   const wrapper = params.ownerDoc.createElement("div");
-  wrapper.className = "llm-quote-card llm-quote-citation-anchor";
+  wrapper.className = params.quoteCitationId
+    ? "llm-quote-card llm-quote-citation-anchor"
+    : "llm-quote-card";
   wrapper.dataset.expanded = "false";
   if (params.quoteCitationId) {
     wrapper.dataset.quoteCitationId = params.quoteCitationId;
@@ -3056,12 +3126,46 @@ export function decorateAssistantCitationLinks(params: {
     });
     if (!trustedQuoteCitation) {
       ztoolkit.log(
-        "LLM citation decoration: skipped untrusted source-backed blockquote",
+        "LLM citation decoration: rendering unanchored source-backed quote card",
         "source =",
         extractedCitation.sourceLabel,
         "quote =",
         quoteText.slice(0, 120),
       );
+      const matchingCandidates = resolveMatchingCandidatesForExtractedCitation(
+        extractedCitation,
+        candidates,
+      );
+      const citationElement = createCitationButton({
+        ownerDoc,
+        body: params.body,
+        panelItem: params.panelItem,
+        candidates: matchingCandidates,
+        extractedCitation,
+        quoteText,
+        rawCitationText: extractedCitation.sourceLabel,
+      });
+      const quoteCard = createQuoteCardElement({
+        ownerDoc,
+        quoteText,
+        citationContent: citationElement,
+      });
+      const blockquoteParent = blockquote.parentNode;
+      if (!blockquoteParent) continue;
+      blockquoteParent.replaceChild(quoteCard, blockquote);
+      removeConsumedSourceBackedQuoteCitation({
+        quoteCard,
+        citationEl,
+        extractedCitation,
+      });
+      if (citationRemainder) {
+        const remainderEl = ownerDoc.createElement("p");
+        remainderEl.textContent = citationRemainder;
+        quoteCard.parentElement?.insertBefore(
+          remainderEl,
+          quoteCard.nextSibling,
+        );
+      }
       continue;
     }
     quoteText = trustedQuoteCitation.quoteText;
@@ -3093,7 +3197,11 @@ export function decorateAssistantCitationLinks(params: {
     const blockquoteParent = blockquote.parentNode;
     if (!blockquoteParent) continue;
     blockquoteParent.replaceChild(quoteCard, blockquote);
-    citationEl.parentNode?.removeChild(citationEl);
+    removeConsumedSourceBackedQuoteCitation({
+      quoteCard,
+      citationEl,
+      extractedCitation,
+    });
 
     // If the citation was mixed with continuation text (edge-case leading-line
     // extraction), re-insert the remainder as a new paragraph after this element

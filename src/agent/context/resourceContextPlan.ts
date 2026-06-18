@@ -3,6 +3,7 @@ import type {
   AgentAttachmentResourceSummary,
   AgentRuntimeRequest,
 } from "../types";
+import { BALANCED_EVIDENCE_GUIDANCE } from "../../shared/quoteGuidance";
 import type { PaperContextRef, TagContextRef } from "../../shared/types";
 import {
   buildPaperQuoteCitationGuidance,
@@ -614,6 +615,7 @@ export function buildAgentStableResourceContextBlock(
 
   if (citationPaperRefs.length) {
     lines.push(
+      BALANCED_EVIDENCE_GUIDANCE,
       "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
       "If quote anchors like [[quote:Q_x7a2]] are provided, use the anchor token for direct quotes instead of manually copying the quote or sourceLabel.",
       "Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation.",

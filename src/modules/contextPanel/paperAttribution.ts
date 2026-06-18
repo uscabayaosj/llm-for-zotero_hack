@@ -2,6 +2,7 @@ import {
   isPdfContextAttachment,
   resolveContextAttachmentSupport,
 } from "./contextAttachmentSupport";
+import { BALANCED_EVIDENCE_GUIDANCE } from "../../shared/quoteGuidance";
 import { formatContextAttachmentSourceType } from "./contextSourceModes";
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import type { PaperContentSourceMode, PaperContextRef } from "./types";
@@ -292,6 +293,7 @@ export function buildPaperQuoteCitationGuidance(
     if (isTextLikeAttachmentSourceMode(paperContext.contentSourceMode)) {
       return [
         "Answer format when quoting this selected attachment:",
+        BALANCED_EVIDENCE_GUIDANCE,
         "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
         "> quoted text from the selected attachment",
         "",
@@ -308,6 +310,7 @@ export function buildPaperQuoteCitationGuidance(
     }
     return [
       "Answer format when quoting this paper:",
+      BALANCED_EVIDENCE_GUIDANCE,
       "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
       "> quoted text from the paper",
       "",
@@ -324,6 +327,7 @@ export function buildPaperQuoteCitationGuidance(
   }
   return [
     "Paper-grounded citation format for the final answer:",
+    BALANCED_EVIDENCE_GUIDANCE,
     "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
     "> quoted text from the paper",
     "",
@@ -343,6 +347,7 @@ export function buildPaperQuoteCitationGuidance(
 export function buildGenericSourceQuoteCitationGuidance(): string[] {
   return [
     "Source-grounded citation format for the final answer:",
+    BALANCED_EVIDENCE_GUIDANCE,
     "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
     "> quoted text from the selected source",
     "",

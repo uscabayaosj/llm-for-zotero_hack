@@ -146,6 +146,81 @@ describe("quoteCitations", function () {
     assert.notInclude(rendered, "[[quote:");
   });
 
+  it("keeps translated quotes unanchored when only the original source text exists", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "> 记忆痕迹在巩固过程中具有高度动态性。\n\n(Tomé, 2024)",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Memory engrams are highly dynamic during consolidation.",
+            sourceLabel: "(Tomé, 2024)",
+            contextItemId: 22,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "> 记忆痕迹在巩固过程中具有高度动态性。");
+  });
+
+  it("keeps quotes unanchored when the source label points to the wrong paper", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "> Paper A reports that the intervention improved recall accuracy.\n\n(Paper B, 2024)",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Paper A reports that the intervention improved recall accuracy.",
+            sourceLabel: "(Paper A, 2024)",
+            contextItemId: 1,
+          },
+          {
+            sourceText:
+              "Paper B reports no reliable change in recall accuracy.",
+            sourceLabel: "(Paper B, 2024)",
+            contextItemId: 2,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "> Paper A reports");
+    assert.notInclude(finalized.markdown, "(Paper B, 2024)");
+  });
+
+  it("keeps duplicate same-label source quotes unanchored without unique context", function () {
+    const duplicatedQuote =
+      "The same author-year label appears on two candidate source passages.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${duplicatedQuote}\n\n(Smith, 2024)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: duplicatedQuote,
+            sourceLabel: "(Smith, 2024)",
+            contextItemId: 1,
+          },
+          {
+            sourceText: duplicatedQuote,
+            sourceLabel: "(Smith, 2024)",
+            contextItemId: 2,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, `> ${duplicatedQuote}`);
+  });
+
   it("keeps quote lead-ins from becoming blank when a manual quote is unmatched", function () {
     const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
       "CNNs apply the same computation across every pixel in an image — as the authors put it:\n\n> This is prohibitively expensive for large images or video.\n\n(Mnih et al., 2014)\n\nThis motivates recurrent attention.",

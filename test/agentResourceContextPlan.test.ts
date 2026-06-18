@@ -537,7 +537,8 @@ describe("agent resource context plan", function () {
     assert.notInclude(block, "quoteCitationId: Q_prior_read");
     assert.notInclude(block, "[[quote:Q_prior_read]]");
     assert.include(block, "internalLocator: page p. 4; section Results");
-    assert.notInclude(block, "[source=");
+    assert.notInclude(block, "[source=(Smith");
+    assert.notInclude(block, "section=Results");
     assert.include(block, "intervention selectively changed");
 
     const plan = buildAgentResourceContextPlan(req);
@@ -759,7 +760,8 @@ describe("agent resource context plan", function () {
         hydrated,
         "internalLocator: page p. 9; section Discussion",
       );
-      assert.notInclude(hydrated, "[source=");
+      assert.notInclude(hydrated, "[source=(Persisted");
+      assert.notInclude(hydrated, "section=Discussion");
 
       const staleReq = request({
         conversationKey: req.conversationKey,

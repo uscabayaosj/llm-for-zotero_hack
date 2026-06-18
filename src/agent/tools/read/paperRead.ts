@@ -168,9 +168,94 @@ function targetForPageTool(input: PaperReadInput): Record<string, unknown> {
   return {
     ...(target ? { target } : {}),
     ...(input.query ? { question: input.query } : {}),
-    ...(input.pages?.length ? { pages: input.pages } : {}),
+    ...(input.pages?.length
+      ? { pages: input.pages.map((pageIndex) => pageIndex + 1) }
+      : {}),
     ...(input.neighborPages ? { neighborPages: input.neighborPages } : {}),
     ...(input.mode === "capture" ? { capture: true } : {}),
+  };
+}
+
+function isExplicitPdfVisualRequest(
+  input: PaperReadInput,
+  requestText: string | undefined,
+): boolean {
+  if (input.pages?.length) return true;
+  const text = [input.query || "", requestText || ""]
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!text) return false;
+  return (
+    /\b(?:raw|rendered?)\s+pdf\b/.test(text) ||
+    /\bpdf\s+(?:page|pages|render|renders|screenshot|screenshots|layout)\b/.test(
+      text,
+    ) ||
+    /\b(?:render|renders|rendered|screenshot|screenshots|capture|captures|captured)\s+(?:the\s+)?(?:pdf\s+)?pages?\b/.test(
+      text,
+    ) ||
+    /\b(?:current|visible)\s+(?:reader\s+)?pages?\b/.test(text) ||
+    /\bpage\s+(?:image|images|layout|screenshot|screenshots|render|renders|rendered)\b/.test(
+      text,
+    ) ||
+    /\bexact\s+pages?\b/.test(text) ||
+    /\bpages?\s+\d+(?:\s*(?:-|–|to|,|and)\s*\d+)?\b/.test(text) ||
+    /\bp\.?\s*\d+\b/.test(text) ||
+    /\bpaper_read\s*\(\s*\{\s*mode\s*:\s*['"]visual['"]/.test(text)
+  );
+}
+
+function buildMineruVisualRedirect(params: {
+  input: PaperReadInput;
+  context: AgentToolContext;
+  zoteroGateway: ZoteroGateway;
+}): Record<string, unknown> | null {
+  if (
+    isExplicitPdfVisualRequest(params.input, params.context.request.userText)
+  ) {
+    return null;
+  }
+  let targets: NonNullable<PdfTarget["paperContext"]>[] = [];
+  try {
+    targets = resolveDefaultTargets(
+      params.input.target,
+      params.input.targets?.slice(0, 1),
+      params.context,
+      params.zoteroGateway,
+      1,
+    );
+  } catch {
+    return null;
+  }
+  const paperContext = targets.find((entry) =>
+    Boolean(normalizeString(entry.mineruCacheDir)),
+  );
+  const mineruCacheDir = normalizeString(paperContext?.mineruCacheDir);
+  if (!paperContext || !mineruCacheDir) return null;
+  return {
+    mode: "visual",
+    status: "mineru_cache_available",
+    backend: "mineru",
+    query: params.input.query || params.context.request.userText,
+    paperContext,
+    mineruCacheDir,
+    guidance:
+      "MinerU cache is available for this paper, so do not render PDF pages for this generic figure/table request. Inspect the MinerU cache first: read manifest.json to find the requested figure/table, read the matching full.md section slice for caption and surrounding discussion, then read the extracted figure image with file_io. Use paper_read mode:'visual' only if MinerU lookup or image loading fails, or if the user explicitly asks for raw/rendered PDF pages, page screenshots, page layout, exact pages, or visible-reader inspection.",
+    nextSteps: [
+      `file_io({ action:'read', filePath:'${joinLocalPath(
+        mineruCacheDir,
+        "manifest.json",
+      )}' })`,
+      `file_io({ action:'read', filePath:'${joinLocalPath(
+        mineruCacheDir,
+        "full.md",
+      )}', offset:<charStart>, length:<charEnd - charStart> })`,
+      `file_io({ action:'read', filePath:'${joinLocalPath(
+        mineruCacheDir,
+        "<figure_path>",
+      )}' })`,
+    ],
   };
 }
 
@@ -635,6 +720,9 @@ export function createPaperReadTool(
               return `Read ${overviewLabel} from ${sourcePhrase}`;
             }
           }
+          if (mode === "visual" && c?.status === "mineru_cache_available") {
+            return "Found MinerU figure cache";
+          }
           const resultCount = results?.length ?? 1;
           return resultCount > 1
             ? `Read ${resultCount} papers`
@@ -707,6 +795,14 @@ export function createPaperReadTool(
     },
     async execute(input, context) {
       if (input.mode === "visual" || input.mode === "capture") {
+        if (input.mode === "visual") {
+          const mineruRedirect = buildMineruVisualRedirect({
+            input,
+            context,
+            zoteroGateway,
+          });
+          if (mineruRedirect) return mineruRedirect;
+        }
         return visualTool.execute(input.visualInput as never, context);
       }
       const targets = resolveDefaultTargets(

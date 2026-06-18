@@ -716,6 +716,208 @@ describe("semantic tool surface", function () {
     }
   });
 
+  it("paper_read visual redirects generic MinerU figure requests to cache inspection", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "MinerU Figure Paper",
+      firstCreator: "Miller",
+      year: "2025",
+      mineruCacheDir: "/tmp/mineru-paper",
+    };
+    let prepareCalls = 0;
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {
+        preparePagesForModel: async () => {
+          prepareCalls += 1;
+          return {
+            target: { source: "library", title: "Should Not Render" },
+            pages: [],
+            artifacts: [],
+            pageTexts: {},
+          };
+        },
+      } as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "visual",
+      query: "Explain Figure 1",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Explain Figure 1",
+        selectedPaperContexts: [paperContext],
+      },
+    })) as Record<string, unknown>;
+
+    assert.equal(prepareCalls, 0);
+    assert.equal(output.status, "mineru_cache_available");
+    assert.equal(output.backend, "mineru");
+    assert.equal(output.mineruCacheDir, "/tmp/mineru-paper");
+    assert.include(String(output.guidance || ""), "read manifest.json");
+    assert.include(String(output.guidance || ""), "read the extracted figure image");
+    assert.notProperty(output, "artifacts");
+  });
+
+  it("paper_read visual still renders explicit PDF pages for MinerU papers", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "MinerU Figure Paper",
+      firstCreator: "Miller",
+      year: "2025",
+      mineruCacheDir: "/tmp/mineru-paper",
+    };
+    let requestedPages: number[] = [];
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {
+        preparePagesForModel: async ({ pages }: { pages: number[] }) => {
+          requestedPages = pages;
+          return {
+            target: {
+              source: "library",
+              title: "MinerU Figure Paper",
+              paperContext,
+              contextItemId: 22,
+              itemId: 11,
+            },
+            pages: [
+              {
+                pageIndex: 3,
+                pageLabel: "4",
+                imagePath: "/tmp/page-4.png",
+                contentHash: "hash-page-4",
+              },
+            ],
+            artifacts: [
+              {
+                kind: "image" as const,
+                mimeType: "image/png",
+                storedPath: "/tmp/page-4.png",
+                pageIndex: 3,
+                pageLabel: "4",
+              },
+            ],
+            pageTexts: { 3: "Rendered page text" },
+          };
+        },
+      } as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "visual",
+      target: { paperContext },
+      pages: [4],
+      query: "Render page 4 from the raw PDF",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Render page 4 from the raw PDF",
+        selectedPaperContexts: [paperContext],
+      },
+    })) as {
+      content?: { pageCount?: number };
+      artifacts?: unknown[];
+    };
+
+    assert.deepEqual(requestedPages, [3]);
+    assert.equal(output.content?.pageCount, 1);
+    assert.lengthOf(output.artifacts || [], 1);
+  });
+
+  it("paper_read visual renders PDF pages when MinerU cache is absent", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "PDF Figure Paper",
+      firstCreator: "Miller",
+      year: "2025",
+    };
+    let requestedPages: number[] = [];
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {
+        preparePagesForModel: async ({ pages }: { pages: number[] }) => {
+          requestedPages = pages;
+          return {
+            target: {
+              source: "library",
+              title: "PDF Figure Paper",
+              paperContext,
+              contextItemId: 22,
+              itemId: 11,
+            },
+            pages: [
+              {
+                pageIndex: 1,
+                pageLabel: "2",
+                imagePath: "/tmp/page-2.png",
+                contentHash: "hash-page-2",
+              },
+            ],
+            artifacts: [
+              {
+                kind: "image" as const,
+                mimeType: "image/png",
+                storedPath: "/tmp/page-2.png",
+                pageIndex: 1,
+                pageLabel: "2",
+              },
+            ],
+            pageTexts: { 1: "Rendered page text" },
+          };
+        },
+      } as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "visual",
+      target: { paperContext },
+      pages: [2],
+      query: "Explain Figure 1",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Explain Figure 1",
+        selectedPaperContexts: [paperContext],
+      },
+    })) as {
+      content?: { pageCount?: number };
+      artifacts?: unknown[];
+    };
+
+    assert.deepEqual(requestedPages, [1]);
+    assert.equal(output.content?.pageCount, 1);
+    assert.lengthOf(output.artifacts || [], 1);
+  });
+
   it("paper_read overview dedupes default paper contexts and traces the source label", async function () {
     const paperContext = {
       itemId: 11,

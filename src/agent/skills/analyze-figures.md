@@ -43,7 +43,7 @@ The manifest lists figures per section with labels (e.g. "Fig. 1"), image paths,
 Use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md', offset:<charStart>, length:<charEnd - charStart> })` to read just the section containing the figure. This gives you the caption and surrounding discussion.
 
 **Step 4 — Read the image directly:**
-Use `file_io({ action:'read', filePath:'{mineruCacheDir}/<figure_path>' })` to load the image. The path comes from the manifest's figure entry. Visual models (GPT-4o, Codex, Claude, Gemini) can see images natively — let the model analyze the figure visually.
+Use `file_io({ action:'read', filePath:'{mineruCacheDir}/<figure_path>' })` to load the image. The path comes from the manifest's figure entry. Image-capable models can inspect this artifact directly — use the figure image together with the caption and surrounding text.
 
 **Step 5 — Combine image + text:**
 Use both the image and the section text (caption + discussion) to give a complete answer.

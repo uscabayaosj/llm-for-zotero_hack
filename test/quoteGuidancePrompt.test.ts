@@ -8,6 +8,7 @@ import {
 } from "../src/agent/context/cacheManagement";
 import { buildAgentStableResourceContextBlock } from "../src/agent/context/resourceContextPlan";
 import { AGENT_PERSONA_INSTRUCTIONS } from "../src/agent/model/agentPersona";
+import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
 import {
   buildGenericSourceQuoteCitationGuidance,
   buildPaperQuoteCitationGuidance,
@@ -169,6 +170,45 @@ describe("quote guidance prompts", function () {
       const text = readSkill(skill);
       assertBalancedEvidenceGuidance(text);
       assertDirectQuoteSafety(text);
+    }
+  });
+
+  it("guides figure tasks with MinerU cache through cached images before PDF rendering", async function () {
+    const paperContext: PaperContextRef = {
+      ...paper(),
+      title: "Figure Paper",
+      mineruCacheDir: "/tmp/llm-for-zotero-mineru/12",
+    };
+    const messages = await buildAgentInitialMessages(
+      {
+        ...request(),
+        userText: "Explain Figure 1.",
+        selectedPaperContexts: [paperContext],
+      },
+      [],
+      ["analyze-figures"],
+    );
+    const text = messages.map((message) => message.content).join("\n");
+
+    assert.include(text, "Use the MinerU cache first");
+    assert.include(text, "manifest.json");
+    assert.include(text, "full.md");
+    assert.include(text, "read the extracted image path with `file_io`");
+    assert.include(text, "/tmp/llm-for-zotero-mineru/12");
+    assert.include(text, "Use `paper_read({ mode:'visual'");
+    assert.include(text, "only when MinerU is absent");
+    assert.notInclude(
+      text,
+      "Prefer the semantic `paper_read` path: use `paper_read({ mode:'visual'",
+    );
+  });
+
+  it("describes figure image support generically without naming specific models", function () {
+    const text = readSkill("../src/agent/skills/analyze-figures.md");
+
+    assert.include(text, "Image-capable models");
+    for (const modelName of ["GPT-4o", "Codex", "Claude", "Gemini"]) {
+      assert.notInclude(text, modelName);
     }
   });
 });

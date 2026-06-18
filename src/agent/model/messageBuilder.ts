@@ -396,8 +396,8 @@ function buildFigureMineruInstruction(
     .join("\n");
   return (
     "TURN RULE: This is a figure/table interpretation task and MinerU cache is available for at least one in-scope paper. " +
-    "Prefer the semantic `paper_read` path: use `paper_read({ mode:'visual', query:'<figure/table label>' })` for rendered page inspection and `paper_read({ mode:'targeted', query:'<figure/table label and surrounding discussion>' })` for text around the figure. " +
-    "If a MinerU image path is explicitly needed for note embedding, inspect the cache with `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })` and read only the relevant image/section.\n" +
+    "Use the MinerU cache first: read `manifest.json` with `file_io`, find the requested figure/table entry, read the matching `full.md` section slice by offset/length for caption and surrounding text, then read the extracted image path with `file_io` when a figure image is needed. " +
+    "Use `paper_read({ mode:'visual', query:'<figure/table label>' })` only when MinerU is absent, the MinerU lookup/image load fails, or the user explicitly asks for rendered/raw PDF pages, page screenshots, page layout, exact pages, or visible-reader inspection.\n" +
     `Available MinerU cache directories:\n${cacheHints}`
   );
 }

@@ -58,19 +58,19 @@ describe("quote card UI contract", function () {
     );
   });
 
-  it("renders unmatched source-backed quotes through the quote-card component", function () {
+  it("renders trusted anchors and fallback blockquotes through the quote-card component", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
 
-    assert.include(
+    assert.include(renderSource, "createFallbackQuoteCardElement");
+    assert.include(renderSource, "replaceBlockquoteWithFallbackQuoteCard");
+    assert.notInclude(renderSource, 'citationContent.textContent = "Quote"');
+    assert.notInclude(
       renderSource,
       "rendering unanchored source-backed quote card",
     );
-    assert.include(renderSource, "quoteText,\n        rawCitationText");
-    assert.notInclude(renderSource, 'quoteText: "",\n        rawCitationText');
     assert.include(renderSource, "citationContent: citationElement");
-    assert.include(renderSource, "removeConsumedSourceBackedQuoteCitation");
     assert.notInclude(
       renderSource,
       "citationEl.parentNode?.removeChild(citationEl);",
@@ -78,6 +78,42 @@ describe("quote card UI contract", function () {
     assert.include(
       renderSource,
       'params.quoteCitationId\n    ? "llm-quote-card llm-quote-citation-anchor"\n    : "llm-quote-card"',
+    );
+  });
+
+  it("lifts rendered quote cards out of markdown paragraphs", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "liftQuoteCardsOutOfParagraph");
+    assert.include(renderSource, 'classList?.contains("llm-quote-card")');
+    assert.include(renderSource, 'parent?.tagName.toLowerCase() === "p"');
+    assert.include(renderSource, "parent.replaceChild(replacement, paragraph)");
+  });
+
+  it("warms local paper text before final quote verification", function () {
+    const chatSource = source("src/modules/contextPanel/chat.ts");
+
+    assert.include(chatSource, "ensureQuoteSourceTextCachedForPaper");
+    assert.include(chatSource, "assistantMarkdownNeedsQuoteSourceSearch");
+    assert.include(chatSource, "await ensurePDFTextCached(contextItem");
+    assert.include(chatSource, "await buildQuoteSourceTextsForPaperContexts");
+    assert.include(chatSource, "await finalizeAssistantMessageQuoteCitations");
+  });
+
+  it("awaits quote finalization in agent completion paths", function () {
+    const agentSource = source(
+      "src/modules/contextPanel/agentMode/agentEngine.ts",
+    );
+
+    assert.include(
+      agentSource,
+      "await deps.finalizeAssistantQuoteCitations(assistantMessage, userMessage)",
+    );
+    assert.include(
+      agentSource,
+      "await deps.finalizeAssistantQuoteCitations(\n      assistantMessage",
     );
   });
 });

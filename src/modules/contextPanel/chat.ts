@@ -203,12 +203,17 @@ import { resolveMultiContextPlan } from "./multiContextPlanner";
 import { resolveContextImages, buildImageResolver } from "./mineruImages";
 import {
   formatPaperCitationLabel,
+  formatPaperSourceLabel,
   resolvePaperContextDisplayRef,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
   type PaperContextDisplayCache,
 } from "./paperAttribution";
-import { buildPaperKey } from "./pdfContext";
+import {
+  buildPaperKey,
+  ensureNoteTextCached,
+  ensurePDFTextCached,
+} from "./pdfContext";
 import { isTextOnlyModel, resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
@@ -241,10 +246,14 @@ import {
   mergeCitationPaperContexts,
 } from "./citationContexts";
 import {
+  buildQuoteSourceIndex,
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
+  finalizeAssistantQuoteCitations,
   mergeQuoteCitations,
+  normalizeQuoteCitationPlaceholdersForDisplay,
   replaceQuoteCitationPlaceholdersForMarkdown,
+  type QuoteSourceText,
 } from "./quoteCitations";
 import {
   getAgentApi,
@@ -2355,10 +2364,12 @@ export async function copyTextToClipboard(
 export function buildAssistantDisplayMarkdownForRender(
   message: Pick<Message, "text" | "quoteCitations">,
 ): string {
-  return replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(message.text || ""),
-    message.quoteCitations,
-    { resolved: "preserve", unresolved: "omit" },
+  return normalizeQuoteCitationPlaceholdersForDisplay(
+    replaceQuoteCitationPlaceholdersForMarkdown(
+      sanitizeText(message.text || ""),
+      message.quoteCitations,
+      { resolved: "preserve", unresolved: "omit" },
+    ),
   );
 }
 
@@ -3479,6 +3490,149 @@ async function buildContextPlanForRequest(params: {
     recentPaperContexts: params.recentPaperContexts,
     mineruImages,
   };
+}
+
+function quoteSourcePaperKey(paper: PaperContextRef): string {
+  return `${Math.floor(Number(paper.itemId || 0))}:${Math.floor(
+    Number(paper.contextItemId || 0),
+  )}`;
+}
+
+function cachedQuoteSourceText(contextItemId: number): string {
+  const cached = pdfTextCache.get(contextItemId);
+  return Array.isArray(cached?.chunks) ? cached.chunks.join("\n\n") : "";
+}
+
+function hasCachedQuoteSourceText(contextItemId: number): boolean {
+  return Boolean(cachedQuoteSourceText(contextItemId).trim());
+}
+
+function resolveQuoteSourceContextItem(
+  paper: PaperContextRef,
+): Zotero.Item | null {
+  const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return null;
+  try {
+    const item = Zotero.Items.get(contextItemId);
+    return item || null;
+  } catch (error) {
+    ztoolkit.log("LLM: unable to resolve quote source context item", {
+      contextItemId,
+      error,
+    });
+    return null;
+  }
+}
+
+async function ensureQuoteSourceTextCachedForPaper(
+  paper: PaperContextRef,
+): Promise<void> {
+  const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return;
+  if (hasCachedQuoteSourceText(contextItemId)) return;
+
+  const contextItem = resolveQuoteSourceContextItem(paper);
+  if (!contextItem) return;
+
+  // An empty cache entry means an earlier extraction attempt did not provide
+  // searchable text. Retry here before the provenance finalizer gives up.
+  if (pdfTextCache.has(contextItemId)) {
+    pdfTextCache.delete(contextItemId);
+  }
+
+  try {
+    if ((contextItem as any).isNote?.()) {
+      await ensureNoteTextCached(contextItem);
+    } else {
+      await ensurePDFTextCached(contextItem, {
+        sourceMode: paper.contentSourceMode,
+      });
+    }
+  } catch (error) {
+    ztoolkit.log("LLM: quote source text cache warm failed", {
+      contextItemId,
+      sourceMode: paper.contentSourceMode,
+      error,
+    });
+  }
+}
+
+async function buildQuoteSourceTextsForPaperContexts(
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): Promise<QuoteSourceText[]> {
+  const papers = normalizePaperContexts(groups.flatMap((group) => group || []));
+  const out: QuoteSourceText[] = [];
+  const seen = new Set<string>();
+  const uniquePapers: PaperContextRef[] = [];
+  for (const paper of papers) {
+    const contextItemId = Number(paper.contextItemId || 0);
+    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+    const key = quoteSourcePaperKey(paper);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniquePapers.push(paper);
+  }
+
+  await Promise.all(
+    uniquePapers.map((paper) => ensureQuoteSourceTextCachedForPaper(paper)),
+  );
+
+  for (const paper of uniquePapers) {
+    const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+    const sourceText = cachedQuoteSourceText(contextItemId);
+    if (!sourceText.trim()) continue;
+    out.push({
+      sourceText,
+      sourceLabel: formatPaperSourceLabel(paper),
+      contextItemId: paper.contextItemId,
+      itemId: paper.itemId,
+    });
+  }
+  return out;
+}
+
+function assistantMarkdownNeedsQuoteSourceSearch(markdown: string): boolean {
+  return /^[ \t]*>/.test(markdown || "") || /\n[ \t]*>/.test(markdown || "");
+}
+
+async function finalizeAssistantMessageQuoteCitations(
+  assistantMessage: Pick<Message, "text" | "quoteCitations">,
+  options: {
+    pairedUserMessage?: Message | null;
+    paperContexts?: PaperContextRef[];
+    fullTextPaperContexts?: PaperContextRef[];
+    citationPaperContexts?: PaperContextRef[];
+  } = {},
+): Promise<void> {
+  const sourceTexts = assistantMarkdownNeedsQuoteSourceSearch(
+    assistantMessage.text || "",
+  )
+    ? await buildQuoteSourceTextsForPaperContexts(
+        options.paperContexts,
+        options.fullTextPaperContexts,
+        options.citationPaperContexts,
+        options.pairedUserMessage?.paperContexts,
+        options.pairedUserMessage?.fullTextPaperContexts,
+        options.pairedUserMessage?.citationPaperContexts,
+        options.pairedUserMessage?.selectedTextPaperContexts?.filter(
+          (entry): entry is PaperContextRef => Boolean(entry),
+        ),
+      )
+    : [];
+  const sourceIndex = buildQuoteSourceIndex({
+    quoteCitations: assistantMessage.quoteCitations,
+    sourceTexts,
+  });
+  const finalized = finalizeAssistantQuoteCitations({
+    markdown: assistantMessage.text || "",
+    quoteCitations: assistantMessage.quoteCitations,
+    sourceIndex,
+  });
+  assistantMessage.text = finalized.markdown;
+  assistantMessage.quoteCitations = finalized.quoteCitations.length
+    ? finalized.quoteCitations
+    : undefined;
 }
 
 function createQueuedRefresh(refresh: () => void): () => void {
@@ -6261,6 +6415,12 @@ export async function retryLatestAssistantResponse(
       sanitizeText(answer) ||
       responseStreamCoalescer?.getFullText() ||
       (hasGeneratedOutput ? "" : "No response.");
+    await finalizeAssistantMessageQuoteCitations(assistantMessage, {
+      pairedUserMessage: retryPair.userMessage,
+      paperContexts: contextPlan.paperContexts,
+      fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+      citationPaperContexts: contextPlan.citationPaperContexts,
+    });
     codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.timestamp = Date.now();
     assistantMessage.modelName = effectiveRequestConfig.model;
@@ -7104,6 +7264,14 @@ function buildAgentEngineDeps(
     waitForUiStep,
     finalizeCancelledAssistantMessage,
     sanitizeText,
+    finalizeAssistantQuoteCitations: async (
+      assistantMessage,
+      pairedUserMessage,
+    ) => {
+      await finalizeAssistantMessageQuoteCitations(assistantMessage, {
+        pairedUserMessage,
+      });
+    },
     appendReasoningPart,
     persistConversationMessage: async (conversationKey, message) => {
       const system = getEffectiveConversationSystem();
@@ -8361,6 +8529,12 @@ export async function sendQuestion(
       sanitizeText(answer) ||
       assistantMessage.text ||
       (hasGeneratedOutput ? "" : "No response.");
+    await finalizeAssistantMessageQuoteCitations(assistantMessage, {
+      pairedUserMessage: userMessage,
+      paperContexts: contextPlan.paperContexts,
+      fullTextPaperContexts: contextPlan.fullTextPaperContexts,
+      citationPaperContexts: contextPlan.citationPaperContexts,
+    });
     codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.runMode = isCodexNativeTurn
       ? "agent"

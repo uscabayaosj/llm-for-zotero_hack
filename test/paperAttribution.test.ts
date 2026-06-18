@@ -130,7 +130,10 @@ describe("paperAttribution", function () {
   it("keeps generic quote guidance citation-adjacent", function () {
     const guidance = buildPaperQuoteCitationGuidance().join("\n");
 
-    assert.include(guidance, "> quoted text from the paper\n\n(Author, Year)");
+    assert.include(
+      guidance,
+      "> quoted text from the paper\n\nthe exact sourceLabel shown for the relevant paper",
+    );
     assert.include(
       guidance,
       "next non-empty line after the blockquote, before any commentary",

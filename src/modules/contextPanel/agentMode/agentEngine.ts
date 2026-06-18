@@ -552,6 +552,10 @@ export type AgentEngineDeps = {
     fallbackText?: string,
   ) => void;
   sanitizeText: (text: string) => string;
+  finalizeAssistantQuoteCitations: (
+    assistantMessage: Pick<Message, "text" | "quoteCitations">,
+    pairedUserMessage?: Message | null,
+  ) => Promise<void>;
   appendReasoningPart: (base: string | undefined, next?: string) => string;
 
   // Persistence
@@ -1338,6 +1342,7 @@ export async function sendAgentTurn(
       assistantMessage.pendingFinalText ||
       assistantMessage.text ||
       "No response.";
+    await deps.finalizeAssistantQuoteCitations(assistantMessage, userMessage);
     assistantMessage.pendingFinalText = undefined;
     assistantMessage.waitingAnimationStartedAt = undefined;
     assistantMessage.streaming = false;
@@ -1969,6 +1974,10 @@ export async function retryAgentTurn(
       assistantMessage.pendingFinalText ||
       assistantMessage.text ||
       "No response.";
+    await deps.finalizeAssistantQuoteCitations(
+      assistantMessage,
+      retryPair.userMessage,
+    );
     assistantMessage.pendingFinalText = undefined;
     assistantMessage.waitingAnimationStartedAt = undefined;
     assistantMessage.streaming = false;

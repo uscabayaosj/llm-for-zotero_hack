@@ -65,6 +65,15 @@ export type QuoteCitation = {
   id: string;
   quoteText: string;
   citationLabel: string;
+  sourceMatchText?: string;
+  sourceMatchKind?:
+    | "trusted"
+    | "exact"
+    | "ellipsis-segment"
+    | "raw-prefix"
+    | "raw-suffix"
+    | "raw-middle"
+    | "progressive";
   contextItemId?: number;
   itemId?: number;
 };

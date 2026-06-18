@@ -125,6 +125,34 @@ describe("normalizeBlockBoundaries", function () {
     });
   });
 
+  describe("ordered-list normalization", function () {
+    it("inserts a list boundary after an inline source parenthetical", function () {
+      const input =
+        '(Methods, "Real-time data processing") 4. **From scalar to avatar movement**';
+      const result = normalizeBlockBoundaries(input);
+      assert.include(
+        result,
+        '(Methods, "Real-time data processing")\n\n4. **From',
+      );
+    });
+
+    it("inserts a list boundary after a standalone source parenthetical", function () {
+      const input =
+        '(Methods, "Real-time data processing")\n4. **From scalar to avatar movement**';
+      const result = normalizeBlockBoundaries(input);
+      assert.include(
+        result,
+        '(Methods, "Real-time data processing")\n\n4. **From',
+      );
+    });
+
+    it("does not split decimal prose after a parenthetical", function () {
+      const input = "(Figure 2) 4.5 mm was the measured offset.";
+      const result = normalizeBlockBoundaries(input);
+      assert.equal(result, input);
+    });
+  });
+
   describe("mixed normalization", function () {
     it("handles multiple headers and blockquotes on one line", function () {
       const input =
@@ -198,6 +226,32 @@ describe("renderMarkdown with inline block tokens", function () {
       "(Zheng et al., 2026) > By analyzing longitudinal datasets we found a rotation";
     const html = renderMarkdown(input);
     assert.include(html, "<blockquote>");
+  });
+
+  it("preserves text-token spacing before inline bold across soft breaks", function () {
+    const html = renderMarkdown("[[quote:Q]]\nSo **one component** handles it.");
+    assert.include(html, "So <strong>one component</strong>");
+    assert.notInclude(html, "So<strong>one component</strong>");
+  });
+
+  it("renders ordered-list markers after source labels as list items", function () {
+    const html = renderMarkdown(
+      '(Methods, "Real-time data processing")\n4. **From scalar to avatar movement**\nThe scalar projection value is scaled.',
+    );
+    assert.include(html, "<ol start=\"4\">");
+    assert.include(
+      html,
+      "<li><strong>From scalar to avatar movement</strong> The scalar projection value is scaled.</li>",
+    );
+    assert.notInclude(html, "4.<strong>From scalar");
+  });
+
+  it("renders inline ordered-list markers after source labels as list items", function () {
+    const html = renderMarkdown(
+      '(Methods, "Real-time data processing") 4. **From scalar to avatar movement**\nThe scalar projection value is scaled.',
+    );
+    assert.include(html, "<ol start=\"4\">");
+    assert.notInclude(html, "4.<strong>From scalar");
   });
 
   it("renders markdown tables without turning divider syntax into plain text", function () {

@@ -644,6 +644,24 @@ describe("assistantCitationLinks", function () {
     );
   });
 
+  it("rejects section labels as standalone paper source labels", function () {
+    for (const label of [
+      "(Abstract)",
+      "(Method)",
+      "(Methods)",
+      '(Methods, "Defining manifold components")',
+      "(Results)",
+      "(Discussion)",
+      "(Supplementary Table 1)",
+      "(Supplementary Fig. 2)",
+      "(Table 1)",
+      "(Figure 3)",
+    ]) {
+      assert.isNull(extractStandalonePaperSourceLabel(label), label);
+      assert.isNull(extractBlockquoteTailCitation(`Quoted passage.\n${label}`));
+    }
+  });
+
   it("strips unverified page suffixes from raw inline citation labels", function () {
     assert.equal(
       formatUnverifiedCitationChipLabel("(Chandra et al., 2025, page 11)"),
@@ -1032,6 +1050,17 @@ describe("citation page cache", function () {
     assert.notInclude(source, "[quote unavailable]");
     assert.notInclude(source, "createQuoteCitationUnavailableElement");
     assert.include(source, "if (quoteCitation) {");
+  });
+
+  it("renders untrusted manual blockquotes as fallback quote cards", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+
+    assert.include(source, "createFallbackQuoteCardElement");
+    assert.include(source, "replaceBlockquoteWithFallbackQuoteCard");
+    assert.notInclude(source, "rendering unanchored source-backed quote card");
   });
 });
 

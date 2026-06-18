@@ -40,6 +40,24 @@ describe("chat retry model inputs", function () {
     assert.notInclude(rendered, "(Lee, 2026)");
   });
 
+  it("isolates preserved quote anchors from following assistant prose", function () {
+    const quoteCitation = buildQuoteCitation({
+      quoteText: "Quote card boundaries should remain block-level.",
+      citationLabel: "(Lee, 2026)",
+      contextItemId: 42,
+    });
+    assert.isDefined(quoteCitation);
+
+    const rendered = buildAssistantDisplayMarkdownForRender({
+      text: `Evidence:\n\n[[quote:${quoteCitation!.id}]]\nSo **one component** handles all angles.`,
+      quoteCitations: [quoteCitation!],
+    });
+
+    assert.include(rendered, `[[quote:${quoteCitation!.id}]]\n\nSo **one`);
+    assert.notInclude(rendered, `[[quote:${quoteCitation!.id}]]\nSo **one`);
+    assert.notInclude(rendered, "> Quote card boundaries");
+  });
+
   it("omits unresolved quote anchors in assistant bubbles", function () {
     const rendered = buildAssistantDisplayMarkdownForRender({
       text: "Evidence:\n\n[[quote:Q_missing]]\n\nContinue.",

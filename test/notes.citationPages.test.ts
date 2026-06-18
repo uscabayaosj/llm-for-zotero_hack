@@ -86,6 +86,56 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 1)");
   });
 
+  it("uses source match snippets for cached quote pages in saved notes", function () {
+    const displayedQuote =
+      "We hypothesized that some brain states are easier for people to generate, and that tailoring training to these brain states will facilitate BCI learning. This added explanation was not in the source.";
+    const matchedSnippet =
+      "we hypothesized that some brain states are easier for people to generate";
+    const paperContexts: PaperContextRef[] = [
+      {
+        itemId: 1,
+        contextItemId: 23,
+        title: "Busch 2026",
+        firstCreator: "Busch et al.",
+        year: "2026",
+      },
+    ];
+    const quoteCitation = buildQuoteCitation({
+      quoteText: displayedQuote,
+      citationLabel: "(Busch et al., 2026)",
+      sourceMatchText: matchedSnippet,
+      sourceMatchKind: "raw-prefix",
+      contextItemId: 23,
+      itemId: 1,
+    });
+    assert.isDefined(quoteCitation);
+    const messages: Message[] = [
+      {
+        role: "user",
+        text: "Explain the paper.",
+        timestamp: 1,
+        paperContexts,
+      },
+      {
+        role: "assistant",
+        text: `[[quote:${quoteCitation!.id}]]`,
+        timestamp: 2,
+        modelName: "Claude",
+        quoteCitations: [quoteCitation!],
+      },
+    ];
+
+    rememberCachedCitationPage(23, matchedSnippet, 14, "15");
+
+    const result = buildChatHistoryNotePayload(messages);
+
+    assert.include(
+      result.noteHtml,
+      'href="zotero://open-pdf/library/items/ATTACH23?page=15"',
+    );
+    assert.include(result.noteHtml, "(Busch et al., 2026, page 15)");
+  });
+
   it("renders stored quote anchors before note citation injection", function () {
     const quote = "Structured quote anchors should survive note export.";
     const paperContexts: PaperContextRef[] = [

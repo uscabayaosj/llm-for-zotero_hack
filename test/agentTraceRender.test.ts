@@ -890,6 +890,24 @@ describe("agentTrace render", function () {
     assert.notInclude(rendered, "(Chandra et al., 2025)");
   });
 
+  it("isolates preserved quote anchors before agent trace DOM decoration", function () {
+    const quoteCitation = buildQuoteCitation({
+      quoteText: "Interleaved trace quote boundaries should be stable.",
+      citationLabel: "(Chandra et al., 2025)",
+      contextItemId: 51,
+    });
+    assert.isDefined(quoteCitation);
+
+    const rendered = buildAgentTraceMarkdownForRender(
+      `Evidence:\n\n[[quote:${quoteCitation!.id}]]\nSo **one component** handles all angles.`,
+      { quoteCitations: [quoteCitation!] },
+    );
+
+    assert.include(rendered, `[[quote:${quoteCitation!.id}]]\n\nSo **one`);
+    assert.notInclude(rendered, `[[quote:${quoteCitation!.id}]]\nSo **one`);
+    assert.notInclude(rendered, "> Interleaved trace quote boundaries");
+  });
+
   it("omits unresolved quote anchors in agent trace markdown", function () {
     const rendered = buildAgentTraceMarkdownForRender(
       "Evidence:\n\n[[quote:Q_missing]]\n\nContinue.",

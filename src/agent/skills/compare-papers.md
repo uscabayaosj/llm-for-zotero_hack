@@ -38,7 +38,7 @@ A selected Zotero collection/folder is also a valid comparison corpus. In collec
 - For broad requests like "compare these papers" with no dimension, call `paper_read({ mode:'overview', targets:[...] })` once, then answer or make one focused targeted call if a specific gap remains.
 - For method-section requests, do not call overview first unless the targeted result is clearly insufficient.
 - When `paper_read` returns exact passages, include short blockquotes from the already-returned passages when useful for grounding the comparison.
-- If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/citation manually.
+- If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/sourceLabel manually.
 - Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation.
 - If no quote anchor is provided for a direct quote, put the provided `sourceLabel` on the next non-empty line after the blockquote, before any commentary.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.

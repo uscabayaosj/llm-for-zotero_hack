@@ -12,7 +12,10 @@ import type {
 import type { Message, PaperContextRef } from "../types";
 import { sanitizeText } from "../textUtils";
 import { renderRenderedMarkdownInto } from "../renderedMarkdown";
-import { replaceQuoteCitationPlaceholdersForMarkdown } from "../quoteCitations";
+import {
+  normalizeQuoteCitationPlaceholdersForDisplay,
+  replaceQuoteCitationPlaceholdersForMarkdown,
+} from "../quoteCitations";
 import { toFileUrl } from "../../../utils/pathFileUrl";
 import {
   normalizePaperContextRefs,
@@ -86,10 +89,12 @@ export function buildAgentTraceMarkdownForRender(
   text: string,
   message?: Pick<Message, "quoteCitations"> | null,
 ): string {
-  return replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(text || ""),
-    message?.quoteCitations,
-    { resolved: "preserve", unresolved: "omit" },
+  return normalizeQuoteCitationPlaceholdersForDisplay(
+    replaceQuoteCitationPlaceholdersForMarkdown(
+      sanitizeText(text || ""),
+      message?.quoteCitations,
+      { resolved: "preserve", unresolved: "omit" },
+    ),
   );
 }
 

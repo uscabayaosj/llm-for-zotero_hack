@@ -1054,7 +1054,7 @@ export function buildAgentEvidenceContextBlock(params: {
   return [
     "Preserved evidence from prior agent tool reads:",
     "Reuse this evidence when it directly answers the follow-up. Re-read only when the user asks for updated evidence, the preserved snippets are insufficient, or the resource scope changed.",
-    "Citation rule: quote preserved text directly and put sourceLabel on the next non-empty line after a blockquote. Do not write quoteCitationId, source/page/section/chunk metadata, or [[quote:<id>]] anchors from preserved evidence.",
+    "Citation rule: if a [[quote:<id>]] anchor is explicitly provided, use that anchor for the direct quote; otherwise quote preserved text directly and put sourceLabel on the next non-empty line after the blockquote. Do not write quoteCitationId, source/page/section/chunk metadata, or invent [[quote:<id>]] anchors.",
     ...entries.flatMap(formatEvidenceEntry),
   ].join("\n");
 }

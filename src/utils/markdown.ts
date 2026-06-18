@@ -1048,6 +1048,40 @@ export function normalizeBlockBoundaries(text: string): string {
     },
   );
 
+  // Ordered-list markers after citation-like parentheticals. Models often emit
+  // source labels such as `(Methods, "...") 4. **Next step**` immediately after
+  // a quote block; CommonMark treats that as paragraph text unless we create a
+  // block boundary first.
+  result = result.replace(
+    /(\([^()\n]{2,240}\))([ \t]+)(\d{1,3}\.\s+(?=\S))/g,
+    (match, before: string, spaces: string, marker: string, offset: number) => {
+      const markerIndex = offset + before.length + spaces.length;
+      return isInsidePipeTableCell(result, markerIndex)
+        ? match
+        : `${before}\n\n${marker}`;
+    },
+  );
+
+  const lines = result.split(/\r?\n/);
+  const normalizedLines: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const previous = normalizedLines[normalizedLines.length - 1] || "";
+    const previousTrimmed = previous.trim();
+    if (
+      trimmed &&
+      isOrderedListLine(trimmed) &&
+      previousTrimmed &&
+      !isOrderedListLine(previousTrimmed) &&
+      /^\([^()\n]{2,240}\)$/.test(previousTrimmed)
+    ) {
+      normalizedLines.push("");
+    }
+    normalizedLines.push(line);
+  }
+
+  result = normalizedLines.join("\n");
+
   return result;
 }
 
@@ -1586,6 +1620,9 @@ function normalizeInlineTextToken(text: string): string {
     previousLineHadHardBreak = hardBreak;
   }
 
+  if (/[ \t]$/.test(text) && result && !/[ \t]$/.test(result)) {
+    return `${result} `;
+  }
   return result;
 }
 

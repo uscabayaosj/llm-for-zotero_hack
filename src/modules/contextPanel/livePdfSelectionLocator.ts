@@ -1,5 +1,22 @@
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "./textUtils";
+import {
+  buildRawPrefixQueries,
+  buildFindControllerQuoteQueries,
+  extractSearchTokens,
+  findUniqueQuoteTextSearchMatch,
+  formatQuoteSearchQuerySnippet as formatQuerySnippet,
+  getProgressiveStartOffsets,
+  normalizeLocatorText,
+  splitQuoteAtEllipsis,
+  stripBoundaryEllipsis,
+} from "./quoteTextSearch";
+
+export {
+  buildRawPrefixQueries,
+  splitQuoteAtEllipsis,
+  stripBoundaryEllipsis,
+} from "./quoteTextSearch";
 
 export type LivePdfPageText = {
   pageIndex: number;
@@ -63,9 +80,6 @@ type FindControllerSearchResult = {
   selectedPageIndex: number | null;
 };
 
-const SEARCH_BOUNDARY_PUNCTUATION_RE =
-  /^[\s"'`“”‘’([{<]+|[\s"'`“”‘’)\]}>.,;:!?]+$/g;
-
 type LocatePageTextOptions = {
   queryLabel?: string;
   resolveSinglePageDuplicates?: boolean;
@@ -92,127 +106,6 @@ const PAGE_CONTAINER_SELECTOR = [
 ].join(", ");
 const PAGE_FLASH_STYLE_ID = "llmforzotero-page-flash-style";
 const PAGE_FLASH_CLASS = "llmforzotero-page-flash";
-
-const SEARCH_WORD_PATTERN = /[a-z0-9]+/g;
-const COMMON_SEARCH_STOP_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "by",
-  "for",
-  "from",
-  "in",
-  "into",
-  "is",
-  "it",
-  "of",
-  "on",
-  "or",
-  "that",
-  "the",
-  "their",
-  "then",
-  "these",
-  "this",
-  "those",
-  "to",
-  "was",
-  "we",
-  "were",
-  "with",
-]);
-
-function normalizeLocatorText(value: string): string {
-  return sanitizeText(value || "")
-    .replace(/\u00ad/g, "")
-    .replace(/([A-Za-z])-\s+([A-Za-z])/g, "$1$2")
-    .replace(/[“”‘’]/g, " ")
-    .replace(/[‐‑‒–—-]/g, " ")
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-// ── Quote pre-cleaning utilities ──────────────────────────────────────
-// LLMs frequently quote PDF text with leading/trailing ellipsis
-// ("...some text...") and internal ellipsis ("some text ... more text")
-// where sentences were skipped.  The internal ellipsis joins two
-// non-contiguous text regions, creating a phrase that never appears in
-// the PDF as a contiguous string.  We strip boundary ellipsis and, when
-// the full quote search fails, split at internal ellipsis and search the
-// longest clean segment instead.
-
-const ELLIPSIS_RE = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/;
-const ELLIPSIS_RE_G = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/g;
-
-/**
- * Strip leading and trailing ellipsis from a quote while preserving the
- * interior.  Returns the trimmed string.
- */
-export function stripBoundaryEllipsis(text: string): string {
-  return text
-    .replace(new RegExp("^\\s*" + ELLIPSIS_RE.source + "\\s*"), "")
-    .replace(new RegExp("\\s*" + ELLIPSIS_RE.source + "\\s*$"), "")
-    .trim();
-}
-
-/**
- * Split a quote at internal ellipsis markers, returning the segments
- * sorted by descending length (longest first).  Only segments with a
- * meaningful amount of text (>= 30 chars after trimming) are returned.
- */
-export function splitQuoteAtEllipsis(text: string): string[] {
-  const cleaned = stripBoundaryEllipsis(text);
-  if (!ELLIPSIS_RE.test(cleaned)) return [cleaned];
-  return cleaned
-    .split(ELLIPSIS_RE_G)
-    .map((s) => s.trim())
-    .filter((s) => s.length >= 30)
-    .sort((a, b) => b.length - a.length);
-}
-
-function stripInlineLocatorNoise(value: string): string {
-  const cleaned = sanitizeText(value || "");
-  return cleaned
-    .replace(/\(([^)]{0,160})\)/gi, (_match, inner: string) =>
-      /\b(fig|figure|table|appendix|supp|supplement|eq|equation|section|sec\.?|et al|19\d{2}|20\d{2})\b/i.test(
-        inner,
-      )
-        ? " "
-        : ` ${inner} `,
-    )
-    .replace(/\[([^\]]{0,160})\]/gi, (_match, inner: string) =>
-      /\b(fig|figure|table|appendix|supp|supplement|eq|equation|section|sec\.?|et al|19\d{2}|20\d{2})\b/i.test(
-        inner,
-      )
-        ? " "
-        : ` ${inner} `,
-    );
-}
-
-function extractSearchTokens(value: string): string[] {
-  const normalized = normalizeLocatorText(stripInlineLocatorNoise(value));
-  return normalized.match(SEARCH_WORD_PATTERN) || [];
-}
-
-function scoreSearchToken(token: string): number {
-  if (!token) return Number.NEGATIVE_INFINITY;
-  if (COMMON_SEARCH_STOP_WORDS.has(token)) return 0.5;
-  if (/^\d+$/.test(token)) return 0.2;
-  if (token.length <= 2) return 0.2;
-  if (token.length === 3) return 1.5;
-  return Math.min(8, token.length + (/[a-z]/.test(token) ? 1 : 0));
-}
-
-function formatQuerySnippet(query: string, maxLength = 72): string {
-  if (query.length <= maxLength) return query;
-  return `${query.slice(0, maxLength - 3)}...`;
-}
 
 function buildPageTextIndex(pages: LivePdfPageText[]): PageTextIndexEntry[] {
   return pages.map((page) => ({
@@ -252,26 +145,6 @@ function searchPageIndexEntries(
     }
   }
   return { matchedPageIndexes, totalMatches, excerpt };
-}
-
-function getProgressiveStartOffsets(tokens: string[]): number[] {
-  const offsets = [0];
-  if (tokens.length > 6 && scoreSearchToken(tokens[0]) < 2) {
-    offsets.push(1);
-  }
-  if (tokens.length > 8 && scoreSearchToken(tokens[0]) < 1 && scoreSearchToken(tokens[1]) < 2) {
-    offsets.push(2);
-  }
-  // Add middle and tail offsets so that quotes whose beginning was
-  // paraphrased by the LLM can still be located from interior tokens.
-  if (tokens.length >= 10) {
-    offsets.push(Math.floor(tokens.length / 2));
-  }
-  if (tokens.length >= 16) {
-    offsets.push(Math.floor(tokens.length / 3));
-    offsets.push(Math.floor((tokens.length * 2) / 3));
-  }
-  return offsets;
 }
 
 function findAllMatchIndexes(haystack: string, needle: string): number[] {
@@ -1513,31 +1386,6 @@ export function clearPageTextCache(): void {
   anonymousReaderKeySequence = 0;
 }
 
-/**
- * The simplest, most reliable search: take the first N characters of
- * the normalised quote and do a plain substring search across every
- * page.  This mirrors what a user does with Ctrl+F — "just search the
- * first couple of words."
- */
-/**
- * Overload accepting pre-computed normalised page data (from cache).
- */
-/**
- * Count all non-overlapping occurrences of `needle` in `haystack`.
- */
-function countOccurrences(haystack: string, needle: string): number {
-  if (!haystack || !needle) return 0;
-  let count = 0;
-  let cursor = 0;
-  while (cursor <= haystack.length - needle.length) {
-    const idx = haystack.indexOf(needle, cursor);
-    if (idx < 0) break;
-    count++;
-    cursor = idx + 1;
-  }
-  return count;
-}
-
 export function locateQuoteByRawPrefixInPages(
   pages: LivePdfPageText[],
   quoteText: string,
@@ -1547,120 +1395,46 @@ export function locateQuoteByRawPrefixInPages(
   const normalized = normalizeLocatorText(quoteText);
   if (!normalized || normalized.length < 10) return null;
 
-  // Build queries from prefix, suffix, and middle segments so the search
-  // can find the quote even when only part of it matches the extracted text.
-  // Longest queries first — they are most discriminative.
-  const queries: string[] = [];
-  const pushQuery = (q: string) => {
-    if (q.length >= 10 && !queries.includes(q)) queries.push(q);
-  };
-
-  // Full text first (if short enough) — most specific possible query.
-  if (normalized.length <= 200) pushQuery(normalized);
-
-  // Prefix queries (beginning of quote, longest first)
-  for (const len of [100, 80, 60, 40, 30, 25, 20, 15]) {
-    if (normalized.length <= len) continue;
-    pushQuery(normalized.slice(0, len).replace(/\s\S*$/, "").trim());
-  }
-
-  // Suffix queries (end of quote, longest first) — catches cases where the
-  // beginning of the quote has extraction differences but the end matches.
-  for (const len of [100, 80, 60, 40, 30, 25, 20, 15]) {
-    if (normalized.length <= len) continue;
-    pushQuery(normalized.slice(-len).replace(/^\S*\s/, "").trim());
-  }
-
-  // Middle segment queries (from 1/3 and 1/2 positions) — catches cases
-  // where both the beginning and end differ but the interior matches.
-  if (normalized.length >= 40) {
-    for (const fraction of [1 / 3, 1 / 2]) {
-      const midStart = Math.floor(normalized.length * fraction);
-      for (const len of [60, 40, 30, 20]) {
-        if (midStart + len > normalized.length) continue;
-        const mid = normalized
-          .slice(midStart, midStart + len)
-          .replace(/^\S*\s/, "")
-          .replace(/\s\S*$/, "")
-          .trim();
-        pushQuery(mid);
-      }
-    }
-  }
-
   const pageNorms = precomputedNorms ?? pages.map((p) => ({
     pageIndex: p.pageIndex,
     pageLabel: p.pageLabel,
     normalizedText: normalizeLocatorText(p.text),
   }));
-  const debugSummary: string[] = [];
-
-  // Try queries from longest to shortest.  For each query, count ALL
-  // occurrences across all pages (not just page presence) so we can
-  // verify the match is truly unique — a short prefix like
-  // "identification o" may appear dozens of times across a paper.
-  let bestMatch: {
-    pageIndex: number;
-    matchedPageIndexes: number[];
-    totalOccurrences: number;
-    queryLen: number;
-    confidence: "high" | "medium";
-  } | null = null;
-
-  for (const query of queries) {
-    const matchedPageIndexes: number[] = [];
-    let totalOccurrences = 0;
-    for (const p of pageNorms) {
-      const occurrences = countOccurrences(p.normalizedText, query);
-      if (occurrences > 0) {
-        matchedPageIndexes.push(p.pageIndex);
-        totalOccurrences += occurrences;
-      }
-    }
-    debugSummary.push(
-      `Raw prefix "${formatQuerySnippet(query)}" -> ${formatPageList(matchedPageIndexes)} (${totalOccurrences} total)`,
-    );
-
-    if (matchedPageIndexes.length === 1) {
-      if (totalOccurrences === 1) {
-        // Globally unique match — high confidence
-        bestMatch = {
-          pageIndex: matchedPageIndexes[0],
-          matchedPageIndexes,
-          totalOccurrences,
-          queryLen: query.length,
-          confidence: query.length >= 25 ? "high" : "medium",
-        };
-        break; // Can't do better than a unique match
-      }
-      if (totalOccurrences <= 3) {
-        // Multiple occurrences but all on the same page — usable at lower
-        // confidence.  Keep looking for a longer query with fewer matches.
-        if (!bestMatch || query.length > bestMatch.queryLen) {
-          bestMatch = {
-            pageIndex: matchedPageIndexes[0],
-            matchedPageIndexes,
-            totalOccurrences,
-            queryLen: query.length,
-            confidence: "medium",
-          };
-        }
-      }
-      // > 3 occurrences on one page: too ambiguous, skip this query
-    }
-    // matchedPageIndexes.length !== 1: found on multiple pages or not at
-    // all — skip and try the next (shorter) query
-  }
-  if (bestMatch) {
+  const pageById = new Map(
+    pageNorms.map((page) => [String(page.pageIndex), page]),
+  );
+  const match = findUniqueQuoteTextSearchMatch(
+    pageNorms.map((page) => ({
+      id: String(page.pageIndex),
+      text: "",
+      normalizedText: page.normalizedText,
+      debugLabel: `p${page.pageIndex + 1}`,
+    })),
+    quoteText,
+    {
+      minQueryLength: 10,
+      maxSameEntryOccurrences: 3,
+      rejectWeakQueries: false,
+      includeProgressiveQueries: false,
+      debugLabel: "Raw prefix",
+    },
+  );
+  if (match) {
+    const matchedPageIndexes = match.matchedEntryIds
+      .map((id) => pageById.get(id)?.pageIndex)
+      .filter((pageIndex): pageIndex is number => pageIndex !== undefined);
     return buildPageTextQuoteResult(
       quoteText,
       expectedPageIndex,
-      { matchedPageIndexes: bestMatch.matchedPageIndexes, totalMatches: bestMatch.totalOccurrences },
+      {
+        matchedPageIndexes,
+        totalMatches: match.totalOccurrences,
+      },
       pages.length,
       `Direct text prefix search found the quote on a single page.`,
-      bestMatch.confidence,
-      bestMatch.pageIndex,
-      debugSummary,
+      match.confidence,
+      Number(match.entryId),
+      match.debugSummary,
     );
   }
   return null;
@@ -1752,69 +1526,6 @@ function getFindControllerSelectedPageIndex(
 
 function formatReaderPageForReason(pageIndex: number | null): string {
   return pageIndex === null ? "" : ` on page ${pageIndex + 1}`;
-}
-
-/**
- * Build raw-text prefix queries from the original quote, trimmed at word
- * boundaries.  These are passed to the FindController as-is (no
- * tokenisation), mimicking what a user would type into the Ctrl+F bar.
- */
-export function buildRawPrefixQueries(text: string): string[] {
-  const clean = sanitizeText(text || "").trim();
-  if (clean.length < 12) return [];
-  const queries: string[] = [];
-  const pushQuery = (query: string) => {
-    const normalizedQuery = sanitizeText(query || "").trim();
-    if (normalizedQuery.length < 12 || queries.includes(normalizedQuery)) return;
-    queries.push(normalizedQuery);
-  };
-
-  // For quotes rendered with an internal ellipsis, the whole visible text is
-  // not searchable as-is. Search the longest quoted segments first so the
-  // reader highlights a meaningful passage before trying shorter fallbacks.
-  for (const segment of splitQuoteAtEllipsis(clean)) {
-    if (segment === clean) continue;
-    if (segment.length <= 220) {
-      pushQuery(segment);
-    }
-    for (const charLen of [120, 80, 50]) {
-      if (segment.length <= charLen) continue;
-      const prefix = segment.slice(0, charLen).replace(/\s\S*$/, "").trim();
-      pushQuery(prefix);
-    }
-  }
-
-  const stripped = clean.replace(SEARCH_BOUNDARY_PUNCTUATION_RE, "").trim();
-  const bases = Array.from(
-    new Set(
-      [stripped || clean, stripped === clean ? clean : ""].filter(
-        (value) => value.length >= 12,
-      ),
-    ),
-  );
-
-  for (const base of bases) {
-    // Try the whole visible phrase first when it is short enough.
-    if (base.length <= 220) {
-      pushQuery(base);
-    }
-
-    // Human-like fallback: search from the beginning of the quote/title.
-    for (const charLen of [50, 30, 18]) {
-      if (base.length <= charLen) continue;
-      const prefix = base.slice(0, charLen).replace(/\s\S*$/, "").trim();
-      pushQuery(prefix);
-    }
-
-    // Also search from the end of the quote/title, which often works better
-    // for titles or model outputs that add wrapper quotation marks.
-    for (const charLen of [50, 30, 18]) {
-      if (base.length <= charLen) continue;
-      const suffix = base.slice(-charLen).replace(/^\S*\s/, "").trim();
-      pushQuery(suffix);
-    }
-  }
-  return queries;
 }
 
 async function waitForFindControllerPageMatches(
@@ -2262,7 +1973,7 @@ async function locateQuoteWithFindController(
   // The user's observation: "simply, just search the first a couple of
   // words, and then you can get unique results from pdf!"
   // Try the original text directly before any tokenisation.
-  const rawPrefixes = buildRawPrefixQueries(cleanQuote);
+  const rawPrefixes = buildFindControllerQuoteQueries(cleanQuote);
   const rawDebug: string[] = [];
   for (const rawQuery of rawPrefixes) {
     const rawResult = await searchFindControllerForQuery(reader, rawQuery);
@@ -2693,7 +2404,7 @@ export async function scrollToExactQuoteInReader(
     };
   }
 
-  const queries = buildRawPrefixQueries(quoteText);
+  const queries = buildFindControllerQuoteQueries(quoteText);
   if (!queries.length) {
     return {
       matched: false,

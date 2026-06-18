@@ -61,7 +61,10 @@ import {
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
-import { replaceQuoteCitationPlaceholdersForMarkdown } from "./quoteCitations";
+import {
+  findMatchingTrustedQuoteCitation,
+  replaceQuoteCitationPlaceholdersForMarkdown,
+} from "./quoteCitations";
 import {
   buildGeneratedImagesHtmlForNote,
   formatGeneratedImagesMarkdownForNote,
@@ -273,6 +276,7 @@ function buildZoteroPdfUri(
 function injectCitationLinksIntoNoteHtml(
   html: string,
   paperContexts: PaperContextRef[] | undefined,
+  quoteCitations?: QuoteCitation[],
 ): string {
   if (!html || !paperContexts?.length) return html;
 
@@ -302,10 +306,29 @@ function injectCitationLinksIntoNoteHtml(
       // Check the citation page cache for a corrected page (verified by
       // FindController when the user clicked the citation in the chat panel).
       const quoteText = stripNoteHtml(bqContent);
-      const cachedPage = lookupCachedCitationPage(
-        bestCandidate.contextItemId,
+      const trustedQuote = findMatchingTrustedQuoteCitation({
         quoteText,
+        citationLabel: extracted?.sourceLabel || plainText,
+        quoteCitations,
+      });
+      const lookupTexts = Array.from(
+        new Set(
+          [
+            trustedQuote?.sourceMatchText,
+            trustedQuote?.quoteText,
+            quoteText,
+          ]
+            .map((value) => sanitizeText(value || "").trim())
+            .filter(Boolean),
+        ),
       );
+      let cachedPage = "";
+      for (const lookupText of lookupTexts) {
+        cachedPage =
+          lookupCachedCitationPage(bestCandidate.contextItemId, lookupText) ||
+          "";
+        if (cachedPage) break;
+      }
       const pageLabel = cachedPage || undefined;
       const uri = buildZoteroPdfUri(bestCandidate.contextItemId, pageLabel);
       if (!uri) return _match;
@@ -439,10 +462,18 @@ function buildAssistantNoteHtml(
   let queryHtml = query ? renderRawNoteHtml(query) : "";
   let responseHtml = response ? renderRawNoteHtml(response) : "";
   if (queryHtml) {
-    queryHtml = injectCitationLinksIntoNoteHtml(queryHtml, paperContexts);
+    queryHtml = injectCitationLinksIntoNoteHtml(
+      queryHtml,
+      paperContexts,
+      quoteCitations,
+    );
   }
   if (responseHtml) {
-    responseHtml = injectCitationLinksIntoNoteHtml(responseHtml, paperContexts);
+    responseHtml = injectCitationLinksIntoNoteHtml(
+      responseHtml,
+      paperContexts,
+      quoteCitations,
+    );
   }
   const queryBlock = queryHtml
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
@@ -479,10 +510,18 @@ async function buildAssistantNoteHtmlForSave(
     ? await renderRawNoteHtmlForSave(response, options)
     : "";
   if (queryHtml) {
-    queryHtml = injectCitationLinksIntoNoteHtml(queryHtml, paperContexts);
+    queryHtml = injectCitationLinksIntoNoteHtml(
+      queryHtml,
+      paperContexts,
+      quoteCitations,
+    );
   }
   if (responseHtml) {
-    responseHtml = injectCitationLinksIntoNoteHtml(responseHtml, paperContexts);
+    responseHtml = injectCitationLinksIntoNoteHtml(
+      responseHtml,
+      paperContexts,
+      quoteCitations,
+    );
   }
   const queryBlock = queryHtml
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
@@ -864,6 +903,7 @@ export function buildChatHistoryNotePayload(
       rendered = injectCitationLinksIntoNoteHtml(
         rendered,
         lastUserPaperContexts,
+        msg.quoteCitations,
       );
     }
     const exportedText =
@@ -1013,6 +1053,7 @@ async function buildChatHistoryNotePayloadForSave(
       rendered = injectCitationLinksIntoNoteHtml(
         rendered,
         lastUserPaperContexts,
+        msg.quoteCitations,
       );
     }
     const exportedText =

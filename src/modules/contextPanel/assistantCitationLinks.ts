@@ -13,8 +13,10 @@ import {
 } from "./normalizers";
 import {
   findMatchingTrustedQuoteCitation,
+  isNonSourceQuoteLabel,
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
+  stripTrailingNonSourceQuoteLabelFromQuoteText,
 } from "./quoteCitations";
 import {
   getActiveReaderForSelectedTab,
@@ -706,17 +708,22 @@ function findConsumedCitationRemovalElement(
 }
 
 function removeConsumedSourceBackedQuoteCitation(params: {
-  quoteCard: Element;
+  anchorElement: Element;
   citationEl: Element;
   extractedCitation: ExtractedCitationLabel;
+  replacementText?: string | null;
 }): void {
-  const removalTarget = findConsumedCitationRemovalElement(
-    params.citationEl,
-    params.extractedCitation,
-  );
-  removalTarget?.parentNode?.removeChild(removalTarget);
+  if (params.replacementText) {
+    params.citationEl.textContent = params.replacementText;
+  } else {
+    const removalTarget = findConsumedCitationRemovalElement(
+      params.citationEl,
+      params.extractedCitation,
+    );
+    removalTarget?.parentNode?.removeChild(removalTarget);
+  }
 
-  let next = getNextElementSibling(params.quoteCard);
+  let next = getNextElementSibling(params.anchorElement);
   while (
     next &&
     isStandaloneCitationElementForQuote(next, params.extractedCitation)
@@ -799,6 +806,7 @@ export function extractStandalonePaperSourceLabel(
       if (!innerParts) return null;
       const citationLabel = sanitizeText(innerParts[1] || "").trim();
       if (!citationLabel || citationLabel.length < 4) return null;
+      if (isNonSourceQuoteLabel(citationLabel)) return null;
       return parseCitationParts(citationLabel, innerParts[2], innerParts[3]);
     }
   }
@@ -809,6 +817,7 @@ export function extractStandalonePaperSourceLabel(
   if (!splitMatch) return null;
   const citationLabel = sanitizeText(splitMatch[1] || "").trim();
   if (!citationLabel || citationLabel.length < 4) return null;
+  if (isNonSourceQuoteLabel(citationLabel)) return null;
   return {
     ...parseCitationParts(citationLabel, splitMatch[2], splitMatch[3]),
   };
@@ -820,6 +829,7 @@ function isLikelyStandaloneCitationLabel(value: string): boolean {
     .trim();
   const normalized = clean.toLowerCase();
   if (!normalized) return false;
+  if (isNonSourceQuoteLabel(clean)) return false;
   return (
     /\bet\s+al\b/.test(normalized) ||
     /\b(19|20)\d{2}\b/.test(normalized) ||
@@ -1339,10 +1349,27 @@ async function attemptCitationParagraphJump(params: {
   contextItemId: number;
   displayCitationLabel: string;
   quoteText: string;
+  alternateQuoteTexts?: string[];
   pageIndex: number;
   pageLabel: string;
 }): Promise<ExactQuoteJumpResult> {
-  const paragraphJump = await scrollToExactQuoteInReader(
+  const quoteTexts = Array.from(
+    new Set(
+      [params.quoteText, ...(params.alternateQuoteTexts || [])]
+        .map((text) => sanitizeText(text || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  let paragraphJump: ExactQuoteJumpResult | null = null;
+  let attemptedQuoteText = params.quoteText;
+  for (const quoteText of quoteTexts) {
+    attemptedQuoteText = quoteText;
+    paragraphJump = await scrollToExactQuoteInReader(params.reader, quoteText, {
+      expectedPageIndex: params.pageIndex,
+    });
+    if (paragraphJump.matched) break;
+  }
+  paragraphJump ||= await scrollToExactQuoteInReader(
     params.reader,
     params.quoteText,
     { expectedPageIndex: params.pageIndex },
@@ -1351,7 +1378,7 @@ async function attemptCitationParagraphJump(params: {
     logParagraphJumpFailure({
       contextItemId: params.contextItemId,
       displayCitationLabel: params.displayCitationLabel,
-      quoteText: params.quoteText,
+      quoteText: attemptedQuoteText,
       pageIndex: params.pageIndex,
       pageLabel: params.pageLabel,
       paragraphJump,
@@ -1399,6 +1426,7 @@ async function navigateToCachedCitationPage(
   contextItemId: number,
   quoteText: string,
   displayCitationLabel: string,
+  alternateQuoteTexts?: string[],
 ): Promise<CitationParagraphJumpNavigation | null> {
   const cacheKey = buildCitationCacheKey(contextItemId, quoteText);
   const cached = citationPageCache.get(cacheKey);
@@ -1426,6 +1454,7 @@ async function navigateToCachedCitationPage(
     contextItemId,
     displayCitationLabel,
     quoteText,
+    alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
   });
@@ -1439,6 +1468,7 @@ async function navigateToCachedCitationPage(
 async function navigateToHiddenQuoteLocation(params: {
   contextItemId: number;
   quoteText: string;
+  alternateQuoteTexts?: string[];
   displayCitationLabel: string;
   pageIndex: number;
 }): Promise<CitationParagraphJumpNavigation | null> {
@@ -1461,6 +1491,7 @@ async function navigateToHiddenQuoteLocation(params: {
     contextItemId: params.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
     quoteText: params.quoteText,
+    alternateQuoteTexts: params.alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
   });
@@ -2029,6 +2060,7 @@ async function resolveAndNavigateAssistantCitation(params: {
   candidates: AssistantCitationPaperCandidate[];
   panelItem: Zotero.Item;
   quoteText: string;
+  paragraphQuoteText?: string;
 }): Promise<void> {
   const status = params.body.querySelector("#llm-status") as HTMLElement | null;
   if (params.button.dataset.loading === "true") return;
@@ -2037,6 +2069,13 @@ async function resolveAndNavigateAssistantCitation(params: {
 
   try {
     const normalizedQuoteText = sanitizeText(params.quoteText || "").trim();
+    const paragraphQuoteTexts = Array.from(
+      new Set(
+        [params.paragraphQuoteText, normalizedQuoteText]
+          .map((text) => sanitizeText(text || "").trim())
+          .filter(Boolean),
+      ),
+    );
     const extractedCitation = extractStandalonePaperSourceLabel(
       params.baseSourceLabel,
     );
@@ -2109,6 +2148,7 @@ async function resolveAndNavigateAssistantCitation(params: {
         candidate.contextItemId,
         normalizedQuoteText,
         params.displayCitationLabel,
+        paragraphQuoteTexts,
       );
       if (cached) {
         // Use FindController's actual page if it landed somewhere different
@@ -2163,6 +2203,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       const cached = await navigateToHiddenQuoteLocation({
         contextItemId: candidate.contextItemId,
         quoteText: normalizedQuoteText,
+        alternateQuoteTexts: paragraphQuoteTexts,
         displayCitationLabel: params.displayCitationLabel,
         pageIndex: hiddenLocation.pageIndex,
       });
@@ -2219,6 +2260,7 @@ async function resolveAndNavigateAssistantCitation(params: {
             contextItemId: bestRanked.contextItemId,
             displayCitationLabel: params.displayCitationLabel,
             quoteText: normalizedQuoteText,
+            alternateQuoteTexts: paragraphQuoteTexts,
             pageIndex,
             pageLabel: explicitPageLabel,
           });
@@ -2273,6 +2315,7 @@ async function resolveAndNavigateAssistantCitation(params: {
             contextItemId: getReaderItemId(activeReader),
             displayCitationLabel: params.displayCitationLabel,
             quoteText: normalizedQuoteText,
+            alternateQuoteTexts: paragraphQuoteTexts,
             pageIndex,
             pageLabel,
           });
@@ -2346,6 +2389,7 @@ async function resolveAndNavigateAssistantCitation(params: {
             contextItemId: candidate.contextItemId,
             displayCitationLabel: params.displayCitationLabel,
             quoteText: normalizedQuoteText,
+            alternateQuoteTexts: paragraphQuoteTexts,
             pageIndex,
             pageLabel,
           });
@@ -2525,6 +2569,7 @@ function createCitationButton(params: {
   candidates: AssistantCitationPaperCandidate[];
   extractedCitation: ExtractedCitationLabel;
   quoteText: string;
+  paragraphQuoteText?: string;
   inline?: boolean;
   rawCitationText?: string;
 }): HTMLSpanElement {
@@ -2609,6 +2654,7 @@ function createCitationButton(params: {
       candidates: params.candidates,
       panelItem: params.panelItem,
       quoteText: params.quoteText,
+      paragraphQuoteText: params.paragraphQuoteText,
     });
   };
   const handleCitationMouseDown = (event: Event) => {
@@ -2693,6 +2739,13 @@ function buildQuotePreviewText(quoteText: string): string {
     : normalized;
 }
 
+function getQuoteCitationLookupText(citation: QuoteCitation): string {
+  return (
+    sanitizeText(citation.sourceMatchText || "").trim() ||
+    sanitizeText(citation.quoteText || "").trim()
+  );
+}
+
 function createQuoteCardElement(params: {
   ownerDoc: Document;
   quoteText: string;
@@ -2763,6 +2816,18 @@ function createQuoteCardElement(params: {
   return wrapper;
 }
 
+function createFallbackQuoteCardElement(params: {
+  ownerDoc: Document;
+  quoteText: string;
+}): HTMLElement {
+  const citationContent = params.ownerDoc.createElement("span");
+  return createQuoteCardElement({
+    ownerDoc: params.ownerDoc,
+    quoteText: params.quoteText,
+    citationContent,
+  });
+}
+
 function createQuoteCitationAnchorElement(params: {
   ownerDoc: Document;
   body: Element;
@@ -2775,6 +2840,7 @@ function createQuoteCitationAnchorElement(params: {
   );
   let citationContent: Node;
   if (extractedCitation) {
+    const lookupText = getQuoteCitationLookupText(params.quoteCitation);
     const matchingCandidates = resolveQuoteCitationCandidates(
       params.quoteCitation,
       extractedCitation,
@@ -2786,7 +2852,8 @@ function createQuoteCitationAnchorElement(params: {
       panelItem: params.panelItem,
       candidates: matchingCandidates,
       extractedCitation,
-      quoteText: params.quoteCitation.quoteText,
+      quoteText: lookupText,
+      paragraphQuoteText: params.quoteCitation.quoteText,
       rawCitationText: params.quoteCitation.citationLabel,
     });
   } else {
@@ -2806,6 +2873,64 @@ function textContainsQuoteCitationPlaceholder(text: string): boolean {
   const matched = QUOTE_CITATION_PATTERN.test(text);
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   return matched;
+}
+
+function hasMeaningfulParagraphContent(paragraph: HTMLElement): boolean {
+  if ((paragraph.textContent || "").trim()) return true;
+  const childNodes = Array.from(paragraph.childNodes).filter(
+    (node): node is Node => Boolean(node),
+  );
+  return childNodes.some(
+    (node) =>
+      node.nodeType === 1 &&
+      (node as Element).tagName.toLowerCase() !== "br",
+  );
+}
+
+function liftQuoteCardsOutOfParagraph(paragraph: HTMLElement): void {
+  const parent = paragraph.parentNode;
+  const ownerDoc = paragraph.ownerDocument;
+  if (!parent || !ownerDoc) return;
+
+  const children = Array.from(paragraph.childNodes).filter(
+    (node): node is Node => Boolean(node),
+  );
+  if (
+    !children.some(
+      (node) =>
+        node.nodeType === 1 &&
+        (node as Element).classList?.contains("llm-quote-card"),
+    )
+  ) {
+    return;
+  }
+
+  const replacement = ownerDoc.createDocumentFragment();
+  let inlineParagraph: HTMLElement | null = null;
+  const flushInlineParagraph = () => {
+    if (!inlineParagraph) return;
+    if (hasMeaningfulParagraphContent(inlineParagraph)) {
+      replacement.appendChild(inlineParagraph);
+    }
+    inlineParagraph = null;
+  };
+
+  for (const child of children) {
+    if (
+      child.nodeType === 1 &&
+      (child as Element).classList?.contains("llm-quote-card")
+    ) {
+      flushInlineParagraph();
+      replacement.appendChild(child);
+      continue;
+    }
+    if (!inlineParagraph) {
+      inlineParagraph = ownerDoc.createElement("p");
+    }
+    inlineParagraph.appendChild(child);
+  }
+  flushInlineParagraph();
+  parent.replaceChild(replacement, paragraph);
 }
 
 export function renderQuoteCitationPlaceholders(params: {
@@ -2892,6 +3017,9 @@ export function renderQuoteCitationPlaceholders(params: {
       parent.replaceWith(fragment);
     } else {
       textNode.parentNode?.replaceChild(fragment, textNode);
+      if (parent?.tagName.toLowerCase() === "p") {
+        liftQuoteCardsOutOfParagraph(parent);
+      }
     }
   }
 }
@@ -2992,6 +3120,25 @@ function decorateInlineCitationNodes(params: {
   }
 }
 
+function replaceBlockquoteWithFallbackQuoteCard(params: {
+  ownerDoc: Document;
+  blockquote: Element;
+  quoteText: string;
+}): HTMLElement | null {
+  const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
+    params.quoteText,
+  );
+  if (!quoteText) return null;
+  const quoteCard = createFallbackQuoteCardElement({
+    ownerDoc: params.ownerDoc,
+    quoteText,
+  });
+  const blockquoteParent = params.blockquote.parentNode;
+  if (!blockquoteParent) return null;
+  blockquoteParent.replaceChild(quoteCard, params.blockquote);
+  return quoteCard;
+}
+
 export function decorateAssistantCitationLinks(params: {
   body: Element;
   panelItem: Zotero.Item;
@@ -3018,6 +3165,8 @@ export function decorateAssistantCitationLinks(params: {
     params.panelItem,
     params.pairedUserMessage,
   );
+  const shouldRenderFallbackQuoteCards =
+    candidates.length > 0 || quoteCitations.length > 0;
 
   const blockquotes = Array.from(
     params.bubble.querySelectorAll("blockquote"),
@@ -3034,7 +3183,9 @@ export function decorateAssistantCitationLinks(params: {
   );
   for (const blockquote of blockquotes) {
     if (blockquote.closest(".llm-quote-citation-anchor")) continue;
-    let quoteText = sanitizeText(blockquote.textContent || "").trim();
+    let quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
+      sanitizeText(blockquote.textContent || "").trim(),
+    );
     if (!quoteText) continue;
     let citationEl = getNextElementSibling(blockquote);
     const tailMatch = extractBlockquoteTailCitation(
@@ -3105,6 +3256,13 @@ export function decorateAssistantCitationLinks(params: {
           JSON.stringify((citationEl.textContent || "").slice(0, 80)),
         );
       }
+      if (shouldRenderFallbackQuoteCards) {
+        replaceBlockquoteWithFallbackQuoteCard({
+          ownerDoc,
+          blockquote,
+          quoteText,
+        });
+      }
       continue;
     }
 
@@ -3126,49 +3284,27 @@ export function decorateAssistantCitationLinks(params: {
     });
     if (!trustedQuoteCitation) {
       ztoolkit.log(
-        "LLM citation decoration: rendering unanchored source-backed quote card",
+        "LLM citation decoration: rendering untrusted source-backed quote as fallback quote card",
         "source =",
         extractedCitation.sourceLabel,
         "quote =",
         quoteText.slice(0, 120),
       );
-      const matchingCandidates = resolveMatchingCandidatesForExtractedCitation(
-        extractedCitation,
-        candidates,
-      );
-      const citationElement = createCitationButton({
-        ownerDoc,
-        body: params.body,
-        panelItem: params.panelItem,
-        candidates: matchingCandidates,
-        extractedCitation,
-        quoteText,
-        rawCitationText: extractedCitation.sourceLabel,
-      });
-      const quoteCard = createQuoteCardElement({
-        ownerDoc,
-        quoteText,
-        citationContent: citationElement,
-      });
-      const blockquoteParent = blockquote.parentNode;
-      if (!blockquoteParent) continue;
-      blockquoteParent.replaceChild(quoteCard, blockquote);
       removeConsumedSourceBackedQuoteCitation({
-        quoteCard,
+        anchorElement:
+          replaceBlockquoteWithFallbackQuoteCard({
+            ownerDoc,
+            blockquote,
+            quoteText,
+          }) || blockquote,
         citationEl,
         extractedCitation,
+        replacementText: citationRemainder,
       });
-      if (citationRemainder) {
-        const remainderEl = ownerDoc.createElement("p");
-        remainderEl.textContent = citationRemainder;
-        quoteCard.parentElement?.insertBefore(
-          remainderEl,
-          quoteCard.nextSibling,
-        );
-      }
       continue;
     }
     quoteText = trustedQuoteCitation.quoteText;
+    const lookupQuoteText = getQuoteCitationLookupText(trustedQuoteCitation);
     replaceBlockquoteText(blockquote, quoteText);
 
     // Try to match the trusted quote citation against known paper candidates.
@@ -3185,7 +3321,8 @@ export function decorateAssistantCitationLinks(params: {
       panelItem: params.panelItem,
       candidates: matchingCandidates,
       extractedCitation,
-      quoteText,
+      quoteText: lookupQuoteText,
+      paragraphQuoteText: quoteText,
     });
 
     const quoteCard = createQuoteCardElement({
@@ -3198,7 +3335,7 @@ export function decorateAssistantCitationLinks(params: {
     if (!blockquoteParent) continue;
     blockquoteParent.replaceChild(quoteCard, blockquote);
     removeConsumedSourceBackedQuoteCitation({
-      quoteCard,
+      anchorElement: quoteCard,
       citationEl,
       extractedCitation,
     });

@@ -148,8 +148,7 @@ describe("quoteCitations", function () {
 
   it("keeps translated quotes unanchored when only the original source text exists", function () {
     const finalized = finalizeAssistantQuoteCitations({
-      markdown:
-        "> 记忆痕迹在巩固过程中具有高度动态性。\n\n(Tomé, 2024)",
+      markdown: "> 记忆痕迹在巩固过程中具有高度动态性。\n\n(Tomé, 2024)",
       sourceIndex: buildQuoteSourceIndex({
         sourceTexts: [
           {
@@ -164,7 +163,52 @@ describe("quoteCitations", function () {
 
     assert.notInclude(finalized.markdown, "[[quote:");
     assert.lengthOf(finalized.quoteCitations, 0);
-    assert.include(finalized.markdown, "> 记忆痕迹在巩固过程中具有高度动态性。");
+    assert.include(
+      finalized.markdown,
+      "> 记忆痕迹在巩固过程中具有高度动态性。",
+    );
+  });
+
+  it("repairs exact Chinese source blockquotes through unique source matches", function () {
+    const quote = "记忆痕迹在巩固过程中具有高度动态性。";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(王, 2024)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(王, 2024)",
+            contextItemId: 22,
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].citationLabel, "(王, 2024)");
+    assert.equal(finalized.quoteCitations[0].quoteText, quote);
+  });
+
+  it("keeps wrongly labeled Chinese quotes plain without dropping attribution", function () {
+    const quote = "记忆痕迹在巩固过程中具有高度动态性。";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(王, 2024)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(李, 2024)",
+            contextItemId: 22,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, `> ${quote}`);
+    assert.include(finalized.markdown, "(王, 2024)");
   });
 
   it("keeps quotes unanchored when the source label points to the wrong paper", function () {

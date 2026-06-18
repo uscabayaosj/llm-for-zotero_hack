@@ -5,7 +5,9 @@ import type {
 } from "../../shared/types";
 import { formatPaperSourceLabel } from "./paperAttribution";
 import {
+  extractLocatorTokens,
   findUniqueQuoteTextSearchMatch,
+  isLocatorQueryLongEnough,
   normalizeLocatorText,
   type QuoteTextSearchMatch,
 } from "./quoteTextSearch";
@@ -21,7 +23,7 @@ const SOURCE_QUOTE_ELLIPSIS_PATTERN =
   /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/;
 const SOURCE_QUOTE_ELLIPSIS_PATTERN_G =
   /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/g;
-const SOURCE_QUOTE_TOKEN_PATTERN = /[A-Za-z0-9]+/g;
+const SOURCE_QUOTE_TOKEN_PATTERN = /[\p{L}\p{N}]+/gu;
 const SECTION_ONLY_LABELS = new Set([
   "abstract",
   "background",
@@ -584,7 +586,7 @@ type SourceQuoteTokenSpan = {
 };
 
 function locatorTokens(value: string): string[] {
-  return normalizeLocatorText(value).match(/[a-z0-9]+/g) || [];
+  return extractLocatorTokens(value);
 }
 
 function buildSourceQuoteTokenSpans(value: string): SourceQuoteTokenSpan[] {
@@ -641,7 +643,7 @@ function expandSourceQuoteSpanEnd(sourceText: string, end: number): number {
   let cursor = end;
   while (
     cursor < sourceText.length &&
-    /[.,;:!?"'”’)\]}]/.test(sourceText[cursor])
+    /[.,;:!?"'”’)\]}。！？、，；：]/.test(sourceText[cursor])
   ) {
     cursor += 1;
   }
@@ -739,7 +741,7 @@ function splitSourceQuoteEllipsisSegments(value: string): string[] {
   return cleaned
     .split(SOURCE_QUOTE_ELLIPSIS_PATTERN_G)
     .map((segment) => normalizeMultilineText(segment))
-    .filter((segment) => normalizeLocatorText(segment).length >= 24);
+    .filter((segment) => isLocatorQueryLongEnough(segment, 24));
 }
 
 function reconstructSourceConfirmedQuoteText(params: {
@@ -865,6 +867,25 @@ function formatPlainQuoteMarkdown(quoteText: string): string {
     .join("\n");
 }
 
+function formatPlainQuoteWithCitationMarkdown(
+  quoteText: string,
+  citationLabel: string,
+): string {
+  const quoteMarkdown = formatPlainQuoteMarkdown(quoteText);
+  const citationMarkdown = normalizeCitationLabel(citationLabel);
+  return [quoteMarkdown, citationMarkdown].filter(Boolean).join("\n\n");
+}
+
+function quoteHasSearchableLocatorTokens(quoteText: string): boolean {
+  return extractLocatorTokens(quoteText).length > 0;
+}
+
+function quoteHasNonAsciiLocatorTokens(quoteText: string): boolean {
+  return extractLocatorTokens(quoteText).some((token) =>
+    /[^\x00-\x7F]/.test(token),
+  );
+}
+
 function extractLeadingParentheticalLabel(value: string): {
   label: string;
   remainder: string;
@@ -973,6 +994,19 @@ function finalizeSourceBackedQuoteBlock(params: {
       markdown: `${formatPlainQuoteMarkdown(quoteText)}${
         params.citationRemainder ? `\n\n${params.citationRemainder}` : ""
       }`,
+      consumedCitation: true,
+    };
+  }
+  if (
+    isCanonicalQuoteSourceLabel(params.citationLabel) &&
+    (!quoteHasSearchableLocatorTokens(quoteText) ||
+      quoteHasNonAsciiLocatorTokens(quoteText))
+  ) {
+    return {
+      markdown: `${formatPlainQuoteWithCitationMarkdown(
+        quoteText,
+        params.citationLabel,
+      )}${params.citationRemainder ? `\n\n${params.citationRemainder}` : ""}`,
       consumedCitation: true,
     };
   }

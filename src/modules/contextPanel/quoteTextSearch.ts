@@ -1,6 +1,9 @@
 const SEARCH_BOUNDARY_PUNCTUATION_RE =
   /^[\s"'`“”‘’([{<]+|[\s"'`“”‘’)\]}>.,;:!?]+$/g;
-const SEARCH_WORD_PATTERN = /[a-z0-9]+/g;
+const SEARCH_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
+const PLAIN_ASCII_WORD_PATTERN = /^[a-z]+$/;
+const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
+const NON_ASCII_PATTERN = /[^\x00-\x7F]/;
 const COMMON_SEARCH_STOP_WORDS = new Set([
   "a",
   "an",
@@ -37,7 +40,8 @@ const ELLIPSIS_RE = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/;
 const ELLIPSIS_RE_G = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/g;
 const NORMALIZED_QUERY_LENGTHS = [100, 80, 60, 40, 30, 25, 20, 15];
 const FIND_CONTROLLER_HYPHEN_RE = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
-const FIND_CONTROLLER_TOKEN_RE = /[A-Za-z0-9]+(?:[-\u2010-\u2015][A-Za-z0-9]+)*/g;
+const FIND_CONTROLLER_TOKEN_RE =
+  /[A-Za-z0-9]+(?:[-\u2010-\u2015][A-Za-z0-9]+)*/g;
 const FIND_CONTROLLER_COMPOUND_SECOND_WORDS = new Set([
   "based",
   "computer",
@@ -130,14 +134,50 @@ export type QuoteTextSearchOptions = {
 
 export function normalizeLocatorText(value: string): string {
   return sanitizeText(value || "")
+    .normalize("NFKC")
     .replace(/\u00ad/g, "")
     .replace(/([A-Za-z])-\s+([A-Za-z])/g, "$1$2")
     .replace(/[“”‘’]/g, " ")
     .replace(/[‐‑‒–—-]/g, " ")
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function hasNonAsciiToken(token: string): boolean {
+  return NON_ASCII_PATTERN.test(token);
+}
+
+function tokenCharLength(token: string): number {
+  return Array.from(token).length;
+}
+
+function locatorTokensFromNormalizedText(value: string): string[] {
+  return value.match(SEARCH_WORD_PATTERN) || [];
+}
+
+export function extractLocatorTokens(value: string): string[] {
+  return locatorTokensFromNormalizedText(normalizeLocatorText(value));
+}
+
+export function isLocatorQueryLongEnough(
+  value: string,
+  minQueryLength: number,
+): boolean {
+  const normalized = normalizeLocatorText(value);
+  if (!normalized) return false;
+  if (normalized.length >= minQueryLength) return true;
+  const tokens = locatorTokensFromNormalizedText(normalized);
+  if (!tokens.some(hasNonAsciiToken)) return false;
+  const nonAsciiTokenChars = tokens
+    .filter(hasNonAsciiToken)
+    .reduce((sum, token) => sum + tokenCharLength(token), 0);
+  const nonAsciiMinLength = Math.min(
+    12,
+    Math.max(6, Math.ceil(minQueryLength / 2)),
+  );
+  return nonAsciiTokenChars >= nonAsciiMinLength;
 }
 
 /**
@@ -186,17 +226,23 @@ export function stripInlineLocatorNoise(value: string): string {
 }
 
 export function extractSearchTokens(value: string): string[] {
-  const normalized = normalizeLocatorText(stripInlineLocatorNoise(value));
-  return normalized.match(SEARCH_WORD_PATTERN) || [];
+  return extractLocatorTokens(stripInlineLocatorNoise(value));
 }
 
 export function scoreSearchToken(token: string): number {
   if (!token) return Number.NEGATIVE_INFINITY;
-  if (COMMON_SEARCH_STOP_WORDS.has(token)) return 0.5;
-  if (/^\d+$/.test(token)) return 0.2;
-  if (token.length <= 2) return 0.2;
-  if (token.length === 3) return 1.5;
-  return Math.min(8, token.length + (/[a-z]/.test(token) ? 1 : 0));
+  const length = tokenCharLength(token);
+  if (
+    PLAIN_ASCII_WORD_PATTERN.test(token) &&
+    COMMON_SEARCH_STOP_WORDS.has(token)
+  ) {
+    return 0.5;
+  }
+  if (NUMERIC_TOKEN_PATTERN.test(token)) return 0.2;
+  if (hasNonAsciiToken(token)) return Math.min(16, length * 2);
+  if (length <= 2) return 0.2;
+  if (length === 3) return 1.5;
+  return Math.min(8, length + (/[a-z]/.test(token) ? 1 : 0));
 }
 
 export function formatQuoteSearchQuerySnippet(
@@ -252,7 +298,11 @@ function pushUniqueQuery(
   minQueryLength: number,
 ): void {
   const normalized = normalizeLocatorText(query);
-  if (normalized.length < minQueryLength || seen.has(normalized)) return;
+  if (
+    !isLocatorQueryLongEnough(normalized, minQueryLength) ||
+    seen.has(normalized)
+  )
+    return;
   seen.add(normalized);
   queries.push({ query: normalized, kind, confidence });
 }
@@ -269,9 +319,22 @@ function pushNormalizedWindowQueries(params: {
     if (normalized.length <= len) continue;
     const query =
       kind === "raw-prefix"
-        ? normalized.slice(0, len).replace(/\s\S*$/, "").trim()
-        : normalized.slice(-len).replace(/^\S*\s/, "").trim();
-    pushUniqueQuery(queries, seen, query, kind, len >= 25 ? "high" : "medium", minQueryLength);
+        ? normalized
+            .slice(0, len)
+            .replace(/\s\S*$/, "")
+            .trim()
+        : normalized
+            .slice(-len)
+            .replace(/^\S*\s/, "")
+            .trim();
+    pushUniqueQuery(
+      queries,
+      seen,
+      query,
+      kind,
+      len >= 25 ? "high" : "medium",
+      minQueryLength,
+    );
   }
 }
 
@@ -348,7 +411,14 @@ export function buildQuoteTextSearchQueries(
   }
 
   if (normalized.length <= 200) {
-    pushUniqueQuery(queries, seen, normalized, "raw-prefix", "high", minQueryLength);
+    pushUniqueQuery(
+      queries,
+      seen,
+      normalized,
+      "raw-prefix",
+      "high",
+      minQueryLength,
+    );
   }
   pushNormalizedWindowQueries({
     queries,
@@ -373,7 +443,8 @@ export function buildQuoteTextSearchQueries(
     for (const offset of getProgressiveStartOffsets(tokens)) {
       for (
         let queryLength = minTokenQueryLength;
-        queryLength <= maxTokenQueryLength && offset + queryLength <= tokens.length;
+        queryLength <= maxTokenQueryLength &&
+        offset + queryLength <= tokens.length;
         queryLength += 1
       ) {
         pushUniqueQuery(
@@ -401,7 +472,8 @@ export function buildRawPrefixQueries(text: string): string[] {
   const queries: string[] = [];
   const pushQuery = (query: string) => {
     const normalizedQuery = sanitizeText(query || "").trim();
-    if (normalizedQuery.length < 12 || queries.includes(normalizedQuery)) return;
+    if (normalizedQuery.length < 12 || queries.includes(normalizedQuery))
+      return;
     queries.push(normalizedQuery);
   };
 
@@ -412,7 +484,10 @@ export function buildRawPrefixQueries(text: string): string[] {
     }
     for (const charLen of [120, 80, 50]) {
       if (segment.length <= charLen) continue;
-      const prefix = segment.slice(0, charLen).replace(/\s\S*$/, "").trim();
+      const prefix = segment
+        .slice(0, charLen)
+        .replace(/\s\S*$/, "")
+        .trim();
       pushQuery(prefix);
     }
   }
@@ -432,12 +507,18 @@ export function buildRawPrefixQueries(text: string): string[] {
     }
     for (const charLen of [50, 30, 18]) {
       if (base.length <= charLen) continue;
-      const prefix = base.slice(0, charLen).replace(/\s\S*$/, "").trim();
+      const prefix = base
+        .slice(0, charLen)
+        .replace(/\s\S*$/, "")
+        .trim();
       pushQuery(prefix);
     }
     for (const charLen of [50, 30, 18]) {
       if (base.length <= charLen) continue;
-      const suffix = base.slice(-charLen).replace(/^\S*\s/, "").trim();
+      const suffix = base
+        .slice(-charLen)
+        .replace(/^\S*\s/, "")
+        .trim();
       pushQuery(suffix);
     }
   }
@@ -522,7 +603,10 @@ function pushFindControllerQueryVariants(
   pushFindControllerQuery(queries, seen, normalized);
   const asciiHyphen = normalized.replace(FIND_CONTROLLER_HYPHEN_RE, "-");
   pushFindControllerQuery(queries, seen, asciiHyphen);
-  const spacedHyphen = asciiHyphen.replace(/([A-Za-z0-9])-([A-Za-z0-9])/g, "$1 $2");
+  const spacedHyphen = asciiHyphen.replace(
+    /([A-Za-z0-9])-([A-Za-z0-9])/g,
+    "$1 $2",
+  );
   pushFindControllerQuery(queries, seen, spacedHyphen);
   pushFindControllerQuery(
     queries,
@@ -573,7 +657,9 @@ function buildFindControllerWindowQueries(text: string): string[] {
         clean.slice(spans[start].start, spans[end].end),
       );
       if (query.length < 24 || query.length > 140) continue;
-      const tokens = spans.slice(start, start + windowSize).map((span) => span.text);
+      const tokens = spans
+        .slice(start, start + windowSize)
+        .map((span) => span.text);
       const score =
         scoreFindControllerWindow(tokens) -
         (start === 0 ? 3 : 0) +
@@ -628,16 +714,26 @@ export function buildFindControllerQuoteQueries(
 }
 
 function isWeakQuoteSearchQuery(normalizedQuery: string): boolean {
-  const tokens = normalizedQuery.match(SEARCH_WORD_PATTERN) || [];
-  if (tokens.length < 3) return true;
+  const tokens = locatorTokensFromNormalizedText(normalizedQuery);
+  if (!tokens.length) return true;
+  const hasNonAscii = tokens.some(hasNonAsciiToken);
+  if (!hasNonAscii && tokens.length < 3) return true;
   const informativeTokens = tokens.filter(
     (token) =>
-      token.length >= 4 &&
-      !COMMON_SEARCH_STOP_WORDS.has(token) &&
-      !/^\d+$/.test(token),
+      tokenCharLength(token) >= 4 &&
+      !(
+        PLAIN_ASCII_WORD_PATTERN.test(token) &&
+        COMMON_SEARCH_STOP_WORDS.has(token)
+      ) &&
+      !NUMERIC_TOKEN_PATTERN.test(token),
   );
   const score = tokens.reduce((sum, token) => sum + scoreSearchToken(token), 0);
-  if (informativeTokens.length < 2 && normalizedQuery.length < 36) return true;
+  if (
+    !hasNonAscii &&
+    informativeTokens.length < 2 &&
+    normalizedQuery.length < 36
+  )
+    return true;
   return score < 9;
 }
 
@@ -679,7 +775,7 @@ export function findUniqueQuoteTextSearchMatch(
 
   for (const query of queries) {
     const normalizedQuery = normalizeLocatorText(query.query);
-    if (!normalizedQuery || normalizedQuery.length < minQueryLength) continue;
+    if (!isLocatorQueryLongEnough(normalizedQuery, minQueryLength)) continue;
     if (rejectWeakQueries && isWeakQuoteSearchQuery(normalizedQuery)) {
       debugSummary.push(
         `${options?.debugLabel || "Quote"} ${query.kind} "${formatQuoteSearchQuerySnippet(
@@ -691,7 +787,10 @@ export function findUniqueQuoteTextSearchMatch(
     const matchedEntryIds: string[] = [];
     let totalOccurrences = 0;
     for (const entry of normalizedEntries) {
-      const occurrences = countOccurrences(entry.normalizedText, normalizedQuery);
+      const occurrences = countOccurrences(
+        entry.normalizedText,
+        normalizedQuery,
+      );
       if (occurrences <= 0) continue;
       matchedEntryIds.push(entry.id);
       totalOccurrences += occurrences;

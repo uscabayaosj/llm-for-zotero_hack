@@ -3,6 +3,7 @@ import {
   buildFindControllerQuoteQueries,
   buildRawPrefixQueries,
   findUniqueQuoteTextSearchMatch,
+  normalizeLocatorText,
   splitQuoteAtEllipsis,
 } from "../src/modules/contextPanel/quoteTextSearch";
 
@@ -61,6 +62,49 @@ describe("quoteTextSearch", function () {
       ),
       result.join("\n"),
     );
+  });
+
+  it("preserves non-ASCII locator text during normalization", function () {
+    assert.equal(
+      normalizeLocatorText("记忆痕迹在巩固过程中具有高度动态性。"),
+      "记忆痕迹在巩固过程中具有高度动态性",
+    );
+  });
+
+  it("matches an exact Chinese quote against a unique Chinese source", function () {
+    const quote = "记忆痕迹在巩固过程中具有高度动态性。";
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "paper-a",
+          text: quote,
+        },
+      ],
+      quote,
+    );
+
+    assert.isNotNull(match);
+    assert.equal(match?.entryId, "paper-a");
+    assert.equal(match?.matchKind, "exact");
+  });
+
+  it("keeps duplicate Chinese snippets across sources unverified", function () {
+    const quote = "记忆痕迹在巩固过程中具有高度动态性。";
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "paper-a",
+          text: quote,
+        },
+        {
+          id: "paper-b",
+          text: quote,
+        },
+      ],
+      quote,
+    );
+
+    assert.isNull(match);
   });
 
   it("matches an incomplete quote when a unique prefix snippet is present", function () {

@@ -105,11 +105,19 @@ const zhCN: Record<string, string> = {
   "No forkable turn found": "没有可分叉的对话轮次",
   "Fork is not supported for this conversation type yet":
     "此对话类型暂不支持分叉",
+  "Fork is not supported for Claude Code conversations":
+    "Claude Code 对话不支持分叉",
+  "Codex fork is only supported for the latest response":
+    "Codex 仅支持从最新回复分叉",
+  "Cannot fork this Codex conversation because it has no native thread":
+    "无法分叉此 Codex 对话，因为它没有原生线程",
   "Wait for the current response to finish before forking":
     "请等待当前回复完成后再分叉",
   "No active library for conversation fork": "没有可用于分叉的活跃文献库",
   "Failed to fork conversation": "分叉对话失败",
   "Conversation forked": "对话已 fork",
+  "Forked from conversation": "从对话分叉",
+  "Open original conversation": "打开原始对话",
   "No chat history detected.": "未检测到对话历史。",
   "Copied chat as md": "已复制对话为 Markdown",
   "Saved chat history to new note": "已将对话历史保存为新笔记",
@@ -118,6 +126,7 @@ const zhCN: Record<string, string> = {
   "Could not find this paper": "无法找到此论文",
   "Could not focus this paper": "无法聚焦到此论文",
   "Could not load this conversation": "无法加载此对话",
+  "Original conversation not found": "未找到原始对话",
   "This chat's source item was deleted": "此对话的来源条目已被删除",
   "Failed to fully delete turn. Check logs.":
     "未能完全删除对话轮次，请查看日志。",

@@ -1,6 +1,8 @@
 import { assert } from "chai";
 import { conversationRepository } from "../src/core/conversations/repository";
+import { codexAppServerForkService } from "../src/codexAppServer/forkService";
 import {
+  CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   CODEX_PAPER_CONVERSATION_KEY_BASE,
 } from "../src/shared/conversationKeySpace";
@@ -507,7 +509,7 @@ describe("conversationRepository", function () {
     assert.deepEqual(deleteQueries[1]?.params?.slice(-1), [200]);
   });
 
-  it("does not fork runtime conversations through the upstream repository path", async function () {
+  it("does not fork Claude Code conversations", async function () {
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -520,15 +522,494 @@ describe("conversationRepository", function () {
     };
 
     const result = await conversationRepository.forkConversation({
-      system: "codex",
+      system: "claude_code",
       kind: "global",
       libraryID: 1,
-      sourceConversationKey: CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21,
+      sourceConversationKey: CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 21,
       throughAssistantTimestamp: 200,
     });
 
     assert.isNull(result);
     assert.lengthOf(queries, 0);
+  });
+
+  it("does not fork a Codex conversation without a native provider session", async function () {
+    const sourceConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21;
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          queries.push({ sql, params });
+          if (
+            sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+            sql.includes("WHERE c.conversation_key = ?")
+          ) {
+            return [
+              {
+                conversationID: buildConversationID({
+                  conversationKey: sourceConversationKey,
+                  system: "codex",
+                  kind: "global",
+                  libraryID: 7,
+                }),
+                conversationKey: sourceConversationKey,
+                libraryID: 7,
+                kind: "global",
+                paperItemID: 0,
+                createdAt: 100,
+                updatedAt: 200,
+                title: "Codex source",
+                providerSessionId: null,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const result = await conversationRepository.forkConversation({
+      system: "codex",
+      kind: "global",
+      libraryID: 7,
+      sourceConversationKey,
+      throughAssistantTimestamp: 200,
+    });
+
+    assert.isNull(result);
+    assert.isFalse(
+      queries.some(({ sql }) =>
+        sql.includes("INSERT INTO llm_for_zotero_codex_conversations"),
+      ),
+    );
+  });
+
+  it("rejects older Codex fork requests before native thread fork", async function () {
+    const sourceConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21;
+    const originalForkThread = codexAppServerForkService.forkThread;
+    const forkCalls: string[] = [];
+    codexAppServerForkService.forkThread = async (params) => {
+      forkCalls.push(params.threadId);
+      return "thread-forked";
+    };
+    try {
+      globalScope.Zotero = {
+        ...(originalZotero || {}),
+        DB: {
+          queryAsync: async (sql: string, params?: unknown[]) => {
+            if (
+              sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+              sql.includes("WHERE c.conversation_key = ?")
+            ) {
+              return [
+                {
+                  conversationID: buildConversationID({
+                    conversationKey: sourceConversationKey,
+                    system: "codex",
+                    kind: "global",
+                    libraryID: 7,
+                  }),
+                  conversationKey: sourceConversationKey,
+                  libraryID: 7,
+                  kind: "global",
+                  paperItemID: 0,
+                  createdAt: 100,
+                  updatedAt: 400,
+                  title: "Codex source",
+                  providerSessionId: "thread-source",
+                  userTurnCount: 2,
+                },
+              ];
+            }
+            if (
+              sql.includes("FROM llm_for_zotero_codex_messages") &&
+              sql.includes("role = 'assistant'") &&
+              sql.includes("ORDER BY")
+            ) {
+              return [{ timestamp: 400 }];
+            }
+            return [];
+          },
+        },
+      };
+
+      const result = await conversationRepository.forkConversation({
+        system: "codex",
+        kind: "global",
+        libraryID: 7,
+        sourceConversationKey,
+        throughAssistantTimestamp: 200,
+      });
+
+      assert.isNull(result);
+      assert.deepEqual(forkCalls, []);
+    } finally {
+      codexAppServerForkService.forkThread = originalForkThread;
+    }
+  });
+
+  it("forks a latest Codex conversation through native thread fork and local message copy", async function () {
+    const sourceConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21;
+    const targetConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 99;
+    const sourceConversationID = buildConversationID({
+      conversationKey: sourceConversationKey,
+      system: "codex",
+      kind: "global",
+      libraryID: 7,
+    });
+    const targetConversationID = buildConversationID({
+      conversationKey: targetConversationKey,
+      system: "codex",
+      kind: "global",
+      libraryID: 7,
+    });
+    const originalForkThread = codexAppServerForkService.forkThread;
+    const originalArchiveThread = codexAppServerForkService.archiveThread;
+    const originalCreateCatalogEntry = conversationRepository.createCatalogEntry;
+    const originalGetCatalogEntry = conversationRepository.getCatalogEntry;
+    const originalSetCatalogTitle = conversationRepository.setCatalogTitle;
+    const forkCalls: string[] = [];
+    const archiveCalls: string[] = [];
+    const insertedMessages: unknown[][] = [];
+    const registryRows = new Map<number, Record<string, unknown>>();
+    let persistedProviderSessionId = "";
+    let targetTitle = "";
+
+    codexAppServerForkService.forkThread = async (params) => {
+      forkCalls.push(params.threadId);
+      return "thread-forked";
+    };
+    codexAppServerForkService.archiveThread = async (params) => {
+      archiveCalls.push(params.threadId);
+    };
+    conversationRepository.createCatalogEntry = async (params) => ({
+      conversationID: targetConversationID,
+      conversationKey: targetConversationKey,
+      system: params.system,
+      kind: params.kind,
+      libraryID: params.libraryID,
+      paperItemID: params.paperItemID,
+      createdAt: 100,
+      lastActivityAt: 100,
+      userTurnCount: 0,
+    });
+    conversationRepository.getCatalogEntry = async (target) => {
+      if (target.conversationKey === sourceConversationKey) {
+        return {
+          conversationID: sourceConversationID,
+          conversationKey: sourceConversationKey,
+          system: "codex",
+          kind: "global",
+          libraryID: 7,
+          createdAt: 100,
+          lastActivityAt: 200,
+          title: "Codex source",
+          userTurnCount: 1,
+          providerSessionId: "thread-source",
+        };
+      }
+      if (target.conversationKey === targetConversationKey) {
+        return {
+          conversationID: targetConversationID,
+          conversationKey: targetConversationKey,
+          system: "codex",
+          kind: "global",
+          libraryID: 7,
+          createdAt: 100,
+          lastActivityAt: 200,
+          title: targetTitle,
+          userTurnCount: 1,
+          providerSessionId: "thread-forked",
+        };
+      }
+      return null;
+    };
+    conversationRepository.setCatalogTitle = async (target) => {
+      targetTitle = target.title;
+    };
+
+    try {
+      globalScope.Zotero = {
+        ...(originalZotero || {}),
+        Profile: { dir: "/tmp/zotero-profile" },
+        DB: {
+          executeTransaction: async (fn: () => Promise<unknown>) => await fn(),
+          queryAsync: async (sql: string, params?: unknown[]) => {
+            if (
+              sql.includes("FROM llm_for_zotero_conversation_registry") &&
+              sql.includes("WHERE legacy_conversation_key = ?")
+            ) {
+              const key = Number(params?.[0] || 0);
+              const row = registryRows.get(key);
+              return row ? [row] : [];
+            }
+            if (
+              sql.includes("INSERT INTO llm_for_zotero_conversation_registry")
+            ) {
+              const key = Number(params?.[1] || 0);
+              registryRows.set(key, {
+                conversationID: params?.[0],
+                conversationKey: key,
+                system: params?.[2],
+                kind: params?.[3],
+                profileSignature: params?.[4],
+                libraryID: params?.[5],
+                paperItemID: params?.[6],
+                valid: 1,
+              });
+              return [];
+            }
+            if (
+              sql.includes("INSERT INTO llm_for_zotero_codex_conversations")
+            ) {
+              persistedProviderSessionId = String(
+                (params || []).find((value) => value === "thread-forked") || "",
+              );
+              return [];
+            }
+            if (
+              sql.includes("FROM llm_for_zotero_codex_messages") &&
+              sql.includes("SELECT timestamp") &&
+              sql.includes("role = 'assistant'")
+            ) {
+              return [{ timestamp: 200 }];
+            }
+            if (
+              sql.includes("SELECT id, timestamp") &&
+              sql.includes("FROM llm_for_zotero_codex_messages")
+            ) {
+              return [{ id: 4, timestamp: 200 }];
+            }
+            if (
+              sql.includes("SELECT role, text, timestamp") &&
+              sql.includes("FROM llm_for_zotero_codex_messages")
+            ) {
+              return [
+                { role: "user", text: "Prompt", timestamp: 100 },
+                {
+                  role: "assistant",
+                  text: "Answer",
+                  timestamp: 200,
+                  run_mode: "agent",
+                  agent_run_id: "run-source",
+                },
+              ];
+            }
+            if (sql.includes("INSERT INTO llm_for_zotero_codex_messages")) {
+              insertedMessages.push([...(params || [])]);
+              return [];
+            }
+            return [];
+          },
+        },
+      };
+
+      const result = await conversationRepository.forkConversation({
+        system: "codex",
+        kind: "global",
+        libraryID: 7,
+        sourceConversationKey,
+        throughAssistantTimestamp: 200,
+      });
+
+      assert.equal(result?.entry.conversationKey, targetConversationKey);
+      assert.equal(result?.copiedMessageCount, 2);
+      assert.deepEqual(forkCalls, ["thread-source"]);
+      assert.deepEqual(archiveCalls, []);
+      assert.equal(persistedProviderSessionId, "thread-forked");
+      assert.lengthOf(insertedMessages, 2);
+      assert.deepEqual(
+        insertedMessages.map((params) => params.slice(1, 7)),
+        [
+          [
+            targetConversationKey,
+            "user",
+            "Prompt",
+            insertedMessages[0]?.[4],
+            undefined,
+            undefined,
+          ],
+          [
+            targetConversationKey,
+            "assistant",
+            "Answer",
+            insertedMessages[1]?.[4],
+            "agent",
+            "run-source",
+          ],
+        ],
+      );
+      assert.equal(result?.forkLink.sourceConversationKey, sourceConversationKey);
+      assert.equal(result?.forkLink.targetConversationKey, targetConversationKey);
+    } finally {
+      codexAppServerForkService.forkThread = originalForkThread;
+      codexAppServerForkService.archiveThread = originalArchiveThread;
+      conversationRepository.createCatalogEntry = originalCreateCatalogEntry;
+      conversationRepository.getCatalogEntry = originalGetCatalogEntry;
+      conversationRepository.setCatalogTitle = originalSetCatalogTitle;
+    }
+  });
+
+  it("archives a native Codex fork when local message copy fails", async function () {
+    const sourceConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 21;
+    const targetConversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 99;
+    const sourceConversationID = buildConversationID({
+      conversationKey: sourceConversationKey,
+      system: "codex",
+      kind: "global",
+      libraryID: 7,
+    });
+    const targetConversationID = buildConversationID({
+      conversationKey: targetConversationKey,
+      system: "codex",
+      kind: "global",
+      libraryID: 7,
+    });
+    const originalForkThread = codexAppServerForkService.forkThread;
+    const originalArchiveThread = codexAppServerForkService.archiveThread;
+    const originalCreateCatalogEntry = conversationRepository.createCatalogEntry;
+    const originalDeleteCatalogEntry = conversationRepository.deleteCatalogEntry;
+    const originalGetCatalogEntry = conversationRepository.getCatalogEntry;
+    const forkCalls: string[] = [];
+    const archiveCalls: string[] = [];
+    const deletedEntries: Array<{
+      system: string;
+      kind: string;
+      conversationKey: number;
+    }> = [];
+    const registryRows = new Map<number, Record<string, unknown>>();
+
+    codexAppServerForkService.forkThread = async (params) => {
+      forkCalls.push(params.threadId);
+      return "thread-forked";
+    };
+    codexAppServerForkService.archiveThread = async (params) => {
+      archiveCalls.push(params.threadId);
+    };
+    conversationRepository.createCatalogEntry = async (params) => ({
+      conversationID: targetConversationID,
+      conversationKey: targetConversationKey,
+      system: params.system,
+      kind: params.kind,
+      libraryID: params.libraryID,
+      paperItemID: params.paperItemID,
+      createdAt: 100,
+      lastActivityAt: 100,
+      userTurnCount: 0,
+    });
+    conversationRepository.deleteCatalogEntry = async (target) => {
+      deletedEntries.push({
+        system: target.system,
+        kind: target.kind,
+        conversationKey: target.conversationKey,
+      });
+      return true;
+    };
+    conversationRepository.getCatalogEntry = async (target) => {
+      if (target.conversationKey === sourceConversationKey) {
+        return {
+          conversationID: sourceConversationID,
+          conversationKey: sourceConversationKey,
+          system: "codex",
+          kind: "global",
+          libraryID: 7,
+          createdAt: 100,
+          lastActivityAt: 200,
+          title: "Codex source",
+          userTurnCount: 1,
+          providerSessionId: "thread-source",
+        };
+      }
+      return null;
+    };
+
+    try {
+      globalScope.Zotero = {
+        ...(originalZotero || {}),
+        Profile: { dir: "/tmp/zotero-profile" },
+        DB: {
+          executeTransaction: async (fn: () => Promise<unknown>) => await fn(),
+          queryAsync: async (sql: string, params?: unknown[]) => {
+            if (
+              sql.includes("FROM llm_for_zotero_conversation_registry") &&
+              sql.includes("WHERE legacy_conversation_key = ?")
+            ) {
+              const key = Number(params?.[0] || 0);
+              const row = registryRows.get(key);
+              return row ? [row] : [];
+            }
+            if (
+              sql.includes("INSERT INTO llm_for_zotero_conversation_registry")
+            ) {
+              const key = Number(params?.[1] || 0);
+              registryRows.set(key, {
+                conversationID: params?.[0],
+                conversationKey: key,
+                system: params?.[2],
+                kind: params?.[3],
+                profileSignature: params?.[4],
+                libraryID: params?.[5],
+                paperItemID: params?.[6],
+                valid: 1,
+              });
+              return [];
+            }
+            if (
+              sql.includes("FROM llm_for_zotero_codex_messages") &&
+              sql.includes("SELECT timestamp") &&
+              sql.includes("role = 'assistant'")
+            ) {
+              return [{ timestamp: 200 }];
+            }
+            if (
+              sql.includes("INSERT INTO llm_for_zotero_codex_conversations")
+            ) {
+              return [];
+            }
+            if (
+              sql.includes("SELECT id, timestamp") &&
+              sql.includes("FROM llm_for_zotero_codex_messages")
+            ) {
+              throw new Error("copy failed");
+            }
+            return [];
+          },
+        },
+      };
+
+      let caught: unknown;
+      try {
+        await conversationRepository.forkConversation({
+          system: "codex",
+          kind: "global",
+          libraryID: 7,
+          sourceConversationKey,
+          throughAssistantTimestamp: 200,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      assert.instanceOf(caught, Error);
+      assert.equal((caught as Error).message, "copy failed");
+      assert.deepEqual(forkCalls, ["thread-source"]);
+      assert.deepEqual(archiveCalls, ["thread-forked"]);
+      assert.deepEqual(deletedEntries, [
+        {
+          system: "codex",
+          kind: "global",
+          conversationKey: targetConversationKey,
+        },
+      ]);
+    } finally {
+      codexAppServerForkService.forkThread = originalForkThread;
+      codexAppServerForkService.archiveThread = originalArchiveThread;
+      conversationRepository.createCatalogEntry = originalCreateCatalogEntry;
+      conversationRepository.deleteCatalogEntry = originalDeleteCatalogEntry;
+      conversationRepository.getCatalogEntry = originalGetCatalogEntry;
+    }
   });
 
   it("forks an upstream global conversation through the selected assistant turn", async function () {
@@ -669,6 +1150,21 @@ describe("conversationRepository", function () {
 
     assert.equal(result?.entry.conversationKey, targetConversationKey);
     assert.equal(result?.copiedMessageCount, 2);
+    assert.equal(
+      result?.targetAnchorAssistantTimestamp,
+      insertedMessages[1]?.[4],
+    );
+    assert.deepInclude(result?.forkLink, {
+      targetConversationKey,
+      targetSystem: "upstream",
+      targetKind: "global",
+      sourceConversationKey,
+      sourceSystem: "upstream",
+      sourceKind: "global",
+      sourceLibraryID: 7,
+      sourceAssistantTimestamp: 200,
+      targetAnchorAssistantTimestamp: insertedMessages[1]?.[4],
+    });
     assert.equal(targetTitle, "Fork: Source title");
     assert.lengthOf(insertedMessages, 2);
     assert.equal(

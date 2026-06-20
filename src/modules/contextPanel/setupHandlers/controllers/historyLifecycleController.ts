@@ -12,6 +12,10 @@ import {
   type ConversationCatalogEntry,
 } from "../../../../core/conversations/repository";
 import {
+  evaluateConversationForkEligibility,
+  type ConversationForkEligibilityReason,
+} from "../../../../core/conversations/forkEligibility";
+import {
   buildDefaultUpstreamGlobalConversationKey,
   GLOBAL_CONVERSATION_KEY_BASE,
   MAX_SELECTED_PAPER_CONTEXTS,
@@ -22,6 +26,7 @@ import {
 import type { Message } from "../../types";
 import {
   chatHistory,
+  conversationForkLinks,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
   activeConversationModeByLibrary,
@@ -34,8 +39,10 @@ import {
   setInlineEditTarget,
   setInlineEditInputSection,
   setInlineEditSavedDraft,
+  setForkSourceNavigationRunner,
   isRequestPending,
 } from "../../state";
+import type { ConversationForkLink } from "../../../../shared/conversationForkLinks";
 import { setStatus } from "../../textUtils";
 import {
   positionMenuBelowButton,
@@ -320,6 +327,36 @@ export function createHistoryLifecycleController(
   const setBasePaperItem = (nextItem: Zotero.Item | null) => {
     basePaperItem = nextItem;
     deps.setBasePaperItem(nextItem);
+  };
+  const getForkEligibilityStatusMessage = (
+    reason?: ConversationForkEligibilityReason,
+  ): string => {
+    switch (reason) {
+      case "pending_response":
+        return t("Wait for the current response to finish before forking");
+      case "claude_code":
+        return t("Fork is not supported for Claude Code conversations");
+      case "codex_older_turn":
+        return t("Codex fork is only supported for the latest response");
+      case "missing_provider_session":
+        return t(
+          "Cannot fork this Codex conversation because it has no native thread",
+        );
+      case "webchat":
+      case "compact_marker":
+      case "unsupported_system":
+        return t("Fork is not supported for this conversation type yet");
+      case "invalid_turn":
+      default:
+        return t("No forkable turn found");
+    }
+  };
+  const getForkEligibilityStatusLevel = (
+    reason?: ConversationForkEligibilityReason,
+  ): StatusLevel => {
+    return reason === "invalid_turn" || reason === "missing_provider_session"
+      ? "error"
+      : "warning";
   };
   const normalizeCreateConversationOptions = (
     options: boolean | CreateConversationOptions | undefined,
@@ -2381,6 +2418,94 @@ export function createHistoryLifecycleController(
     return true;
   };
 
+  const openForkSourceConversation = async (
+    link: ConversationForkLink,
+  ): Promise<void> => {
+    syncStateFromDeps();
+    const sourceConversationKey = normalizeHistoryPaperItemID(
+      link.sourceConversationKey,
+    );
+    if (!sourceConversationKey) {
+      showTopToast(t("Original conversation not found"));
+      if (status)
+        setStatus(status, t("Original conversation not found"), "warning");
+      return;
+    }
+
+    if (getConversationSystem() !== link.sourceSystem) {
+      await deps.switchConversationSystem(link.sourceSystem);
+      syncStateFromDeps();
+    }
+
+    const sourceEntry = await conversationRepository.getCatalogEntry({
+      system: link.sourceSystem,
+      kind: link.sourceKind,
+      conversationKey: sourceConversationKey,
+    });
+    if (!sourceEntry || sourceEntry.kind !== link.sourceKind) {
+      showTopToast(t("Original conversation not found"));
+      if (status)
+        setStatus(status, t("Original conversation not found"), "warning");
+      return;
+    }
+
+    const libraryID =
+      normalizeHistoryPaperItemID(sourceEntry.libraryID) ||
+      normalizeHistoryPaperItemID(link.sourceLibraryID) ||
+      getCurrentLibraryID();
+    const targetModeSnapshot = primeHistoryNavigationMode({
+      system: link.sourceSystem,
+      libraryID,
+      mode: link.sourceKind,
+      conversationKey: sourceConversationKey,
+      paperItemID:
+        link.sourceKind === "paper"
+          ? normalizeHistoryPaperItemID(
+              sourceEntry.paperItemID || link.sourcePaperItemID,
+            )
+          : undefined,
+    });
+    let loaded = false;
+    try {
+      if (link.sourceKind === "paper") {
+        const paperItemID =
+          normalizeHistoryPaperItemID(sourceEntry.paperItemID) ||
+          normalizeHistoryPaperItemID(link.sourcePaperItemID);
+        const paperItem = paperItemID
+          ? (Zotero.Items.get(paperItemID) as Zotero.Item | null)
+          : null;
+        if (!paperItem) {
+          showTopToast(t("This chat's source item was deleted"));
+          if (status) {
+            setStatus(
+              status,
+              t("This chat's source item was deleted"),
+              "warning",
+            );
+          }
+          return;
+        }
+        loaded = await switchPaperConversation(sourceConversationKey, {
+          paperItem,
+          allowedCatalogPaperItemID: paperItemID,
+        });
+      } else {
+        loaded = await switchGlobalConversation(sourceConversationKey);
+      }
+      if (!loaded) {
+        showTopToast(t("Could not load this conversation"));
+        if (status)
+          setStatus(status, t("Could not load this conversation"), "error");
+      }
+    } finally {
+      if (!loaded) {
+        targetModeSnapshot.restore();
+      }
+    }
+  };
+
+  setForkSourceNavigationRunner(body, openForkSourceConversation);
+
   const switchToHistoryTarget = async (
     target: HistorySwitchTarget,
   ): Promise<boolean> => {
@@ -2535,21 +2660,19 @@ export function createHistoryLifecycleController(
       if (status) setStatus(status, t("No forkable turn found"), "error");
       return;
     }
-    if (isRequestPending(sourceConversationKey)) {
+    const activeSystem = getConversationSystem();
+    const initialEligibility = evaluateConversationForkEligibility({
+      system: activeSystem,
+      assistantTimestamp,
+      pendingResponse: isRequestPending(sourceConversationKey),
+      webchatMode: isWebChatMode(),
+    });
+    if (!initialEligibility.allowed) {
       if (status)
         setStatus(
           status,
-          t("Wait for the current response to finish before forking"),
-          "warning",
-        );
-      return;
-    }
-    if (isWebChatMode() || getConversationSystem() !== "upstream") {
-      if (status)
-        setStatus(
-          status,
-          t("Fork is not supported for this conversation type yet"),
-          "warning",
+          getForkEligibilityStatusMessage(initialEligibility.reason),
+          getForkEligibilityStatusLevel(initialEligibility.reason),
         );
       return;
     }
@@ -2572,21 +2695,6 @@ export function createHistoryLifecycleController(
     );
     if (!turnPair) {
       if (status) setStatus(status, t("No forkable turn found"), "error");
-      return;
-    }
-    if (
-      turnPair.userMessage.runMode === "agent" ||
-      turnPair.assistantMessage.runMode === "agent" ||
-      Boolean(turnPair.assistantMessage.webchatRunState) ||
-      Boolean(turnPair.assistantMessage.webchatCompletionReason) ||
-      turnPair.assistantMessage.compactMarker
-    ) {
-      if (status)
-        setStatus(
-          status,
-          t("Fork is not supported for this conversation type yet"),
-          "warning",
-        );
       return;
     }
 
@@ -2618,12 +2726,39 @@ export function createHistoryLifecycleController(
       return;
     }
 
+    let codexSourceProviderSessionId: string | undefined;
+    if (activeSystem === "codex") {
+      const sourceEntry = await conversationRepository.getCatalogEntry({
+        system: "codex",
+        kind,
+        conversationKey: sourceConversationKey,
+      });
+      codexSourceProviderSessionId = sourceEntry?.providerSessionId;
+    }
+    const executionEligibility = evaluateConversationForkEligibility({
+      system: activeSystem,
+      assistantTimestamp,
+      assistantMessage: turnPair.assistantMessage,
+      history: sourceHistory,
+      requireProviderSession: activeSystem === "codex",
+      sourceProviderSessionId: codexSourceProviderSessionId,
+    });
+    if (!executionEligibility.allowed) {
+      if (status)
+        setStatus(
+          status,
+          getForkEligibilityStatusMessage(executionEligibility.reason),
+          getForkEligibilityStatusLevel(executionEligibility.reason),
+        );
+      return;
+    }
+
     let result: Awaited<
       ReturnType<typeof conversationRepository.forkConversation>
     > | null = null;
     try {
       result = await conversationRepository.forkConversation({
-        system: "upstream",
+        system: activeSystem,
         kind,
         libraryID,
         paperItemID: paperItemID || undefined,
@@ -2639,6 +2774,7 @@ export function createHistoryLifecycleController(
     }
 
     const nextConversationKey = Math.floor(result.entry.conversationKey);
+    conversationForkLinks.set(nextConversationKey, result.forkLink);
     chatHistory.delete(nextConversationKey);
     loadedConversationKeys.delete(nextConversationKey);
     invalidateHistorySearchDocument(sourceConversationKey);

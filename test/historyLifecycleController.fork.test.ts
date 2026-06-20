@@ -6,6 +6,7 @@ import {
 import { createGlobalPortalItem } from "../src/modules/contextPanel/portalScope";
 import {
   chatHistory,
+  conversationForkLinks,
   loadedConversationKeys,
 } from "../src/modules/contextPanel/state";
 import type { Message } from "../src/modules/contextPanel/types";
@@ -13,6 +14,7 @@ import {
   conversationRepository,
   type ConversationCatalogEntry,
 } from "../src/core/conversations/repository";
+import { t } from "../src/utils/i18n";
 
 const LIBRARY_ID = 7;
 const SOURCE_CONVERSATION_KEY = 2_000_000_021;
@@ -195,11 +197,13 @@ function makeCatalogEntry(params: {
   title?: string;
   libraryID?: number;
   paperItemID?: number;
+  system?: "upstream" | "claude_code" | "codex";
+  providerSessionId?: string;
 }): ConversationCatalogEntry {
   return {
     conversationID: `test:${params.conversationKey}`,
     conversationKey: params.conversationKey,
-    system: "upstream",
+    system: params.system || "upstream",
     kind: params.kind || "global",
     libraryID: params.libraryID || LIBRARY_ID,
     paperItemID: params.paperItemID,
@@ -207,10 +211,13 @@ function makeCatalogEntry(params: {
     lastActivityAt: 1,
     title: params.title || "Forked conversation",
     userTurnCount: 0,
+    providerSessionId: params.providerSessionId,
   };
 }
 
-function createControllerHarness() {
+function createControllerHarness(
+  options: { system?: "upstream" | "claude_code" | "codex" } = {},
+) {
   const doc = new FakeDocument();
   const body = new FakeElement(doc, "div") as unknown as HTMLElement;
   const panelRoot = new FakeElement(doc, "div") as unknown as HTMLElement;
@@ -229,6 +236,7 @@ function createControllerHarness() {
     LIBRARY_ID,
     SOURCE_CONVERSATION_KEY,
   );
+  const system = options.system || "upstream";
 
   const deps: HistoryLifecycleControllerDeps = {
     body,
@@ -257,10 +265,10 @@ function createControllerHarness() {
     },
     getBasePaperItem: () => null,
     setBasePaperItem: () => undefined,
-    getConversationSystem: () => "upstream",
-    isClaudeConversationSystem: () => false,
-    isCodexConversationSystem: () => false,
-    isRuntimeConversationSystem: () => false,
+    getConversationSystem: () => system,
+    isClaudeConversationSystem: () => system === "claude_code",
+    isCodexConversationSystem: () => system === "codex",
+    isRuntimeConversationSystem: () => system !== "upstream",
     isNoteSession: () => false,
     isGlobalMode: () => true,
     isPaperMode: () => false,
@@ -332,22 +340,28 @@ function createControllerHarness() {
 describe("historyLifecycleController fork behavior", function () {
   const globalScope = globalThis as typeof globalThis & {
     Zotero?: Record<string, any>;
+    ztoolkit?: { log?: (...args: unknown[]) => void };
   };
   let originalZotero: Record<string, any> | undefined;
+  let originalZtoolkit: { log?: (...args: unknown[]) => void } | undefined;
   let originalDeleteTurnMessages: typeof conversationRepository.deleteTurnMessages;
   let originalEnsureCatalogEntry: typeof conversationRepository.ensureCatalogEntry;
   let originalForkConversation: typeof conversationRepository.forkConversation;
+  let originalGetCatalogEntry: typeof conversationRepository.getCatalogEntry;
   let originalLoadMessages: typeof conversationRepository.loadMessages;
 
   beforeEach(function () {
     originalZotero = globalScope.Zotero;
+    originalZtoolkit = globalScope.ztoolkit;
     originalDeleteTurnMessages = conversationRepository.deleteTurnMessages;
     originalEnsureCatalogEntry = conversationRepository.ensureCatalogEntry;
     originalForkConversation = conversationRepository.forkConversation;
+    originalGetCatalogEntry = conversationRepository.getCatalogEntry;
     originalLoadMessages = conversationRepository.loadMessages;
     globalScope.Zotero = {
       ...(originalZotero || {}),
       locale: "zh-CN",
+      Profile: { dir: "/tmp/zotero-profile" },
       Libraries: { userLibraryID: LIBRARY_ID },
       Items: { get: () => null },
       DB: {
@@ -356,8 +370,10 @@ describe("historyLifecycleController fork behavior", function () {
       },
       debug: () => undefined,
     };
+    globalScope.ztoolkit = { log: () => undefined };
     chatHistory.delete(SOURCE_CONVERSATION_KEY);
     chatHistory.delete(TARGET_CONVERSATION_KEY);
+    conversationForkLinks.delete(TARGET_CONVERSATION_KEY);
     loadedConversationKeys.delete(SOURCE_CONVERSATION_KEY);
     loadedConversationKeys.delete(TARGET_CONVERSATION_KEY);
   });
@@ -366,12 +382,19 @@ describe("historyLifecycleController fork behavior", function () {
     conversationRepository.deleteTurnMessages = originalDeleteTurnMessages;
     conversationRepository.ensureCatalogEntry = originalEnsureCatalogEntry;
     conversationRepository.forkConversation = originalForkConversation;
+    conversationRepository.getCatalogEntry = originalGetCatalogEntry;
     conversationRepository.loadMessages = originalLoadMessages;
     chatHistory.delete(SOURCE_CONVERSATION_KEY);
     chatHistory.delete(TARGET_CONVERSATION_KEY);
+    conversationForkLinks.delete(TARGET_CONVERSATION_KEY);
     loadedConversationKeys.delete(SOURCE_CONVERSATION_KEY);
     loadedConversationKeys.delete(TARGET_CONVERSATION_KEY);
     globalScope.Zotero = originalZotero;
+    if (originalZtoolkit) {
+      globalScope.ztoolkit = originalZtoolkit;
+    } else {
+      delete globalScope.ztoolkit;
+    }
   });
 
   it("finalizes a pending deleted turn before forking through a later turn and shows the top toast", async function () {
@@ -404,9 +427,56 @@ describe("historyLifecycleController fork behavior", function () {
           paperItemID: params.paperItemID,
         }),
         copiedMessageCount: 4,
+        targetAnchorAssistantTimestamp: 1_700,
+        forkLink: {
+          targetConversationKey: TARGET_CONVERSATION_KEY,
+          targetSystem: params.system,
+          targetKind: params.kind,
+          sourceConversationKey: params.sourceConversationKey,
+          sourceSystem: params.system,
+          sourceKind: params.kind,
+          sourceLibraryID: params.libraryID,
+          sourcePaperItemID: params.paperItemID,
+          sourceAssistantTimestamp: params.throughAssistantTimestamp,
+          targetAnchorAssistantTimestamp: 1_700,
+          createdAt: 1_800,
+        },
       };
     };
-    conversationRepository.loadMessages = async () => [];
+    const targetMessages = [
+      makeMessage("user", "Fork target", 1_699),
+      makeMessage("assistant", "Fork target answer", 1_700),
+    ];
+    conversationRepository.loadMessages = async (params) =>
+      params.conversationKey === TARGET_CONVERSATION_KEY ? targetMessages : [];
+    const originalQueryAsync = globalScope.Zotero?.DB?.queryAsync;
+    if (globalScope.Zotero?.DB && originalQueryAsync) {
+      globalScope.Zotero.DB.queryAsync = async (
+        sql: string,
+        params?: unknown[],
+      ) => {
+        if (
+          sql.includes("SELECT target_conversation_key") &&
+          Number(params?.[0] || 0) === TARGET_CONVERSATION_KEY
+        ) {
+          return [
+            {
+              targetConversationKey: TARGET_CONVERSATION_KEY,
+              targetSystem: "upstream",
+              targetKind: "global",
+              sourceConversationKey: SOURCE_CONVERSATION_KEY,
+              sourceSystem: "upstream",
+              sourceKind: "global",
+              sourceLibraryID: LIBRARY_ID,
+              sourceAssistantTimestamp: 600,
+              targetAnchorAssistantTimestamp: 1_700,
+              createdAt: 1_800,
+            },
+          ];
+        }
+        return originalQueryAsync(sql, params);
+      };
+    }
 
     const { controller, item, historyUndo, historyUndoText, topToast, status } =
       createControllerHarness();
@@ -475,6 +545,22 @@ describe("historyLifecycleController fork behavior", function () {
     assert.isTrue(topToast.classList.contains("llm-top-toast-visible"));
     assert.equal(topToast.textContent, "\u5bf9\u8bdd\u5df2 fork");
     assert.equal(status.textContent, "\u5bf9\u8bdd\u5df2 fork");
+    assert.equal(
+      conversationForkLinks.get(TARGET_CONVERSATION_KEY)
+        ?.targetAnchorAssistantTimestamp,
+      1_700,
+    );
+    assert.deepEqual(
+      (chatHistory.get(TARGET_CONVERSATION_KEY) || []).map(
+        (message) => message.text,
+      ),
+      ["Fork target", "Fork target answer"],
+    );
+    assert.isFalse(
+      (chatHistory.get(TARGET_CONVERSATION_KEY) || []).some((message) =>
+        String(message.text || "").includes("Forked from conversation"),
+      ),
+    );
   });
 
   it("does not finalize a later pending deletion before forking an earlier turn", async function () {
@@ -503,6 +589,20 @@ describe("historyLifecycleController fork behavior", function () {
           paperItemID: params.paperItemID,
         }),
         copiedMessageCount: 2,
+        targetAnchorAssistantTimestamp: 1_700,
+        forkLink: {
+          targetConversationKey: TARGET_CONVERSATION_KEY,
+          targetSystem: params.system,
+          targetKind: params.kind,
+          sourceConversationKey: params.sourceConversationKey,
+          sourceSystem: params.system,
+          sourceKind: params.kind,
+          sourceLibraryID: params.libraryID,
+          sourcePaperItemID: params.paperItemID,
+          sourceAssistantTimestamp: params.throughAssistantTimestamp,
+          targetAnchorAssistantTimestamp: 1_700,
+          createdAt: 1_800,
+        },
       };
     };
     conversationRepository.loadMessages = async () => [];
@@ -533,5 +633,217 @@ describe("historyLifecycleController fork behavior", function () {
     assert.isTrue(
       controller.hasPendingTurnDeletionForConversation(SOURCE_CONVERSATION_KEY),
     );
+  });
+
+  it("allows upstream agent-mode turns to fork", async function () {
+    const forkCalls: Array<
+      Parameters<typeof conversationRepository.forkConversation>[0]
+    > = [];
+    conversationRepository.ensureCatalogEntry = async (params) =>
+      makeCatalogEntry({
+        conversationKey: params.conversationKey || TARGET_CONVERSATION_KEY,
+        kind: params.kind,
+        libraryID: params.libraryID,
+        paperItemID: params.paperItemID,
+      });
+    conversationRepository.forkConversation = async (params) => {
+      forkCalls.push(params);
+      return {
+        entry: makeCatalogEntry({
+          conversationKey: TARGET_CONVERSATION_KEY,
+          kind: params.kind,
+          libraryID: params.libraryID,
+          paperItemID: params.paperItemID,
+          system: params.system,
+        }),
+        copiedMessageCount: 2,
+        targetAnchorAssistantTimestamp: 1_700,
+        forkLink: {
+          targetConversationKey: TARGET_CONVERSATION_KEY,
+          targetSystem: params.system,
+          targetKind: params.kind,
+          sourceConversationKey: params.sourceConversationKey,
+          sourceSystem: params.system,
+          sourceKind: params.kind,
+          sourceLibraryID: params.libraryID,
+          sourcePaperItemID: params.paperItemID,
+          sourceAssistantTimestamp: params.throughAssistantTimestamp,
+          targetAnchorAssistantTimestamp: 1_700,
+          createdAt: 1_800,
+        },
+      };
+    };
+    conversationRepository.loadMessages = async () => [];
+
+    const { controller, item, status } = createControllerHarness();
+    chatHistory.set(SOURCE_CONVERSATION_KEY, [
+      {
+        ...makeMessage("user", "Agent prompt", 100),
+        runMode: "agent",
+        agentRunId: "run-source",
+      },
+      {
+        ...makeMessage("assistant", "Agent answer", 200),
+        runMode: "agent",
+        agentRunId: "run-source",
+      },
+    ]);
+    loadedConversationKeys.add(SOURCE_CONVERSATION_KEY);
+
+    await controller.forkConversationFromTurn({
+      item,
+      conversationKey: SOURCE_CONVERSATION_KEY,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    });
+
+    assert.deepEqual(forkCalls, [
+      {
+        system: "upstream",
+        kind: "global",
+        libraryID: LIBRARY_ID,
+        paperItemID: undefined,
+        sourceConversationKey: SOURCE_CONVERSATION_KEY,
+        throughAssistantTimestamp: 200,
+      },
+    ]);
+    assert.equal(status.textContent, "\u5bf9\u8bdd\u5df2 fork");
+  });
+
+  it("rejects Claude Code fork attempts before the repository", async function () {
+    let forkCalled = false;
+    conversationRepository.forkConversation = async () => {
+      forkCalled = true;
+      return null;
+    };
+
+    const { controller, item, status } = createControllerHarness({
+      system: "claude_code",
+    });
+    chatHistory.set(SOURCE_CONVERSATION_KEY, [
+      makeMessage("user", "Prompt", 100),
+      makeMessage("assistant", "Answer", 200),
+    ]);
+    loadedConversationKeys.add(SOURCE_CONVERSATION_KEY);
+
+    await controller.forkConversationFromTurn({
+      item,
+      conversationKey: SOURCE_CONVERSATION_KEY,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    });
+
+    assert.isFalse(forkCalled);
+    assert.include(status.textContent, "Claude Code");
+  });
+
+  it("rejects Codex older-turn fork attempts when native fork has no anchor support", async function () {
+    let forkCalled = false;
+    conversationRepository.forkConversation = async () => {
+      forkCalled = true;
+      return null;
+    };
+
+    const { controller, item, status } = createControllerHarness({
+      system: "codex",
+    });
+    chatHistory.set(SOURCE_CONVERSATION_KEY, [
+      makeMessage("user", "First", 100),
+      makeMessage("assistant", "First answer", 200),
+      makeMessage("user", "Latest", 300),
+      makeMessage("assistant", "Latest answer", 400),
+    ]);
+    loadedConversationKeys.add(SOURCE_CONVERSATION_KEY);
+
+    await controller.forkConversationFromTurn({
+      item,
+      conversationKey: SOURCE_CONVERSATION_KEY,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    });
+
+    assert.isFalse(forkCalled);
+    assert.equal(
+      status.textContent,
+      t("Codex fork is only supported for the latest response"),
+    );
+  });
+
+  it("allows Codex latest native agent turns to fork", async function () {
+    const forkCalls: Array<
+      Parameters<typeof conversationRepository.forkConversation>[0]
+    > = [];
+    conversationRepository.ensureCatalogEntry = async (params) =>
+      makeCatalogEntry({
+        conversationKey: params.conversationKey || TARGET_CONVERSATION_KEY,
+        kind: params.kind,
+        libraryID: params.libraryID,
+        paperItemID: params.paperItemID,
+        system: params.system,
+      });
+    conversationRepository.getCatalogEntry = async (params) =>
+      makeCatalogEntry({
+        conversationKey: params.conversationKey,
+        kind: params.kind,
+        libraryID: LIBRARY_ID,
+        system: "codex",
+        providerSessionId: "thread-source",
+      });
+    conversationRepository.forkConversation = async (params) => {
+      forkCalls.push(params);
+      return {
+        entry: makeCatalogEntry({
+          conversationKey: TARGET_CONVERSATION_KEY,
+          kind: params.kind,
+          libraryID: params.libraryID,
+          paperItemID: params.paperItemID,
+          system: params.system,
+        }),
+        copiedMessageCount: 2,
+        targetAnchorAssistantTimestamp: 1_700,
+        forkLink: {
+          targetConversationKey: TARGET_CONVERSATION_KEY,
+          targetSystem: params.system,
+          targetKind: params.kind,
+          sourceConversationKey: params.sourceConversationKey,
+          sourceSystem: params.system,
+          sourceKind: params.kind,
+          sourceLibraryID: params.libraryID,
+          sourcePaperItemID: params.paperItemID,
+          sourceAssistantTimestamp: params.throughAssistantTimestamp,
+          targetAnchorAssistantTimestamp: 1_700,
+          createdAt: 1_800,
+        },
+      };
+    };
+    conversationRepository.loadMessages = async () => [];
+
+    const { controller, item, status } = createControllerHarness({
+      system: "codex",
+    });
+    chatHistory.set(SOURCE_CONVERSATION_KEY, [
+      { ...makeMessage("user", "Prompt", 100), runMode: "agent" },
+      { ...makeMessage("assistant", "Answer", 200), runMode: "agent" },
+    ]);
+    loadedConversationKeys.add(SOURCE_CONVERSATION_KEY);
+
+    await controller.forkConversationFromTurn({
+      item,
+      conversationKey: SOURCE_CONVERSATION_KEY,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    });
+
+    assert.deepEqual(forkCalls, [
+      {
+        system: "codex",
+        kind: "global",
+        libraryID: LIBRARY_ID,
+        paperItemID: undefined,
+        sourceConversationKey: SOURCE_CONVERSATION_KEY,
+        throughAssistantTimestamp: 200,
+      },
+    ]);
+    assert.equal(status.textContent, "\u5bf9\u8bdd\u5df2 fork");
   });
 });

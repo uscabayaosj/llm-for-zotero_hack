@@ -3860,8 +3860,8 @@
 }
 
 .llm-message-action-fork::before {
-  mask-image: url("icons/action-history-new.svg");
-  -webkit-mask-image: url("icons/action-history-new.svg");
+  mask-image: url("icons/action-fork.svg");
+  -webkit-mask-image: url("icons/action-fork.svg");
 }
 
 .llm-message-action-delete::before {
@@ -9244,6 +9244,78 @@ label.llm-search-results-item:hover {
   .llm-compact-marker-pending .llm-compact-marker-label {
     animation: none;
   }
+}
+
+.llm-message-wrapper.llm-fork-source-marker-wrapper {
+  width: 100%;
+  align-items: stretch;
+}
+
+.llm-bubble.llm-fork-source-marker {
+  width: 100%;
+  max-width: 100%;
+  padding: 10px 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--color-accent, #3584e4);
+  display: grid;
+  grid-template-columns: minmax(28px, 1fr) auto minmax(28px, 1fr);
+  align-items: center;
+  gap: 10px;
+  font-size: var(--llm-fs-12);
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.3;
+  user-select: none;
+}
+
+.llm-fork-source-marker-rule {
+  height: 1px;
+  min-width: 28px;
+  background: var(--fill-quaternary);
+}
+
+.llm-fork-source-marker-button {
+  appearance: none;
+  -moz-appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.llm-fork-source-marker-button:hover:not(:disabled),
+.llm-fork-source-marker-button:focus-visible {
+  text-decoration: underline;
+}
+
+.llm-fork-source-marker-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.llm-fork-source-marker-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  background: currentColor;
+  mask-image: url("icons/action-fork.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-fork.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
 }
 
 /* Scrollbar Styling */

@@ -17,11 +17,13 @@ import type {
   GeneratedChatImage,
 } from "./types";
 import { TTLMap } from "./contexts/ttlMap";
+import type { ConversationForkLink } from "../../shared/conversationForkLinks";
 // =============================================================================
 // Module State
 // =============================================================================
 
 export const chatHistory = new Map<number, Message[]>();
+export const conversationForkLinks = new Map<number, ConversationForkLink>();
 export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
@@ -211,6 +213,30 @@ export function getResponseActionRunner(
   return responseActionRunners.get(body) || null;
 }
 
+export type ForkSourceNavigationRunner = (
+  link: ConversationForkLink,
+) => Promise<void>;
+
+const forkSourceNavigationRunners = new WeakMap<
+  Element,
+  ForkSourceNavigationRunner
+>();
+export function setForkSourceNavigationRunner(
+  body: Element,
+  value: ForkSourceNavigationRunner | null,
+): void {
+  if (value) {
+    forkSourceNavigationRunners.set(body, value);
+  } else {
+    forkSourceNavigationRunners.delete(body);
+  }
+}
+export function getForkSourceNavigationRunner(
+  body: Element,
+): ForkSourceNavigationRunner | null {
+  return forkSourceNavigationRunners.get(body) || null;
+}
+
 export let promptMenuTarget: {
   item: Zotero.Item;
   conversationKey: number;
@@ -354,6 +380,7 @@ export function clearAllState(): void {
   }
 
   chatHistory.clear();
+  conversationForkLinks.clear();
   loadedConversationKeys.clear();
   loadingConversationTasks.clear();
   selectedModelCache.clear();

@@ -1,5 +1,6 @@
 import { renderMarkdownForNote } from "../../utils/markdown";
 import {
+  t,
   getWelcomeHtml,
   getWebChatWelcomeHtml,
   getStandaloneLibraryChatStartPageHtml,
@@ -15,6 +16,7 @@ import {
   StoredChatMessage,
 } from "../../utils/chatStore";
 import { conversationRepository } from "../../core/conversations/repository";
+import { evaluateConversationForkEligibility } from "../../core/conversations/forkEligibility";
 import {
   appendCodexMessage,
   pruneCodexConversation,
@@ -88,6 +90,10 @@ import type {
   QuoteCitation,
 } from "../../shared/types";
 import {
+  getConversationForkLink,
+  type ConversationForkLink,
+} from "../../shared/conversationForkLinks";
+import {
   isRenderableGeneratedImageSrc,
   normalizeGeneratedChatImages,
 } from "../../shared/generatedImages";
@@ -118,6 +124,7 @@ import type {
 } from "./types";
 import {
   chatHistory,
+  conversationForkLinks,
   loadedConversationKeys,
   loadingConversationTasks,
   webChatIsolatedConversationKeys,
@@ -140,6 +147,7 @@ import {
   setPendingRequestId,
   setResponseMenuTarget,
   getResponseActionRunner,
+  getForkSourceNavigationRunner,
   setPromptMenuTarget,
   inlineEditTarget,
   setInlineEditTarget,
@@ -1361,12 +1369,21 @@ function attachAssistantResponseContextMenu(params: {
     const canDeleteResponseTurn = Boolean(
       pairedUserMessage?.role === "user" && !message.streaming,
     );
+    const canForkResponseTurn =
+      canDeleteResponseTurn &&
+      canShowForkActionForAssistantTurn(
+        item,
+        conversationKey,
+        message.timestamp,
+        message,
+      );
     if (!responseMenu) return;
     if (responseMenuDeleteBtn) {
       responseMenuDeleteBtn.disabled = !canDeleteResponseTurn;
     }
     if (responseMenuForkBtn) {
-      responseMenuForkBtn.disabled = !canDeleteResponseTurn;
+      responseMenuForkBtn.disabled = !canForkResponseTurn;
+      responseMenuForkBtn.style.display = canForkResponseTurn ? "" : "none";
     }
     if (exportMenu) exportMenu.style.display = "none";
     if (promptMenu) promptMenu.style.display = "none";
@@ -1389,6 +1406,20 @@ function attachAssistantResponseContextMenu(params: {
     setResponseMenuTarget(menuTarget);
     positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
   });
+}
+
+function canShowForkActionForAssistantTurn(
+  item: Zotero.Item,
+  conversationKey: number,
+  assistantTimestamp: unknown,
+  assistantMessage?: Message | null,
+): boolean {
+  return evaluateConversationForkEligibility({
+    system: resolveConversationSystemForItem(item),
+    assistantTimestamp,
+    assistantMessage,
+    history: chatHistory.get(conversationKey) || [],
+  }).visible;
 }
 
 function appendMessageMetaActionButton(params: {
@@ -1906,6 +1937,22 @@ async function loadStoredConversationByKey(
   });
 }
 
+async function loadConversationForkLinkCache(
+  conversationKey: number,
+): Promise<void> {
+  try {
+    const link = await getConversationForkLink(conversationKey);
+    if (link) {
+      conversationForkLinks.set(conversationKey, link);
+    } else {
+      conversationForkLinks.delete(conversationKey);
+    }
+  } catch (err) {
+    conversationForkLinks.delete(conversationKey);
+    ztoolkit.log("LLM: Failed to load conversation fork link", err);
+  }
+}
+
 async function updateStoredLatestUserMessageByConversation(
   conversationKey: number,
   message: Parameters<typeof updateStoredLatestUserMessage>[1],
@@ -2128,23 +2175,30 @@ export async function ensureConversationLoaded(
       conversationKey,
       !webChatIsolatedConversationKeys.has(conversationKey),
     );
+    conversationForkLinks.delete(conversationKey);
     return;
   }
   if (webChatIsolatedConversationKeys.delete(conversationKey)) {
     chatHistory.delete(conversationKey);
     loadedConversationKeys.delete(conversationKey);
+    conversationForkLinks.delete(conversationKey);
   }
 
-  if (loadedConversationKeys.has(conversationKey)) return;
+  if (loadedConversationKeys.has(conversationKey)) {
+    await loadConversationForkLinkCache(conversationKey);
+    return;
+  }
   if (
     chatHistory.has(conversationKey) &&
     !blockedConversationLoadKeys.has(conversationKey)
   ) {
+    await loadConversationForkLinkCache(conversationKey);
     loadedConversationKeys.add(conversationKey);
     return;
   }
   if (blockedConversationLoadKeys.has(conversationKey)) {
     chatHistory.delete(conversationKey);
+    conversationForkLinks.delete(conversationKey);
     blockedConversationLoadKeys.delete(conversationKey);
   }
 
@@ -2165,6 +2219,7 @@ export async function ensureConversationLoaded(
       if (!validScope) {
         blockedConversationLoadKeys.add(conversationKey);
         chatHistory.set(conversationKey, []);
+        conversationForkLinks.delete(conversationKey);
         return;
       }
       const storedMessages = await loadStoredConversationByKey(
@@ -2186,6 +2241,7 @@ export async function ensureConversationLoaded(
         );
         blockedConversationLoadKeys.add(conversationKey);
         chatHistory.set(conversationKey, []);
+        conversationForkLinks.delete(conversationKey);
         return;
       }
       const panelMessages = storedMessages.map((message) =>
@@ -2208,12 +2264,14 @@ export async function ensureConversationLoaded(
       }
       blockedConversationLoadKeys.delete(conversationKey);
       chatHistory.set(conversationKey, panelMessages);
+      await loadConversationForkLinkCache(conversationKey);
       shouldMarkLoaded = true;
     } catch (err) {
       ztoolkit.log("LLM: Failed to load chat history", err);
       if (!chatHistory.has(conversationKey)) {
         chatHistory.set(conversationKey, []);
       }
+      conversationForkLinks.delete(conversationKey);
       shouldMarkLoaded = true;
     } finally {
       if (shouldMarkLoaded) {
@@ -8598,6 +8656,47 @@ export function renderCompactMarkerInto(
   bubble.append(leftRule, icon, label, rightRule);
 }
 
+export function renderForkSourceMarkerInto(
+  bubble: HTMLElement,
+  body: Element,
+  doc: Document,
+  link: ConversationForkLink,
+): void {
+  bubble.textContent = "";
+  bubble.classList.add("llm-fork-source-marker");
+
+  const leftRule = doc.createElement("span") as HTMLSpanElement;
+  leftRule.className = "llm-fork-source-marker-rule";
+  const button = doc.createElement("button") as HTMLButtonElement;
+  button.type = "button";
+  button.className = "llm-fork-source-marker-button";
+  button.title = t("Open original conversation");
+  const icon = doc.createElement("span") as HTMLSpanElement;
+  icon.className = "llm-fork-source-marker-icon";
+  icon.setAttribute("aria-hidden", "true");
+  const label = doc.createElement("span") as HTMLSpanElement;
+  label.className = "llm-fork-source-marker-label";
+  label.textContent = t("Forked from conversation");
+  const rightRule = doc.createElement("span") as HTMLSpanElement;
+  rightRule.className = "llm-fork-source-marker-rule";
+
+  button.append(icon, label);
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const runner = getForkSourceNavigationRunner(body);
+    if (!runner) return;
+    button.disabled = true;
+    try {
+      await runner(link);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  bubble.append(leftRule, button, rightRule);
+}
+
 export function refreshChat(body: Element, item?: Zotero.Item | null) {
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
@@ -8643,6 +8742,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       ? cachedSnapshot
       : buildChatScrollSnapshot(chatBox);
   const history = chatHistory.get(conversationKey) || [];
+  const forkLink = conversationForkLinks.get(conversationKey) || null;
   if (tokenUsageEl) {
     const snapshot = contextUsageSnapshots.get(conversationKey);
     const liveSnapshot =
@@ -9476,11 +9576,20 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             "#llm-prompt-menu-fork",
           ) as HTMLButtonElement | null;
           if (!promptMenu) return;
+          const canForkPromptTurn =
+            canDeletePromptTurn &&
+            canShowForkActionForAssistantTurn(
+              item,
+              conversationKey,
+              assistantPairMsg?.timestamp,
+              assistantPairMsg,
+            );
           if (promptMenuDeleteBtn) {
             promptMenuDeleteBtn.disabled = !canDeletePromptTurn;
           }
           if (promptMenuForkBtn) {
-            promptMenuForkBtn.disabled = !canDeletePromptTurn;
+            promptMenuForkBtn.disabled = !canForkPromptTurn;
+            promptMenuForkBtn.style.display = canForkPromptTurn ? "" : "none";
           }
           if (!canDeletePromptTurn) return;
           if (responseMenu) responseMenu.style.display = "none";
@@ -9898,7 +10007,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         });
       }
 
-      if (actionUserTimestamp > 0 && !msg.streaming) {
+      const canShowForkAction =
+        actionUserTimestamp > 0 &&
+        !msg.streaming &&
+        canShowForkActionForAssistantTurn(
+          item,
+          conversationKey,
+          actionAssistantTimestamp,
+          msg,
+        );
+      if (canShowForkAction) {
         appendMessageMetaActionButton({
           body,
           doc,
@@ -9911,6 +10029,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           userTimestamp: actionUserTimestamp,
           assistantTimestamp: actionAssistantTimestamp,
         });
+      }
+      if (actionUserTimestamp > 0 && !msg.streaming) {
         appendMessageMetaActionButton({
           body,
           doc,
@@ -10002,6 +10122,20 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     wrapper.appendChild(meta);
     if (webchatStatusRow) wrapper.appendChild(webchatStatusRow);
     chatBox.appendChild(wrapper);
+    if (
+      forkLink &&
+      !isUser &&
+      Number(msg.timestamp) === forkLink.targetAnchorAssistantTimestamp
+    ) {
+      const markerWrapper = doc.createElement("div") as HTMLDivElement;
+      markerWrapper.className =
+        "llm-message-wrapper llm-fork-source-marker-wrapper";
+      const markerBubble = doc.createElement("div") as HTMLDivElement;
+      markerBubble.className = "llm-bubble";
+      renderForkSourceMarkerInto(markerBubble, body, doc, forkLink);
+      markerWrapper.appendChild(markerBubble);
+      chatBox.appendChild(markerWrapper);
+    }
     if (isUser && hasUserContext) {
       wrapper.classList.add("llm-user-context-aligned");
     }

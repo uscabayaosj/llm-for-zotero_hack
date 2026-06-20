@@ -18,6 +18,10 @@ import {
 import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
+  copyConversationMessagesThroughAssistantAnchor,
+  type ForkConversationMessagesResult,
+} from "../shared/conversationMessageForkCopy";
+import {
   parseForcedSkillIdsJson,
   serializeForcedSkillIds,
 } from "../shared/skillIds";
@@ -435,6 +439,37 @@ const CONVERSATION_TRANSFER_COLUMNS = [
 
 const MESSAGE_TRANSFER_COLUMNS = [
   "conversation_key",
+  "role",
+  "text",
+  "timestamp",
+  "run_mode",
+  "agent_run_id",
+  "selected_text",
+  "selected_texts_json",
+  "selected_text_sources_json",
+  "selected_text_paper_contexts_json",
+  "selected_text_note_contexts_json",
+  "forced_skill_ids_json",
+  "paper_contexts_json",
+  "full_text_paper_contexts_json",
+  "citation_paper_contexts_json",
+  "quote_citations_json",
+  "screenshot_images",
+  "attachments_json",
+  "generated_images_json",
+  "model_name",
+  "model_entry_id",
+  "model_provider_label",
+  "webchat_run_state",
+  "webchat_completion_reason",
+  "reasoning_summary",
+  "reasoning_details",
+  "compact_marker",
+  "context_tokens",
+  "context_window",
+] as const;
+
+const CODEX_MESSAGE_COPY_COLUMNS = [
   "role",
   "text",
   "timestamp",
@@ -1241,6 +1276,52 @@ export async function appendCodexMessage(
     await refreshCodexConversationCatalogSummary(normalizedKey);
   });
   await refreshCodexConversationSearchIndex(normalizedKey);
+}
+
+export async function forkCodexConversationMessages(params: {
+  sourceConversationKey: number;
+  targetConversationKey: number;
+  throughAssistantTimestamp: number;
+  timestampBase?: number;
+}): Promise<ForkConversationMessagesResult> {
+  return copyConversationMessagesThroughAssistantAnchor(
+    {
+      tableName: CODEX_MESSAGES_TABLE,
+      copyColumns: CODEX_MESSAGE_COPY_COLUMNS,
+      isValidConversationKey: isCodexStoreConversationKey,
+      resolveSourceSelector: resolveRepairingMessageConversationSelector,
+      resolveTargetConversationID: resolveRegisteredConversationID,
+      refreshCatalogSummary: refreshCodexConversationCatalogSummary,
+      refreshSearchIndex: refreshCodexConversationSearchIndex,
+      afterCopy: touchCodexConversationActivity,
+    },
+    params,
+  );
+}
+
+export async function getLatestCodexForkableAssistantTimestamp(
+  conversationKey: number,
+): Promise<number> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey || !isCodexStoreConversationKey(normalizedKey)) return 0;
+  const selector =
+    await resolveRepairingMessageConversationSelector(normalizedKey);
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT timestamp
+     FROM ${CODEX_MESSAGES_TABLE}
+     WHERE ${selector.whereSql}
+       AND role = 'assistant'
+       AND COALESCE(compact_marker, 0) = 0
+       AND NULLIF(TRIM(COALESCE(webchat_run_state, '')), '') IS NULL
+       AND NULLIF(TRIM(COALESCE(webchat_completion_reason, '')), '') IS NULL
+     ORDER BY ${storedMessageDisplayOrderSql({ direction: "desc" })}
+     LIMIT 1`,
+    selector.params,
+  )) as Array<{ timestamp?: unknown }> | undefined;
+  const timestamp = Number(rows?.[0]?.timestamp || 0);
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? Math.floor(timestamp)
+    : 0;
 }
 
 export async function loadCodexConversation(

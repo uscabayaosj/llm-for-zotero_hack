@@ -35,6 +35,7 @@ import {
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
 import type { AnthropicPromptCacheControl } from "../../contextCache/manager";
+import { createMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 
 type AnthropicContentBlock = {
   type: string;
@@ -689,9 +690,9 @@ async function parseAnthropicStepStream(
         try {
           block.input = JSON.parse(state.partialJson);
         } catch (_error) {
-          if (!(block.input && typeof block.input === "object")) {
-            block.input = {};
-          }
+          block.input = createMalformedToolArgumentsDiagnostic(
+            state.partialJson,
+          );
         }
       }
       return block;

@@ -37,6 +37,7 @@ import type {
   AgentPendingAction,
   AgentRunEventRecord,
 } from "../src/agent/types";
+import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
 import {
   isEmbeddableGeneratedImage,
@@ -3490,6 +3491,74 @@ describe("agentTrace render", function () {
       codeBlocks,
       "read_file /tmp/llm-for-zotero-mineru/51/full.md",
     );
+  });
+
+  it("redacts file_io trace details and surfaces malformed input diagnostics", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-write",
+          name: "file_io",
+          args: {
+            action: "write",
+            filePath: "/tmp/script.py",
+            content: "super secret script body",
+          },
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-bad",
+          name: "file_io",
+          args: createMalformedToolArgumentsDiagnostic(
+            '{"action":"write","content":"secret malformed body"',
+          ),
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-bad",
+          name: "file_io",
+          ok: false,
+          content: {
+            error:
+              "Invalid tool input for file_io: file_io received malformed tool arguments from the model. Retry with valid JSON. Use file_io({ action:'write', filePath:'/absolute/path.py', content:'...' }).",
+          },
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actions = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action",
+    );
+    const detailText = JSON.stringify(actions.map((item) => item.details));
+    const rowText = actions.map((item) => item.row.text).join("\n");
+
+    assert.include(detailText, "Argument keys");
+    assert.include(detailText, "Action field (action)");
+    assert.include(detailText, "Path field (filePath)");
+    assert.include(detailText, "[redacted");
+    assert.include(detailText, "Malformed input");
+    assert.notInclude(detailText, "super secret script body");
+    assert.notInclude(detailText, "secret malformed body");
+    assert.include(rowText, "action:'write'");
   });
 
   it("shows concrete skill names instead of a generic skill label", function () {

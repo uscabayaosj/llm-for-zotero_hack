@@ -15,6 +15,7 @@ import {
   parseNotesDirectoryWritePolicy,
 } from "../../../utils/notesDirectoryConfig";
 import { pushUndoEntry } from "../../store/undoStore";
+import { isMalformedToolArgumentsDiagnostic } from "../../toolArgumentDiagnostics";
 
 type FileIOInput = {
   action: "read" | "write";
@@ -40,12 +41,7 @@ const FILE_IO_PATH_FIELDS = [
   "file_path",
   "filepath",
 ] as const;
-const FILE_IO_CONTENT_FIELDS = [
-  "content",
-  "text",
-  "contents",
-  "data",
-] as const;
+const FILE_IO_CONTENT_FIELDS = ["content", "text", "contents", "data"] as const;
 
 const FILE_IO_READ_ACTIONS = new Set([
   "read",
@@ -86,6 +82,10 @@ const FILE_IO_WRITE_ACTIONS = new Set([
 
 const FILE_IO_CONTENTLESS_READ_ACTIONS = new Set(["access", "inspect"]);
 
+const FILE_IO_CANONICAL_EXAMPLES =
+  "Use file_io({ action:'read', filePath:'/absolute/path.md' }) or " +
+  "file_io({ action:'write', filePath:'/absolute/path.py', content:'...' }).";
+
 function normalizeFileIOActionToken(value: string): string {
   let normalized = value.trim();
   const first = normalized[0];
@@ -112,10 +112,7 @@ function normalizeFileIOAction(
   if (typeof value !== "string") return null;
   const normalized = normalizeFileIOActionToken(value);
   if (FILE_IO_READ_ACTIONS.has(normalized)) return "read";
-  if (
-    !options.hasContent &&
-    FILE_IO_CONTENTLESS_READ_ACTIONS.has(normalized)
-  ) {
+  if (!options.hasContent && FILE_IO_CONTENTLESS_READ_ACTIONS.has(normalized)) {
     return "read";
   }
   if (FILE_IO_WRITE_ACTIONS.has(normalized)) return "write";
@@ -500,7 +497,19 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
 
     validate(args: unknown) {
       if (!validateObject<Record<string, unknown>>(args)) {
-        return fail("Expected an object with action and filePath");
+        return fail(
+          `Expected an object with action and filePath. ${FILE_IO_CANONICAL_EXAMPLES}`,
+        );
+      }
+      if (isMalformedToolArgumentsDiagnostic(args)) {
+        return fail(
+          `file_io received malformed tool arguments from the model. Retry with valid JSON. ${FILE_IO_CANONICAL_EXAMPLES}`,
+        );
+      }
+      if (Object.keys(args).length === 0) {
+        return fail(
+          `file_io received empty tool arguments from the model. ${FILE_IO_CANONICAL_EXAMPLES}`,
+        );
       }
       const rawFilePath = readFirstStringField(args, FILE_IO_PATH_FIELDS);
       const rawContent = readFirstStringField(args, FILE_IO_CONTENT_FIELDS);
@@ -508,14 +517,20 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
         filePath: rawFilePath,
         hasContent: rawContent !== null,
       });
-      if (action !== "read" && action !== "write") {
+      const rawAction = readFirstStringField(args, FILE_IO_ACTION_FIELDS);
+      if (rawAction?.trim() && action !== "read" && action !== "write") {
         return fail(
           "action must be 'read' or 'write'. Example: file_io({ action:'read', filePath:'/absolute/path.md' })",
         );
       }
       if (!rawFilePath?.trim()) {
         return fail(
-          "filePath is required: an absolute path to the file. Deprecated alias path is accepted for older prompts.",
+          `filePath is required: an absolute path to the file. Deprecated alias path is accepted for older prompts. ${FILE_IO_CANONICAL_EXAMPLES}`,
+        );
+      }
+      if (action !== "read" && action !== "write") {
+        return fail(
+          "action must be 'read' or 'write'. Example: file_io({ action:'read', filePath:'/absolute/path.md' })",
         );
       }
       if (action === "write" && rawContent === null) {

@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { OpenAICompatibleAgentAdapter } from "../src/agent/model/openaiCompatible";
 import type { AgentRuntimeRequest, ToolSpec } from "../src/agent/types";
+import { isMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 
 function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -77,6 +78,65 @@ describe("OpenAICompatibleAgentAdapter", function () {
         }),
       ),
     );
+  });
+
+  it("redacts malformed streamed tool argument JSON", async function () {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => {
+          const badArguments =
+            '{"action":"write","content":"secret generated script"';
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: { get: () => "text/event-stream" },
+            body: makeSseStream([
+              `data: ${JSON.stringify({
+                choices: [
+                  {
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          id: "call_bad",
+                          function: {
+                            name: "read_paper",
+                            arguments: badArguments,
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              })}\n\n`,
+              "data: [DONE]\n\n",
+            ]),
+            json: async () => ({}),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const step = await adapter.runStep({
+      request: makeRequest({ providerProtocol: "openai_chat_compat" }),
+      messages: [{ role: "user", content: "Write a script" }],
+      tools,
+    });
+
+    assert.equal(step.kind, "tool_calls");
+    if (step.kind !== "tool_calls") return;
+    const args = step.calls[0].arguments;
+    assert.isTrue(isMalformedToolArgumentsDiagnostic(args));
+    if (!isMalformedToolArgumentsDiagnostic(args)) return;
+    assert.include(args.rawPreview, "[redacted]");
+    assert.notInclude(args.rawPreview, "secret generated script");
   });
 
   it("round-trips DeepSeek reasoning_content across tool continuations", async function () {

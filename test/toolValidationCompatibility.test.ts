@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { createQueryLibraryTool } from "../src/agent/tools/read/queryLibrary";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import type { AgentToolContext } from "../src/agent/types";
+import { createMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 
 const baseContext: AgentToolContext = {
   request: {
@@ -153,6 +154,35 @@ describe("tool validation compatibility", function () {
   it("normalizes file_io canonical and deprecated alias shapes", async function () {
     const tool = createFileIOTool();
 
+    const emptyArgs = tool.validate({});
+    assert.isFalse(emptyArgs.ok);
+    if (!emptyArgs.ok) {
+      assert.include(emptyArgs.error, "empty tool arguments");
+      assert.include(emptyArgs.error, "action:'write'");
+    }
+
+    const malformedArgs = tool.validate(
+      createMalformedToolArgumentsDiagnostic(
+        '{"action":"write","filePath":"/tmp/leaked.py","content":"secret"',
+      ),
+    );
+    assert.isFalse(malformedArgs.ok);
+    if (!malformedArgs.ok) {
+      assert.include(malformedArgs.error, "malformed tool arguments");
+      assert.include(malformedArgs.error, "valid JSON");
+      assert.include(malformedArgs.error, "action:'write'");
+    }
+
+    const missingPath = tool.validate({
+      action: "write",
+      content: "saved",
+    });
+    assert.isFalse(missingPath.ok);
+    if (!missingPath.ok) {
+      assert.include(missingPath.error, "filePath is required");
+      assert.include(missingPath.error, "action:'write'");
+    }
+
     const read = tool.validate({
       action: "read",
       filePath: "/tmp/source.md",
@@ -285,7 +315,10 @@ describe("tool validation compatibility", function () {
     assert.isTrue(hyphenatedOperationAlias.ok);
     if (!hyphenatedOperationAlias.ok) return;
     assert.equal(hyphenatedOperationAlias.value.action, "write");
-    assert.equal(hyphenatedOperationAlias.value.filePath, "/tmp/hyphen-save.md");
+    assert.equal(
+      hyphenatedOperationAlias.value.filePath,
+      "/tmp/hyphen-save.md",
+    );
     assert.equal(
       hyphenatedOperationAlias.value.content,
       "saved from hyphenated operation",

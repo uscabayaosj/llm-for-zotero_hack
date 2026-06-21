@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnthropicMessagesAgentAdapter } from "../src/agent/model/anthropicMessages";
 import type { AgentRuntimeRequest, ToolSpec } from "../src/agent/types";
+import { isMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 
 function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -476,6 +477,45 @@ describe("AnthropicMessagesAgentAdapter", function () {
       name: "read_paper",
       input: { query: "methods" },
     });
+  });
+
+  it("preserves malformed streamed tool input as a redacted diagnostic", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: makeSseStream([
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_bad","name":"read_paper","input":{}}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"action\\":\\"write\\",\\"content\\":\\"secret draft"}}\n\n',
+          ]),
+          json: async () => ({}),
+          text: async () => "",
+        });
+      },
+    };
+
+    const step = await adapter.runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Write a script" }],
+      tools,
+    });
+
+    assert.equal(step.kind, "tool_calls");
+    if (step.kind !== "tool_calls") return;
+    const args = step.calls[0].arguments;
+    assert.isTrue(isMalformedToolArgumentsDiagnostic(args));
+    if (!isMalformedToolArgumentsDiagnostic(args)) return;
+    assert.include(args.rawPreview, "[redacted]");
+    assert.notInclude(args.rawPreview, "secret draft");
+    assert.isAbove(args.rawLength, args.rawPreview.length);
   });
 
   it("serializes reusable transcript tool results directly after tool uses", async function () {

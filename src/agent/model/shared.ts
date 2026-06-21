@@ -4,6 +4,7 @@ import type {
   AgentToolCall,
   ToolSpec,
 } from "../types";
+import { createMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 export { parseDataUrl } from "../../shared/dataUrl";
 
 export function getFetch(): typeof fetch {
@@ -11,11 +12,12 @@ export function getFetch(): typeof fetch {
 }
 
 export function parseToolCallArguments(raw: unknown): unknown {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
   if (typeof raw !== "string" || !raw.trim()) return {};
   try {
     return JSON.parse(raw);
   } catch (_error) {
-    return { raw };
+    return createMalformedToolArgumentsDiagnostic(raw);
   }
 }
 
@@ -88,7 +90,8 @@ export function groupToolContinuationMessages(messages: AgentModelMessage[]): {
   followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[];
 } {
   const toolMessages: Extract<AgentModelMessage, { role: "tool" }>[] = [];
-  const followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[] = [];
+  const followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[] =
+    [];
   for (const message of messages) {
     if (message.role === "tool") {
       toolMessages.push(message);
@@ -153,12 +156,9 @@ export function encodeBytesBase64(bytes: Uint8Array): string {
   return btoaFn(out);
 }
 
-export async function readFileRefAsBase64(
-  storedPath: string,
-): Promise<string> {
-  const { readAttachmentBytes } = await import(
-    "../../modules/contextPanel/attachmentStorage"
-  );
+export async function readFileRefAsBase64(storedPath: string): Promise<string> {
+  const { readAttachmentBytes } =
+    await import("../../modules/contextPanel/attachmentStorage");
   const bytes = await readAttachmentBytes(storedPath);
   return encodeBytesBase64(bytes);
 }

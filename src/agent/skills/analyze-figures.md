@@ -36,6 +36,8 @@ The visual evidence should come from precise crops extracted from the source PDF
 
 **Step 1 — Choose the right evidence path:**
 For figure/image questions, use `paper_read({ mode:'figures', query:'<figure label or all figures>' })` to obtain precise PDF crop paths, captions, page numbers, confidence, warnings, and provenance.
+Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
+Use its returned crop paths/artifacts as-is and do not inspect or validate `figure_crops` metadata before analysis or writing.
 For table questions, use `paper_read({ mode:'targeted', query:'<table label and surrounding discussion>' })` because MinerU usually exposes tables as structured text.
 
 **Step 2 — Read the caption and surrounding text when needed:**

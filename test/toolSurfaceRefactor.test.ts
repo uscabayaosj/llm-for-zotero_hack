@@ -10,6 +10,12 @@ import {
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import type { AgentToolContext } from "../src/agent/types";
+import {
+  PDF_FIGURE_CROP_ALGORITHM_VERSION,
+  PDF_FIGURE_CROP_CACHE_VERSION,
+  buildPdfFigureCropManifestHash,
+  buildPdfFigureCropPdfFingerprint,
+} from "../src/modules/contextPanel/pdfFigureCropCache";
 
 describe("semantic tool surface", function () {
   const encoder = new TextEncoder();
@@ -1254,6 +1260,18 @@ describe("semantic tool surface", function () {
   it("paper_read figures returns cached PDF crops before source-PDF extraction", async function () {
     const originalIOUtils = globalScope.IOUtils;
     const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1.png";
+    const manifest = {
+      sections: [],
+      allFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          page: 2,
+          caption: "Figure 1. A cached crop.",
+        },
+      ],
+      allTables: [],
+    };
     const paperContext = {
       itemId: 11,
       contextItemId: 22,
@@ -1265,32 +1283,19 @@ describe("semantic tool surface", function () {
     const files = new Map<string, Uint8Array>([
       [
         "/tmp/mineru-paper/manifest.json",
-        encoder.encode(
-          JSON.stringify({
-            sections: [],
-            allFigures: [
-              {
-                label: "Figure 1",
-                baseLabel: "Figure 1",
-                page: 2,
-                caption: "Figure 1. A cached crop.",
-              },
-            ],
-            allTables: [],
-          }),
-        ),
+        encoder.encode(JSON.stringify(manifest)),
       ],
       [cropPath, encoder.encode("png")],
       [
         "/tmp/mineru-paper/figure_crops/figure_geometry.json",
         encoder.encode(
           JSON.stringify({
-            version: 1,
+            version: PDF_FIGURE_CROP_CACHE_VERSION,
             attachmentId: 22,
-            manifestHash: "legacy",
-            pdfFingerprint: "legacy",
+            manifestHash: buildPdfFigureCropManifestHash(manifest),
+            pdfFingerprint: buildPdfFigureCropPdfFingerprint(paperContext),
             renderScale: 1.8,
-            algorithmVersion: 1,
+            algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
             generatedAt: 1,
             expectedFigures: [
               {

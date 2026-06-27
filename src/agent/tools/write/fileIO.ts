@@ -17,7 +17,6 @@ import {
 import { pushUndoEntry } from "../../store/undoStore";
 import { FILE_IO_CONTENT_FIELDS } from "../../toolArgumentFields";
 import { isMalformedToolArgumentsDiagnostic } from "../../toolArgumentDiagnostics";
-import { validateMineruFigureBlockEmbedsForCacheDirs } from "../../../modules/contextPanel/mineruFigureBlockCache";
 import { stripMineruSourceImageEmbedsFromMarkdown } from "../../../modules/contextPanel/mineruCache";
 import { collectRequestPaperContexts } from "../requestPaperContexts";
 
@@ -289,21 +288,6 @@ function getRequestMineruCacheDirs(
     .filter(Boolean);
 }
 
-async function validateMarkdownFigureBlockEmbeds(
-  content: string,
-  context: AgentToolContext,
-  encoding: string,
-) {
-  const paperContexts = getRequestMineruPaperContexts(context);
-  return validateMineruFigureBlockEmbedsForCacheDirs({
-    content,
-    requestText: context.request.userText || "",
-    cacheDirs: getRequestMineruCacheDirs(paperContexts),
-    paperContexts,
-    encoding,
-  });
-}
-
 function resolveFileNoteWriteInput(
   input: FileIOInput,
   context: AgentToolContext,
@@ -511,7 +495,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
       instruction:
         "Use file_io to read or write files on the user's filesystem. " +
         "For ordinary Zotero paper summaries, methods, key points, and targeted Q&A, use paper_read instead of direct MinerU cache reads. " +
-        "Use file_io for explicit filesystem tasks or direct MinerU manifest/section cache inspection. For figure interpretation or note figure embeds, use paper_read mode:'figures' and its extracted PDF crop paths rather than MinerU source image paths. If figure extraction fails or returns no crops and the user asked for a file note, switch to text-only mode: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders; explicitly state that extraction failed or no extracted crops are available and base explanations on captions, figure legends, and surrounding paper text. User-provided image inputs are unaffected. " +
+        "Use file_io for explicit filesystem tasks or direct MinerU manifest/section cache inspection. For figure interpretation or note figure embeds, use paper_read mode:'figures' and its extracted PDF crop paths rather than MinerU source image paths. Treat paper_read mode:'figures' as the authority for figure crop cache reuse/regeneration; use returned crop paths as-is and do not inspect or validate `figure_crops` metadata before writing. If figure extraction fails or returns no crops and the user asked for a file note, switch to text-only mode: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders; explicitly state that extraction failed or no extracted crops are available and base explanations on captions, figure legends, and surrounding paper text. User-provided image inputs are unaffected. " +
         "Common uses: write a Python/R script before running it with run_command, read a CSV/JSON data file, " +
         "save analysis results to the user's Desktop, export formatted bibliographies. " +
         "Always use absolute paths.",
@@ -806,33 +790,6 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
 
       // write
       try {
-        if (isMarkdownWritePath(input.filePath)) {
-          const guard = await validateMarkdownFigureBlockEmbeds(
-            input.content || "",
-            context,
-            input.encoding || "utf-8",
-          );
-          if (guard) {
-            return {
-              action: "write",
-              filePath: input.filePath,
-              ...(requestedFilePath
-                ? {
-                    requestedFilePath,
-                    correctedToNotesDirectory: true,
-                  }
-                : {}),
-              error: guard.message,
-              figureBlock: {
-                blockId: guard.block.blockId,
-                severity: guard.severity,
-                embeddedCount: guard.embeddedCount,
-                availableCount: guard.availableCount,
-                availablePaths: guard.availablePaths,
-              },
-            };
-          }
-        }
         const existedBeforeWrite = await fileExists(input.filePath);
         if (existedBeforeWrite === true && !input.allowOverwrite) {
           return {

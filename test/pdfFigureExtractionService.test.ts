@@ -16,6 +16,10 @@ describe("PdfFigureExtractionService", function () {
   };
   let originalIOUtils: unknown;
   let files: Map<string, Uint8Array>;
+  let removedPaths: Array<{
+    path: string;
+    options?: { recursive?: boolean; ignoreAbsent?: boolean };
+  }>;
   let writeFile: (path: string, value: string) => void;
 
   const paperContext = {
@@ -57,6 +61,7 @@ describe("PdfFigureExtractionService", function () {
   beforeEach(function () {
     originalIOUtils = globalScope.IOUtils;
     files = new Map<string, Uint8Array>();
+    removedPaths = [];
     writeFile = (path: string, value: string) =>
       files.set(path, encoder.encode(value));
     writeFile("/tmp/mineru-paper/manifest.json", JSON.stringify(manifest));
@@ -68,6 +73,17 @@ describe("PdfFigureExtractionService", function () {
       },
       write: async (path: string, bytes: Uint8Array) => {
         files.set(path, bytes);
+      },
+      remove: async (
+        path: string,
+        options?: { recursive?: boolean; ignoreAbsent?: boolean },
+      ) => {
+        removedPaths.push({ path, options });
+        for (const existingPath of Array.from(files.keys())) {
+          if (existingPath === path || existingPath.startsWith(`${path}/`)) {
+            files.delete(existingPath);
+          }
+        }
       },
       makeDirectory: async () => undefined,
       getChildren: async () => [],
@@ -161,18 +177,18 @@ describe("PdfFigureExtractionService", function () {
     );
   });
 
-  it("salvages legacy crop metadata when crop files exist and attachment matches", async function () {
+  it("repairs compatible crop metadata when crop files exist and attachment matches", async function () {
     const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
     const staleExpectedPath =
       "/var/folders/tmp/llm-for-zotero-raw-figures/work/01_figure_1.png";
     files.set(cropPath, encoder.encode("png"));
     writeCropCache({
-      version: 1,
+      version: PDF_FIGURE_CROP_CACHE_VERSION,
       attachmentId: 22,
-      manifestHash: "cd1b3122",
-      pdfFingerprint: "bd04a030",
+      manifestHash: currentManifestHash(),
+      pdfFingerprint: currentPdfFingerprint(),
       renderScale: 1.8,
-      algorithmVersion: 1,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
       generatedAt: 1,
       expectedFigures: [
         {
@@ -191,7 +207,7 @@ describe("PdfFigureExtractionService", function () {
     const result = await new PdfFigureExtractionService({
       extractFiguresFromSourcePdf: async () => {
         rawCalled = true;
-        throw new Error("source extraction should not run for salvaged crops");
+        throw new Error("source extraction should not run for compatible crops");
       },
     } as never).extractFigures({
       input: { query: "explain Figure 1" },
@@ -215,6 +231,150 @@ describe("PdfFigureExtractionService", function () {
     assert.equal(rewritten.manifestHash, currentManifestHash());
     assert.equal(rewritten.pdfFingerprint, currentPdfFingerprint());
     assert.equal(rewritten.expectedFigures[0].cropPath, cropPath);
+  });
+
+  it("reuses compatible cache when title metadata drifts", async function () {
+    const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    files.set(cropPath, encoder.encode("png"));
+    writeCropCache({
+      version: PDF_FIGURE_CROP_CACHE_VERSION,
+      attachmentId: 22,
+      manifestHash: currentManifestHash(),
+      pdfFingerprint: buildPdfFigureCropPdfFingerprint({
+        ...paperContext,
+        title: "Old Display Title",
+        attachmentTitle: "Old Attachment Title",
+      }),
+      renderScale: 1.8,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
+      generatedAt: 1,
+      expectedFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          status: "ok",
+          cropPath,
+        },
+      ],
+      missingFigures: [],
+      entries: [cachedFigure(cropPath)],
+    });
+    let rawCalled = false;
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        rawCalled = true;
+        throw new Error("source extraction should not run for title drift");
+      },
+    } as never).extractFigures({
+      input: { query: "explain Figure 1" },
+      context,
+      paperContexts: [paperContext],
+    });
+
+    assert.isFalse(rawCalled);
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.cropPath),
+      [cropPath],
+    );
+  });
+
+  it("regenerates and removes figure crop cache on cache-version mismatch", async function () {
+    const oldCropPath = "/tmp/mineru-paper/figure_crops/crops/old-figure.png";
+    const regeneratedCropPath =
+      "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    files.set(oldCropPath, encoder.encode("png"));
+    writeCropCache({
+      version: PDF_FIGURE_CROP_CACHE_VERSION - 1,
+      attachmentId: 22,
+      manifestHash: currentManifestHash(),
+      pdfFingerprint: currentPdfFingerprint(),
+      renderScale: 1.8,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
+      generatedAt: 1,
+      entries: [cachedFigure(oldCropPath)],
+    });
+    let rawCalled = false;
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        rawCalled = true;
+        return [cachedFigure(regeneratedCropPath)];
+      },
+    } as never).extractFigures({
+      input: { query: "explain Figure 1" },
+      context,
+      paperContexts: [paperContext],
+    });
+
+    assert.isTrue(rawCalled);
+    assert.deepInclude(removedPaths, {
+      path: "/tmp/mineru-paper/figure_crops",
+      options: { recursive: true, ignoreAbsent: true },
+    });
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.cropPath),
+      [regeneratedCropPath],
+    );
+    const cache = JSON.parse(
+      decoder.decode(
+        files.get("/tmp/mineru-paper/figure_crops/figure_geometry.json"),
+      ),
+    );
+    assert.equal(cache.version, PDF_FIGURE_CROP_CACHE_VERSION);
+    assert.equal(cache.algorithmVersion, PDF_FIGURE_CROP_ALGORITHM_VERSION);
+    assert.equal(cache.entries[0].cropPath, regeneratedCropPath);
+  });
+
+  it("regenerates and removes figure crop cache on algorithm-version mismatch", async function () {
+    const oldCropPath = "/tmp/mineru-paper/figure_crops/crops/old-figure.png";
+    const regeneratedCropPath =
+      "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    files.set(oldCropPath, encoder.encode("png"));
+    writeCropCache({
+      version: PDF_FIGURE_CROP_CACHE_VERSION,
+      attachmentId: 22,
+      manifestHash: currentManifestHash(),
+      pdfFingerprint: currentPdfFingerprint(),
+      renderScale: 1.8,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION - 1,
+      generatedAt: 1,
+      entries: [cachedFigure(oldCropPath)],
+    });
+    let rawCalled = false;
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        rawCalled = true;
+        return [cachedFigure(regeneratedCropPath)];
+      },
+    } as never).extractFigures({
+      input: { query: "explain Figure 1" },
+      context,
+      paperContexts: [paperContext],
+    });
+
+    assert.isTrue(rawCalled);
+    assert.deepInclude(removedPaths, {
+      path: "/tmp/mineru-paper/figure_crops",
+      options: { recursive: true, ignoreAbsent: true },
+    });
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.cropPath),
+      [regeneratedCropPath],
+    );
+    const cache = JSON.parse(
+      decoder.decode(
+        files.get("/tmp/mineru-paper/figure_crops/figure_geometry.json"),
+      ),
+    );
+    assert.equal(cache.version, PDF_FIGURE_CROP_CACHE_VERSION);
+    assert.equal(cache.algorithmVersion, PDF_FIGURE_CROP_ALGORITHM_VERSION);
+    assert.equal(cache.entries[0].cropPath, regeneratedCropPath);
   });
 
   it("regenerates when cached crop files are missing", async function () {

@@ -1069,7 +1069,7 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("file_io rejects Markdown notes that embed only part of an available compound figure", async function () {
+  it("file_io does not police partial compound figure Markdown notes at write time", async function () {
     const tool = createFileIOTool();
     const encoder = new TextEncoder();
     const writes: string[] = [];
@@ -1160,24 +1160,15 @@ describe("primitive agent tools", function () {
         action: "write",
         filePath: "/tmp/obsidian-vault/Zotero Notes/figures.md",
       });
-      assert.include(
-        String(result.error || ""),
-        "Missing extracted PDF figure crop",
-      );
-      assert.include(String(result.error || ""), "Figure 2");
-      assert.include(String(result.error || ""), "paper_read mode:'figures'");
-      assert.include(
-        String(result.error || ""),
-        "Available extracted crop paths: none",
-      );
-      assert.deepEqual(writes, []);
+      assert.notProperty(result, "error");
+      assert.deepEqual(writes, ["/tmp/obsidian-vault/Zotero Notes/figures.md"]);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
     }
   });
 
-  it("file_io rejects incomplete notes for captionless adjacent MinerU image blocks", async function () {
+  it("file_io does not police captionless MinerU image blocks at write time", async function () {
     const tool = createFileIOTool();
     const encoder = new TextEncoder();
     const writes: string[] = [];
@@ -1261,17 +1252,10 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.include(
-        String(result.error || ""),
-        "Missing extracted PDF figure crop",
-      );
-      assert.include(String(result.error || ""), "1 MinerU source image");
-      assert.include(String(result.error || ""), "paper_read mode:'figures'");
-      assert.include(
-        String(result.error || ""),
-        "Available extracted crop paths: none",
-      );
-      assert.deepEqual(writes, []);
+      assert.notProperty(result, "error");
+      assert.deepEqual(writes, [
+        "/tmp/obsidian-vault/Zotero Notes/captionless.md",
+      ]);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
@@ -1365,6 +1349,19 @@ describe("primitive agent tools", function () {
       assert.isUndefined(result.artifacts);
     } finally {
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("write tools do not import figure crop cache policing guards", async function () {
+    const { readFile } = await import("node:fs/promises");
+    const writeToolPaths = [
+      "src/agent/tools/write/editCurrentNote.ts",
+      "src/agent/tools/write/fileIO.ts",
+    ];
+    for (const filePath of writeToolPaths) {
+      const source = await readFile(filePath, "utf-8");
+      assert.notInclude(source, "validateMineruFigureBlockEmbedsForCacheDirs");
+      assert.notInclude(source, "mineruFigureBlockCache");
     }
   });
 
@@ -1501,7 +1498,7 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("file_io rejects explicit panel-only Markdown notes for a compound figure block", async function () {
+  it("file_io does not police explicit panel-only Markdown notes", async function () {
     const tool = createFileIOTool();
     const encoder = new TextEncoder();
     const fileContent = new Map<string, string>();
@@ -1585,13 +1582,10 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.include(
-        String(result.error || ""),
-        "Missing extracted PDF figure crop",
-      );
-      assert.include(String(result.error || ""), "Figure 2");
-      assert.isUndefined(
+      assert.notProperty(result, "error");
+      assert.equal(
         fileContent.get("/tmp/obsidian-vault/Zotero Notes/figure-2b.md"),
+        content,
       );
     } finally {
       clearUndoStack(context.request.conversationKey);
@@ -2476,8 +2470,8 @@ describe("primitive agent tools", function () {
     });
   });
 
-  it("edit_current_note rejects incomplete MinerU figure-block embeds before mutation", async function () {
-    let replaced = false;
+  it("edit_current_note does not police incomplete MinerU figure-block embeds before mutation", async function () {
+    let replacedContent = "";
     const tool = createEditCurrentNoteTool({
       getActiveNoteSnapshot: () => ({
         noteId: 55,
@@ -2487,9 +2481,15 @@ describe("primitive agent tools", function () {
         libraryID: 1,
         noteKind: "standalone",
       }),
-      replaceCurrentNote: async () => {
-        replaced = true;
-        throw new Error("replaceCurrentNote should not run");
+      replaceCurrentNote: async ({ content }: { content: string }) => {
+        replacedContent = content;
+        return {
+          noteId: 55,
+          title: "Draft Note",
+          previousHtml: "<p>Original body</p>",
+          previousText: "Original body",
+          nextText: content,
+        };
       },
       restoreNoteHtml: async () => {},
     } as never);
@@ -2568,22 +2568,27 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.equal(result.status, "rejected");
-      assert.include(
-        String(result.error || ""),
-        "Missing extracted PDF figure crop",
+      assert.deepInclude(result, {
+        status: "updated",
+        noteId: 55,
+        title: "Draft Note",
+      });
+      assert.equal(
+        replacedContent,
+        [
+          "![Figure 2c](images/fig2c.png)",
+          "",
+          "Figure 2 explains the attractor-network interpretation.",
+        ].join("\n"),
       );
-      assert.include(String(result.error || ""), "Figure 2");
-      assert.include(String(result.error || ""), "paper_read mode:'figures'");
-      assert.isFalse(replaced);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
     }
   });
 
-  it("edit_current_note rejects explicit figure notes without extracted crop embeds", async function () {
-    let replaced = false;
+  it("edit_current_note does not police explicit figure notes without extracted crop embeds", async function () {
+    let replacedContent = "";
     const tool = createEditCurrentNoteTool({
       getActiveNoteSnapshot: () => ({
         noteId: 55,
@@ -2593,9 +2598,15 @@ describe("primitive agent tools", function () {
         libraryID: 1,
         noteKind: "standalone",
       }),
-      replaceCurrentNote: async () => {
-        replaced = true;
-        throw new Error("replaceCurrentNote should not run");
+      replaceCurrentNote: async ({ content }: { content: string }) => {
+        replacedContent = content;
+        return {
+          noteId: 55,
+          title: "Draft Note",
+          previousHtml: "<p>Original body</p>",
+          previousText: "Original body",
+          nextText: content,
+        };
       },
       restoreNoteHtml: async () => {},
     } as never);
@@ -2682,18 +2693,19 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.equal(result.status, "rejected");
-      assert.include(
-        String(result.error || ""),
-        "Missing extracted PDF figure crop",
+      assert.deepInclude(result, {
+        status: "updated",
+        noteId: 55,
+        title: "Draft Note",
+      });
+      assert.equal(
+        replacedContent,
+        [
+          "## Figure 1 - Neural networks",
+          "",
+          "Figure 1 explains the stability-plasticity problem through four panels.",
+        ].join("\n"),
       );
-      assert.include(String(result.error || ""), "Figure 1");
-      assert.include(String(result.error || ""), "paper_read mode:'figures'");
-      assert.include(
-        String(result.error || ""),
-        "embeds no extracted PDF crop",
-      );
-      assert.isFalse(replaced);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
@@ -2825,17 +2837,17 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("edit_current_note rejects all-figures notes when figure crop metadata is missing", async function () {
-    let replaced = false;
+  it("edit_current_note does not reject all-figures notes when figure crop metadata is missing", async function () {
+    let replacedContent = "";
     const tool = createEditCurrentNoteTool({
-      replaceCurrentNote: async () => {
-        replaced = true;
+      replaceCurrentNote: async ({ content }: { content: string }) => {
+        replacedContent = content;
         return {
           noteId: 55,
           title: "Draft Note",
           previousHtml: "<p>Original body</p>",
           previousText: "Original body",
-          nextText: "",
+          nextText: content,
         };
       },
       restoreNoteHtml: async () => {},
@@ -2906,14 +2918,12 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.equal(result.status, "rejected");
-      assert.include(
-        String(result.error || ""),
-        "Cannot save an all-figures note",
-      );
-      assert.include(String(result.error || ""), "metadata is missing");
-      assert.include(String(result.error || ""), "paper_read mode:'figures'");
-      assert.isFalse(replaced);
+      assert.deepInclude(result, {
+        status: "updated",
+        noteId: 55,
+        title: "Draft Note",
+      });
+      assert.equal(replacedContent, content);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
@@ -3124,12 +3134,18 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("edit_current_note rejects all-figures notes when figure crop metadata is stale", async function () {
-    let replaced = false;
+  it("edit_current_note does not reject all-figures notes when figure crop metadata is stale", async function () {
+    let replacedContent = "";
     const tool = createEditCurrentNoteTool({
-      replaceCurrentNote: async () => {
-        replaced = true;
-        throw new Error("replaceCurrentNote should not run");
+      replaceCurrentNote: async ({ content }: { content: string }) => {
+        replacedContent = content;
+        return {
+          noteId: 55,
+          title: "Draft Note",
+          previousHtml: "<p>Original body</p>",
+          previousText: "Original body",
+          nextText: content,
+        };
       },
       restoreNoteHtml: async () => {},
     } as never);
@@ -3220,26 +3236,193 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.equal(result.status, "rejected");
-      assert.include(
-        String(result.error || ""),
-        "Cannot save an all-figures note",
-      );
-      assert.include(String(result.error || ""), "metadata is stale");
-      assert.include(String(result.error || ""), "paper_read mode:'figures'");
-      assert.isFalse(replaced);
+      assert.deepInclude(result, {
+        status: "updated",
+        noteId: 55,
+        title: "Draft Note",
+      });
+      assert.equal(replacedContent, content);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
     }
   });
 
-  it("edit_current_note rejects all-figures notes when expected crops are missing", async function () {
-    let replaced = false;
+  it("edit_current_note accepts all-figures crop embeds when only paper title metadata drifted", async function () {
+    let replacedContent = "";
     const tool = createEditCurrentNoteTool({
-      replaceCurrentNote: async () => {
-        replaced = true;
-        throw new Error("replaceCurrentNote should not run");
+      replaceCurrentNote: async ({ content }: { content: string }) => {
+        replacedContent = content;
+        return {
+          noteId: 55,
+          title: "Draft Note",
+          previousHtml: "<p>Original body</p>",
+          previousText: "Original body",
+          nextText: content,
+        };
+      },
+      restoreNoteHtml: async () => {},
+    } as never);
+    const encoder = new TextEncoder();
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    const cacheDir = "/tmp/llm-for-zotero-mineru/97";
+    const contentListPath = `${cacheDir}/paper_content_list.json`;
+    const cropCachePath = `${cacheDir}/figure_crops/figure_geometry.json`;
+    const cropPath1 = `${cacheDir}/figure_crops/crops/figure-1.png`;
+    const cropPath2 = `${cacheDir}/figure_crops/crops/figure-2.png`;
+    const fullMd = [
+      "Figure 1. First figure.",
+      "",
+      "Figure 2. Second figure.",
+    ].join("\n");
+    const extractionPaperContext: PaperContextRef = {
+      itemId: 97,
+      contextItemId: 97,
+      title: "Extraction-Time Figure Paper",
+      attachmentTitle: "paper.pdf",
+      mineruCacheDir: cacheDir,
+    };
+    const writePaperContext: PaperContextRef = {
+      itemId: 97,
+      contextItemId: 97,
+      title: "Current Request Figure Paper",
+      mineruCacheDir: cacheDir,
+    };
+    const cropCache = {
+      version: TEST_PDF_FIGURE_CROP_CACHE_VERSION,
+      attachmentId: 97,
+      manifestHash: cropManifestHashForTest(null),
+      pdfFingerprint: cropPdfFingerprintForTest(extractionPaperContext),
+      renderScale: 1.8,
+      algorithmVersion: TEST_PDF_FIGURE_CROP_ALGORITHM_VERSION,
+      generatedAt: 1,
+      expectedFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          status: "ok",
+          cropPath: cropPath1,
+        },
+        {
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 3,
+          status: "ok",
+          cropPath: cropPath2,
+        },
+      ],
+      missingFigures: [],
+      entries: [
+        {
+          id: "figure-1",
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          cropPath: cropPath1,
+          rect: { left: 10, top: 10, width: 200, height: 160 },
+          confidence: 0.95,
+          source: "caption-bounded-region",
+          warnings: [],
+          mineruImagePaths: [],
+        },
+        {
+          id: "figure-2",
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 3,
+          cropPath: cropPath2,
+          rect: { left: 20, top: 20, width: 220, height: 170 },
+          confidence: 0.94,
+          source: "caption-bounded-region",
+          warnings: [],
+          mineruImagePaths: [],
+        },
+      ],
+    };
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      read: async (path: string) => {
+        if (path === `${cacheDir}/full.md`) return encoder.encode(fullMd);
+        if (path === cropCachePath) {
+          return encoder.encode(JSON.stringify(cropCache));
+        }
+        if (path === contentListPath) {
+          return encoder.encode(
+            JSON.stringify([
+              {
+                type: "image",
+                img_path: "images/fig1.png",
+                image_caption: ["Figure 1. First figure."],
+              },
+              {
+                type: "image",
+                img_path: "images/fig2.png",
+                image_caption: ["Figure 2. Second figure."],
+              },
+            ]),
+          );
+        }
+        throw new Error(`Unexpected read: ${path}`);
+      },
+      getChildren: async (path: string) =>
+        path === cacheDir ? [contentListPath] : [],
+    };
+    const context: AgentToolContext = {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKey: 43_097,
+        userText:
+          "help me explain all figures in this paper and save it into my note",
+        fullTextPaperContexts: [writePaperContext],
+      },
+    };
+
+    try {
+      const content = [
+        "# All Figures",
+        "",
+        `![Figure 1](${cropPath1})`,
+        "",
+        "Figure 1 shows the first result.",
+        "",
+        `![Figure 2](${cropPath2})`,
+        "",
+        "Figure 2 shows the second result.",
+      ].join("\n");
+      const validated = tool.validate({ content });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+
+      const result = (await tool.execute(validated.value, context)) as Record<
+        string,
+        unknown
+      >;
+
+      assert.deepInclude(result, {
+        status: "updated",
+        noteId: 55,
+        title: "Draft Note",
+      });
+      assert.equal(replacedContent, content);
+    } finally {
+      clearUndoStack(context.request.conversationKey);
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("edit_current_note does not reject all-figures notes when expected crops are missing", async function () {
+    let replacedContent = "";
+    const tool = createEditCurrentNoteTool({
+      replaceCurrentNote: async ({ content }: { content: string }) => {
+        replacedContent = content;
+        return {
+          noteId: 55,
+          title: "Draft Note",
+          previousHtml: "<p>Original body</p>",
+          previousText: "Original body",
+          nextText: content,
+        };
       },
       restoreNoteHtml: async () => {},
     } as never);
@@ -3364,13 +3547,12 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.equal(result.status, "rejected");
-      assert.include(
-        String(result.error || ""),
-        "Cannot save an all-figures note",
-      );
-      assert.include(String(result.error || ""), "Figure 2");
-      assert.isFalse(replaced);
+      assert.deepInclude(result, {
+        status: "updated",
+        noteId: 55,
+        title: "Draft Note",
+      });
+      assert.equal(replacedContent, content);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;

@@ -7,6 +7,7 @@ import {
   getPdfFigureCropCacheFreshness,
   pdfFigureCropFileExists,
   readPdfFigureCropCacheFromDir,
+  removePdfFigureCropCacheDir,
   writePdfFigureCropCacheToDir,
   type ExpectedPdfFigure,
   type ExtractedPdfFigure,
@@ -145,7 +146,20 @@ async function readVerifiedCachedFigures(params: {
   missingFigures: ExpectedPdfFigure[];
 } | null> {
   const cache = await readPdfFigureCropCacheFromDir(params.cacheDir);
-  if (!cache?.entries?.length) return null;
+  if (!cache) return null;
+
+  const freshness = getPdfFigureCropCacheFreshness(cache, {
+    manifest: params.manifest,
+    paperContext: params.paperContext,
+  });
+  if (!freshness.ok) {
+    if (freshness.reason === "version" || freshness.reason === "algorithm") {
+      await removePdfFigureCropCacheDir(params.cacheDir);
+    }
+    return null;
+  }
+
+  if (!cache.entries.length) return null;
 
   const attachmentMatches =
     normalizePositiveInt(cache.attachmentId) === params.attachmentId;
@@ -167,12 +181,7 @@ async function readVerifiedCachedFigures(params: {
     figures,
   );
   const missingFigures = cache.missingFigures || [];
-  const freshness = getPdfFigureCropCacheFreshness(cache, {
-    manifest: params.manifest,
-    paperContext: params.paperContext,
-  });
   const shouldRewrite =
-    !freshness.ok ||
     figures.length !== cache.entries.length ||
     expectedFigures.some(
       (figure, index) =>
@@ -338,8 +347,8 @@ export class PdfFigureExtractionService {
       query,
       guidance: figures.length
         ? missingFigures.length
-          ? "Figure extraction returned partial results. Do not write an all-figures note unless the user explicitly accepts a partial note; embed only returned PDF crop paths and do not embed MinerU source image paths."
-          : "Figure extraction succeeded. For figure notes, call note_write next and embed the returned cropPath with file:///; do not call paper_read again for the same figure and do not embed MinerU source image paths."
+          ? "Figure extraction returned partial results. Use the returned PDF crop paths only, state any missing crops plainly, and do not embed MinerU source image paths."
+          : "Figure extraction succeeded. Use the returned cropPath values for figure analysis and figure notes; do not call paper_read again for the same figure and do not embed MinerU source image paths."
         : "No extracted figure crop was produced; switch to text-only mode for analysis, note taking, and follow-up artifacts: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders. Explicitly state that figure extraction failed or no extracted crops are available, and that explanations are based on captions, figure legends, and surrounding paper text. User-provided image inputs are unaffected.",
       figures,
       artifacts,

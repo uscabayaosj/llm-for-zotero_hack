@@ -10,11 +10,9 @@ import {
   resolveParentItemForNoteTarget,
 } from "../../../modules/contextPanel/notes";
 import { importLocalImagesIntoNote } from "../../../modules/contextPanel/noteImages";
-import { validateMineruFigureBlockEmbedsForCacheDirs } from "../../../modules/contextPanel/mineruFigureBlockCache";
 import { escapeNoteHtml } from "../../../modules/contextPanel/textUtils";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 import { executeAndRecordUndo } from "./mutateLibraryShared";
-import { collectRequestPaperContexts } from "../requestPaperContexts";
 
 type NotePatch = { find: string; replace: string };
 
@@ -45,49 +43,6 @@ function sanitizeNoteHtml(html: string): string {
 /** Detect whether an HTML string contains inline `style=` attributes. */
 function htmlHasInlineStyles(html: string): boolean {
   return /<[^>]+\bstyle\s*=/i.test(html);
-}
-
-function getRequestMineruPaperContexts(context: AgentToolContext) {
-  return collectRequestPaperContexts(context.request).filter((paperContext) =>
-    Boolean(paperContext.mineruCacheDir?.trim()),
-  );
-}
-
-function getRequestMineruCacheDirs(
-  paperContexts: ReturnType<typeof getRequestMineruPaperContexts>,
-): string[] {
-  return paperContexts
-    .map((paperContext) =>
-      typeof paperContext.mineruCacheDir === "string"
-        ? paperContext.mineruCacheDir.trim()
-        : "",
-    )
-    .filter(Boolean);
-}
-
-async function validateNoteFigureBlockEmbeds(
-  input: Pick<EditCurrentNoteInput, "content">,
-  context: AgentToolContext,
-): Promise<null | Record<string, unknown>> {
-  const paperContexts = getRequestMineruPaperContexts(context);
-  const guard = await validateMineruFigureBlockEmbedsForCacheDirs({
-    content: input.content,
-    requestText: context.request.userText || "",
-    cacheDirs: getRequestMineruCacheDirs(paperContexts),
-    paperContexts,
-  });
-  if (!guard) return null;
-  return {
-    status: "rejected",
-    error: guard.message,
-    figureBlock: {
-      blockId: guard.block.blockId,
-      severity: guard.severity,
-      embeddedCount: guard.embeddedCount,
-      availableCount: guard.availableCount,
-      availablePaths: guard.availablePaths,
-    },
-  };
 }
 
 type EditCurrentNoteInput = {
@@ -479,7 +434,9 @@ export function createEditCurrentNoteTool(
         "When the user asks to create/write/save a new item note, call `edit_current_note` with mode 'create', target 'item', and `content`; create means a brand-new child note, not appending to the response-save note. " +
         "For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
         "Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. " +
-        "When the note discusses a specific figure or table, first use `paper_read({ mode:'figures' })` and embed the extracted PDF crop path: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
+        "When the note discusses a specific figure, first use `paper_read({ mode:'figures' })` and embed the extracted PDF crop path: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
+        "Treat paper_read mode:'figures' as the authority for figure crop cache reuse/regeneration; use returned crop paths as-is and do not inspect or validate `figure_crops` metadata before writing. " +
+        "When the note discusses a table, use `paper_read({ mode:'targeted' })` for the table text and surrounding discussion instead of the figure-crop extractor. " +
         "If paper_read mode:'figures' returns no_figures, mineru_required, error, zero figures, or no image artifact, switch to text-only mode when the user asked for a note: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders; explicitly state that figure extraction failed or no extracted crops are available, and that explanations are based on captions, figure legends, and surrounding paper text. " +
         "Do not embed MinerU source image paths for figure notes. " +
         "User-provided image inputs are unaffected. " +
@@ -774,12 +731,6 @@ export function createEditCurrentNoteTool(
       });
     },
     execute: async (input, context) => {
-      const figureBlockGuard = await validateNoteFigureBlockEmbeds(
-        input,
-        context,
-      );
-      if (figureBlockGuard) return figureBlockGuard;
-
       const hasLocalImages =
         /!\[[^\]]*\]\(file:\/\/|<img\s+[^>]*src\s*=\s*"file:\/\//i.test(
           input.content,

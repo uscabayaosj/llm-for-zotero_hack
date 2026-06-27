@@ -57,8 +57,7 @@ export type PdfFigureCropFreshnessReason =
   | "version"
   | "algorithm"
   | "manifest"
-  | "attachment"
-  | "pdf";
+  | "attachment";
 
 export type PdfFigureCropFreshness =
   | { ok: true }
@@ -124,13 +123,10 @@ export function getPdfFigureCropCacheFreshness(
   if (contextItemId && cache.attachmentId !== contextItemId) {
     return { ok: false, reason: "attachment" };
   }
-  if (
-    params.paperContext &&
-    cache.pdfFingerprint !==
-      buildPdfFigureCropPdfFingerprint(params.paperContext)
-  ) {
-    return { ok: false, reason: "pdf" };
-  }
+  // Do not hard-reject on pdfFingerprint mismatch here. The fingerprint
+  // includes display metadata such as title/attachmentTitle, which can drift
+  // between extraction and later reads even when the stable attachment id and
+  // MinerU manifest still match.
   return { ok: true };
 }
 
@@ -208,6 +204,40 @@ export function getPdfFigureCropCachePathForCacheDir(cacheDir: string): string {
     getPdfFigureCropDirForCacheDir(cacheDir),
     PDF_FIGURE_CROP_METADATA_FILE,
   );
+}
+
+export async function removePdfFigureCropCacheDir(
+  cacheDir: string,
+): Promise<void> {
+  const path = getPdfFigureCropDirForCacheDir(cacheDir);
+  const io = getIOUtils();
+  if (io?.remove) {
+    try {
+      await io.remove(path, { recursive: true, ignoreAbsent: true });
+    } catch {
+      /* best-effort cache cleanup */
+    }
+    return;
+  }
+  const osFile = getOSFile();
+  if (osFile?.removeDir) {
+    try {
+      await osFile.removeDir(path, {
+        ignoreAbsent: true,
+        ignorePermissions: false,
+      });
+    } catch {
+      /* best-effort cache cleanup */
+    }
+    return;
+  }
+  if (osFile?.remove) {
+    try {
+      await osFile.remove(path, { ignoreAbsent: true });
+    } catch {
+      /* best-effort cache cleanup */
+    }
+  }
 }
 
 export function getPdfFigureCropPathForCacheDir(

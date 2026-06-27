@@ -157,6 +157,8 @@ Written by LLM-for-Zotero.
 
 **If the user asked about a specific figure, include that figure in the note when an extracted PDF crop is available.** For other notes, include figures when they genuinely aid understanding (result plots, diagrams, key tables).
 For MinerU-ready papers, first call `paper_read({ mode:'figures', query:'<figure request>' })`.
+Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
+Use its returned crop paths/artifacts as-is and do not inspect or validate `figure_crops` metadata before writing.
 Embed extracted PDF crop paths returned by that tool.
 Do not embed MinerU source image paths.
 Panel suffixes and captions are hints only; do not assume image order proves panel identity.

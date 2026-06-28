@@ -1871,6 +1871,7 @@ export class PdfPageService {
           target.attachmentName || target.title || "paper.pdf",
           "--poppler-bin",
           runtime.popplerBinDir,
+          "--use-mineru-targets",
           "--clean-out",
         ];
         if (pages) {

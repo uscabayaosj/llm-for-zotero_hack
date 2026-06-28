@@ -139,6 +139,18 @@ describe("PdfFigureExtractionService", function () {
     };
   }
 
+  function cachedFigureWithLabel(label: string, cropPath: string) {
+    const baseLabel = label.replace(/[a-z]$/i, "").trim();
+    return {
+      ...cachedFigure(cropPath),
+      id: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-p2`,
+      label,
+      baseLabel: baseLabel || label,
+      cropPath,
+      captionText: `${label}. Cached precise result.`,
+    };
+  }
+
   it("returns verified cached crops before source-PDF extraction", async function () {
     const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
     files.set(cropPath, encoder.encode("png"));
@@ -184,6 +196,52 @@ describe("PdfFigureExtractionService", function () {
     assert.deepEqual(
       result.artifacts?.map((artifact) => artifact.storedPath),
       [cropPath],
+    );
+  });
+
+  it("does not reuse a cached crop for a different requested figure", async function () {
+    const oldCropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    const regeneratedCropPath =
+      "/tmp/mineru-paper/figure_crops/crops/figure-2-p4.png";
+    files.set(oldCropPath, encoder.encode("png"));
+    writeCropCache({
+      version: PDF_FIGURE_CROP_CACHE_VERSION,
+      attachmentId: 22,
+      manifestHash: currentManifestHash(),
+      pdfFingerprint: currentPdfFingerprint(),
+      renderScale: 1.8,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
+      generatedAt: 1,
+      expectedFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          status: "ok",
+          cropPath: oldCropPath,
+        },
+      ],
+      missingFigures: [],
+      entries: [cachedFigureWithLabel("Figure 1", oldCropPath)],
+    });
+    let rawCalled = false;
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        rawCalled = true;
+        return [cachedFigureWithLabel("Figure 2", regeneratedCropPath)];
+      },
+    } as never).extractFigures({
+      input: { query: "explain Figure 2" },
+      context,
+      paperContexts: [paperContext],
+    });
+
+    assert.isTrue(rawCalled);
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.cropPath),
+      [regeneratedCropPath],
     );
   });
 

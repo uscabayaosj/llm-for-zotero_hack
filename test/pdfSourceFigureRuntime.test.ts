@@ -236,6 +236,31 @@ describe("PdfPageService source-PDF figure runtime", function () {
     );
   });
 
+  it("enables MinerU manifest and content-list targets for production extraction", async function () {
+    const runtimeRoot =
+      "/tmp/zotero/llm-for-zotero-runtimes/pdf-figure-extractor/1/macos-arm64";
+    files.set(
+      `${runtimeRoot}/runtime.json`,
+      encoder.encode(
+        JSON.stringify({
+          kind: "llm-for-zotero/pdf-figure-runtime",
+          version: "1",
+          platform: "macos-arm64",
+          pythonPath: "bin/python3",
+          popplerBinDir: "bin",
+        }),
+      ),
+    );
+    files.set(`${runtimeRoot}/bin/python3`, encoder.encode("#!/bin/sh\n"));
+    files.set(`${runtimeRoot}/bin/pdftoppm`, encoder.encode("#!/bin/sh\n"));
+    files.set(`${runtimeRoot}/bin/pdftohtml`, encoder.encode("#!/bin/sh\n"));
+    files.set(`${runtimeRoot}/bin/pdfinfo`, encoder.encode("#!/bin/sh\n"));
+
+    await extractWithService();
+
+    assert.include(capturedCall?.arguments || [], "--use-mineru-targets");
+  });
+
   it("downloads and installs the managed runtime when it is missing", async function () {
     const runtimeRoot =
       "/tmp/zotero/llm-for-zotero-runtimes/pdf-figure-extractor/1/macos-arm64";

@@ -240,7 +240,7 @@ async function executeCommand(params: {
 
 /** Patterns that indicate a command has destructive or privileged risk. */
 const DESTRUCTIVE_COMMANDS =
-  /(?:^|\||\;|&&)\s*(?:(?:rm|rmdir|mv|rename|chmod|chown|sudo|mkfs|dd)\b|(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|git\s+(?:push|reset|checkout|switch|clean|rebase|filter-branch|rm|branch\s+-D|tag\s+-d)\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
+  /(?:^|\||;|&&)\s*(?:(?:rm|rmdir|mv|rename|chmod|chown|sudo|mkfs|dd)\b|(?:npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:pip|pip3)\s+install\b|python3?\s+-m\s+pip\s+install\b|uv\s+pip\s+install\b|brew\s+(?:install|upgrade|update|uninstall)\b|(?:apt|apt-get|dnf|yum|pacman|conda|mamba)\s+(?:install|remove|update|upgrade)\b|cargo\s+install\b|gem\s+install\b|git\s+(?:push|reset|checkout|switch|clean|rebase|filter-branch|rm|branch\s+-D|tag\s+-d)\b|date\s+(?:-s|--set)\b|timedatectl\b|systemsetup\s+-set(?:date|time|timezone)\b)/i;
 
 /** Downloading code and handing it directly to a shell should never auto-run. */
 const NETWORK_TO_SHELL_PATTERN =
@@ -248,7 +248,7 @@ const NETWORK_TO_SHELL_PATTERN =
 
 /** macOS/system automation commands can mutate external app or OS state. */
 const SYSTEM_AUTOMATION_PATTERN =
-  /(?:^|\||\;|&&)\s*(?:(?:osascript|launchctl)\b|defaults\s+(?:write|delete|import|rename)\b)/i;
+  /(?:^|\||;|&&)\s*(?:(?:osascript|launchctl)\b|defaults\s+(?:write|delete|import|rename)\b)/i;
 
 /** Append redirects are always an overwrite/append risk. */
 const APPEND_REDIRECT_PATTERN =
@@ -311,7 +311,7 @@ function parseSimpleShellWords(value: string): string[] | null {
 }
 
 function hasGlobPattern(value: string): boolean {
-  return /[*?\[\]{}]/.test(value);
+  return /[*?[\]{}]/.test(value);
 }
 
 function isAbsolutePath(value: string): boolean {
@@ -336,6 +336,25 @@ function isMarkdownNotePath(path: string): boolean {
   return /\.(?:md|markdown)$/i.test(path.trim());
 }
 
+function normalizeParsedCommandTarget(
+  value: string,
+  options?: { unquoted?: boolean },
+): string {
+  const path = value.trim();
+  return options?.unquoted ? path.replace(/\)+$/g, "") : path;
+}
+
+function isRelativeCommandPath(path: string): boolean {
+  const trimmed = path.trim();
+  return (
+    Boolean(trimmed) && !isAbsolutePath(trimmed) && !trimmed.startsWith("~")
+  );
+}
+
+function commandStartsWithDirectoryChange(command: string): boolean {
+  return /^(?:\(\s*)?cd(?:\s+|$)[\s\S]*(?:&&|;)/.test(command.trim());
+}
+
 function parseRedirectTarget(command: string): ReversibleCommandWrite | null {
   const match = command.match(OVERWRITE_REDIRECT_TARGET_PATTERN);
   if (!match) return null;
@@ -356,7 +375,12 @@ function parseCommandWriteTargets(command: string): string[] {
     ANY_REDIRECT_TARGET_PATTERN.flags,
   );
   while ((match = redirectPattern.exec(command)) !== null) {
-    const path = (match[1] || match[2] || match[3] || "").trim();
+    const path = normalizeParsedCommandTarget(
+      match[1] || match[2] || match[3] || "",
+      {
+        unquoted: Boolean(match[3]),
+      },
+    );
     if (path && !isNullRedirectTarget(path)) targets.push(path);
   }
 
@@ -365,7 +389,12 @@ function parseCommandWriteTargets(command: string): string[] {
     TEE_TARGET_PATTERN.flags,
   );
   while ((match = teePattern.exec(command)) !== null) {
-    const path = (match[1] || match[2] || match[3] || "").trim();
+    const path = normalizeParsedCommandTarget(
+      match[1] || match[2] || match[3] || "",
+      {
+        unquoted: Boolean(match[3]),
+      },
+    );
     if (path && !isNullRedirectTarget(path)) targets.push(path);
   }
 
@@ -394,10 +423,24 @@ function getNoteWriteBypassRefusal(
     context?.request.metadata?.fileNoteWritePolicy,
   );
   if (!policy) return null;
-  const targets = parseCommandWriteTargets(input.command)
-    .filter((path) => isMarkdownNotePath(path))
-    .map((path) => resolveCommandPath(path, input.cwd));
-  const noteTarget = targets.find(
+  const targets = parseCommandWriteTargets(input.command).filter((path) =>
+    isMarkdownNotePath(path),
+  );
+  const relativeMarkdownTargetAfterCd = targets.find(
+    (path) =>
+      isRelativeCommandPath(path) &&
+      commandStartsWithDirectoryChange(input.command),
+  );
+  if (relativeMarkdownTargetAfterCd) {
+    return (
+      `Refusing run_command relative Markdown note write after shell directory change: ${relativeMarkdownTargetAfterCd}. ` +
+      "Use file_io for external Markdown note files or edit_current_note for Zotero notes so MinerU figure-block completeness can be validated before writing."
+    );
+  }
+  const resolvedTargets = targets.map((path) =>
+    resolveCommandPath(path, input.cwd),
+  );
+  const noteTarget = resolvedTargets.find(
     (path) =>
       isLocalPathInsideOrEqual(path, policy.defaultTargetPath) ||
       isLocalPathInsideOrEqual(path, policy.directoryPath),

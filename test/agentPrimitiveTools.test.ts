@@ -2092,6 +2092,9 @@ describe("primitive agent tools", function () {
         'printf "note" | tee "/tmp/obsidian-vault/Zotero Notes/figure.md"',
         'cp "/tmp/source.md" "/tmp/obsidian-vault/Zotero Notes/figure.md"',
         'mv "/tmp/source.md" "/tmp/obsidian-vault/Zotero Notes/figure.md"',
+        'cd "/tmp/obsidian-vault/Zotero Notes" && printf "note" > figure.md',
+        'cd "/tmp/obsidian-vault/Zotero Notes"; printf "note" > figure.md',
+        '(cd "/tmp/obsidian-vault/Zotero Notes" && printf "note" > figure.md)',
       ];
       for (const command of refusedCommands) {
         const validated = tool.validate({ command });

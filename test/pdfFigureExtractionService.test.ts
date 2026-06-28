@@ -199,6 +199,61 @@ describe("PdfFigureExtractionService", function () {
     );
   });
 
+  it("does not parse numeric prose after a figure label as another requested figure", async function () {
+    const figure1CropPath =
+      "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    const figure2CropPath =
+      "/tmp/mineru-paper/figure_crops/crops/figure-2-p4.png";
+    files.set(figure1CropPath, encoder.encode("png"));
+    files.set(figure2CropPath, encoder.encode("png"));
+    writeCropCache({
+      version: PDF_FIGURE_CROP_CACHE_VERSION,
+      attachmentId: 22,
+      manifestHash: currentManifestHash(),
+      pdfFingerprint: currentPdfFingerprint(),
+      renderScale: 1.8,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
+      generatedAt: 1,
+      expectedFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          status: "ok",
+          cropPath: figure1CropPath,
+        },
+        {
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 4,
+          status: "ok",
+          cropPath: figure2CropPath,
+        },
+      ],
+      missingFigures: [],
+      entries: [
+        cachedFigureWithLabel("Figure 1", figure1CropPath),
+        cachedFigureWithLabel("Figure 2", figure2CropPath),
+      ],
+    });
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        throw new Error("source extraction should not run for cached crops");
+      },
+    } as never).extractFigures({
+      input: { query: "Figure 1 has 2 panels" },
+      context,
+      paperContexts: [paperContext],
+    });
+
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.label),
+      ["Figure 1"],
+    );
+  });
+
   it("does not reuse a cached crop for a different requested figure", async function () {
     const oldCropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
     const regeneratedCropPath =
@@ -480,6 +535,59 @@ describe("PdfFigureExtractionService", function () {
     assert.deepEqual(
       result.figures?.map((figure) => figure.cropPath),
       [regeneratedCropPath],
+    );
+  });
+
+  it("regenerates all-figure requests when manifest coverage is unknown", async function () {
+    const cachedCropPath =
+      "/tmp/mineru-paper/figure_crops/crops/cached-figure-1-p2.png";
+    const regeneratedFigure1Path =
+      "/tmp/mineru-paper/figure_crops/crops/figure-1-p2.png";
+    const regeneratedFigure2Path =
+      "/tmp/mineru-paper/figure_crops/crops/figure-2-p4.png";
+    files.delete("/tmp/mineru-paper/manifest.json");
+    files.set(cachedCropPath, encoder.encode("png"));
+    writeCropCache({
+      version: PDF_FIGURE_CROP_CACHE_VERSION,
+      attachmentId: 22,
+      manifestHash: buildPdfFigureCropManifestHash(null),
+      pdfFingerprint: currentPdfFingerprint(),
+      renderScale: 1.8,
+      algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
+      generatedAt: 1,
+      expectedFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          status: "ok",
+          cropPath: cachedCropPath,
+        },
+      ],
+      missingFigures: [],
+      entries: [cachedFigureWithLabel("Figure 1", cachedCropPath)],
+    });
+    let rawCalled = false;
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async () => {
+        rawCalled = true;
+        return [
+          cachedFigureWithLabel("Figure 1", regeneratedFigure1Path),
+          cachedFigureWithLabel("Figure 2", regeneratedFigure2Path),
+        ];
+      },
+    } as never).extractFigures({
+      input: { query: "explain all figures" },
+      context,
+      paperContexts: [paperContext],
+    });
+
+    assert.isTrue(rawCalled);
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.figures?.map((figure) => figure.cropPath),
+      [regeneratedFigure1Path, regeneratedFigure2Path],
     );
   });
 

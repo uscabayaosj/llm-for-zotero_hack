@@ -208,6 +208,9 @@ function labelAllowedForAllQuery(label: string, query: string): boolean {
   return true;
 }
 
+const FIGURE_LABEL_LIST_PATTERN =
+  /\b(?:fig(?:ure)?s?\.?|figs?\.?)\s+(S?\d+[A-Za-z]?(?:\s*(?:(?:,\s*(?:and\s+)?)|(?:&|\band\b|[-\u2013\u2014]|\bto\b)\s*)S?\d+[A-Za-z]?)*)(?![A-Za-z0-9])/gi;
+
 function extractRequestedFigureLabels(query: string): Set<string> {
   const labels = new Set<string>();
   const extendedNumbers = new Set<string>();
@@ -231,22 +234,19 @@ function extractRequestedFigureLabels(query: string): Set<string> {
     addFigureLabelKey(labels, `Supplementary Figure ${number}`);
   }
 
-  for (const match of query.matchAll(
-    /\b(?:fig(?:ure)?s?\.?|figs?\.?)\s+([S\dA-Za-z,\s&\u2013\u2014toand-]+)/gi,
-  )) {
+  for (const match of query.matchAll(FIGURE_LABEL_LIST_PATTERN)) {
     const rawSegment = match[1] || "";
-    const segment = rawSegment.split(
-      /\b(?:on|in|from|with|about|and\s+save|write)\b/i,
-    )[0];
-    const numbers = Array.from(segment.matchAll(/\bS?\d+\b/gi)).map((item) =>
-      item[0].toUpperCase(),
+    const numbers = Array.from(rawSegment.matchAll(/\bS?\d+[A-Za-z]?\b/gi)).map(
+      (item) => item[0].toUpperCase(),
     );
     if (!numbers.length) continue;
     if (
       numbers.length === 2 &&
-      /[-\u2013\u2014]|\bto\b/i.test(segment) &&
+      /[-\u2013\u2014]|\bto\b/i.test(rawSegment) &&
       !numbers[0].startsWith("S") &&
-      !numbers[1].startsWith("S")
+      !numbers[1].startsWith("S") &&
+      /^\d+$/.test(numbers[0]) &&
+      /^\d+$/.test(numbers[1])
     ) {
       const start = Number.parseInt(numbers[0], 10);
       const end = Number.parseInt(numbers[1], 10);
@@ -407,10 +407,9 @@ function selectCachedFiguresForRequest(params: {
       params.manifest,
       params.query,
     );
-    if (manifestLabels.size) {
-      for (const label of manifestLabels) {
-        if (!coverage.has(label)) return null;
-      }
+    if (!manifestLabels.size) return null;
+    for (const label of manifestLabels) {
+      if (!coverage.has(label)) return null;
     }
     return { figures, expectedFigures, missingFigures };
   }

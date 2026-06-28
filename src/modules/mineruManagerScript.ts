@@ -117,6 +117,11 @@ const MIN_COLUMN_WIDTHS = {
 } as const;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 520;
+const MINERU_MANAGER_FILTER_INPUT_STYLE =
+  "flex: 1; min-width: 0; height: 27px;" +
+  " border: 1px solid var(--stroke-secondary, rgba(128,128,128,0.28));" +
+  " border-radius: 7px; padding: 2px 9px; font-size: 12px;" +
+  " box-sizing: border-box; background: Field; color: FieldText;";
 const MINERU_STATUS_DOT_COLORS: Record<MineruStatus, string> = {
   cached: "#10b981",
   processing: "#f59e0b",
@@ -1109,8 +1114,7 @@ export async function registerMineruManagerScript(
     input.type = "search";
     input.placeholder = t("Filter Tags");
     input.value = tagFilterQuery;
-    input.style.cssText =
-      "flex: 1; min-width: 0; height: 27px; border: 1px solid rgba(128,128,128,0.28); border-radius: 7px; padding: 2px 9px; font-size: 12px; background: #fff; color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.06);";
+    input.style.cssText = MINERU_MANAGER_FILTER_INPUT_STYLE;
     input.addEventListener("input", () => {
       tagFilterQuery = input.value;
       const selectionStart = input.selectionStart ?? tagFilterQuery.length;
@@ -1242,8 +1246,7 @@ export async function registerMineruManagerScript(
     itemSearchInput.type = "search";
     itemSearchInput.placeholder = t("Search Items");
     itemSearchInput.value = itemSearchQuery;
-    itemSearchInput.style.cssText =
-      "flex: 1; min-width: 0; height: 27px; border: 1px solid rgba(128,128,128,0.28); border-radius: 7px; padding: 2px 9px; font-size: 12px; background: #fff; color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.06);";
+    itemSearchInput.style.cssText = MINERU_MANAGER_FILTER_INPUT_STYLE;
     itemSearchInput.addEventListener("input", () => {
       itemSearchQuery = itemSearchInput?.value ?? "";
       selectedIds.clear();

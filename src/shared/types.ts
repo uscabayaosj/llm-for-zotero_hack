@@ -42,10 +42,13 @@ export type PaperContentSourceMode =
   | "txt"
   | "docx";
 
+export type ModelInputMode = "text_only" | "vision_allowed";
+
 export type AdvancedModelParams = {
   temperature: number;
   maxTokens: number;
   inputTokenCap?: number;
+  inputMode?: ModelInputMode;
 };
 
 export type PaperContextRef = {
@@ -64,6 +67,7 @@ export type PaperContextRef = {
 export type QuoteCitation = {
   id: string;
   quoteText: string;
+  displayQuoteText?: string;
   citationLabel: string;
   sourceMatchText?: string;
   sourceMatchKind?:
@@ -73,9 +77,18 @@ export type QuoteCitation = {
     | "raw-prefix"
     | "raw-suffix"
     | "raw-middle"
-    | "progressive";
+    | "progressive"
+    | "selected-text"
+    | "normalized-span";
+  sourceMatchSource?: "context-text" | "pdf-page-text";
+  sourceSectionLabel?: string;
+  sourceChunkKind?: string;
   contextItemId?: number;
   itemId?: number;
+  /** Best-effort zero-based PDF page hint for fast initial quote navigation. */
+  pageHintIndex?: number;
+  /** Best-effort printed page label from Zotero/PDF metadata. */
+  pageHintLabel?: string;
 };
 
 /** A Zotero note (item note or standalone) selected as a reference context. */

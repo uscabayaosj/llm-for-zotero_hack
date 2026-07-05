@@ -5,6 +5,7 @@ import {
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "./normalization";
+import { normalizeModelInputModeForRuntime } from "./modelInputMode";
 import {
   isProviderProtocol,
   normalizeProviderProtocolForAuthMode,
@@ -12,6 +13,7 @@ import {
 } from "./providerProtocol";
 import { detectProviderPreset, getProviderPreset } from "./providerPresets";
 import type { ProviderPresetId } from "./providerPresets";
+import type { ModelInputMode } from "../shared/types";
 
 export type LegacyModelSlotKey =
   | "primary"
@@ -23,6 +25,7 @@ export type AdvancedModelConfig = {
   temperature: number;
   maxTokens: number;
   inputTokenCap?: number;
+  inputMode?: ModelInputMode;
 };
 
 export type ModelProviderModel = AdvancedModelConfig & {
@@ -80,6 +83,7 @@ type AdvancedModelConfigInput = {
   temperature?: number | string | null;
   maxTokens?: number | string | null;
   inputTokenCap?: number | string | null;
+  inputMode?: unknown;
 };
 
 type ZoteroPrefsAPI = {
@@ -146,7 +150,12 @@ function normalizeProviderAuthMode(value: unknown): ModelProviderAuthMode {
 function normalizeAdvancedModelConfig(
   value?: AdvancedModelConfigInput | null,
   modelName?: string,
+  runtimeMode?: unknown,
 ): AdvancedModelConfig {
+  const inputMode = normalizeModelInputModeForRuntime(
+    value?.inputMode,
+    runtimeMode,
+  );
   return {
     temperature: normalizeTemperature(
       `${value?.temperature ?? DEFAULT_TEMPERATURE}`,
@@ -156,6 +165,7 @@ function normalizeAdvancedModelConfig(
       modelName,
     ),
     inputTokenCap: normalizeOptionalInputTokenCap(value?.inputTokenCap),
+    ...(inputMode ? { inputMode } : {}),
   };
 }
 
@@ -239,13 +249,13 @@ function normalizeGroup(group: unknown): ModelProviderGroup | null {
     presetIdOverride?: unknown;
   };
 
+  const authMode = normalizeProviderAuthMode(rawGroup.authMode);
   const models = Array.isArray(rawGroup.models)
     ? rawGroup.models
-        .map((entry) => normalizeGroupModel(entry))
+        .map((entry) => normalizeGroupModel(entry, authMode))
         .filter((entry): entry is ModelProviderModel => Boolean(entry))
     : [];
 
-  const authMode = normalizeProviderAuthMode(rawGroup.authMode);
   const apiBase = normalizeApiBase(normalizeString(rawGroup.apiBase));
   return {
     id:
@@ -271,7 +281,10 @@ function normalizePresetIdOverride(
   return "customized";
 }
 
-function normalizeGroupModel(model: unknown): ModelProviderModel | null {
+function normalizeGroupModel(
+  model: unknown,
+  authMode: ModelProviderAuthMode,
+): ModelProviderModel | null {
   if (!model || typeof model !== "object") return null;
   const rawModel = model as {
     id?: unknown;
@@ -279,6 +292,7 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
     temperature?: unknown;
     maxTokens?: unknown;
     inputTokenCap?: unknown;
+    inputMode?: unknown;
     providerProtocol?: unknown;
   };
   const modelName = normalizeString(rawModel.model);
@@ -287,8 +301,10 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
       temperature: Number(rawModel.temperature),
       maxTokens: Number(rawModel.maxTokens),
       inputTokenCap: rawModel.inputTokenCap as number | string | undefined,
+      inputMode: rawModel.inputMode,
     },
     modelName,
+    authMode,
   );
   const modelProtocol = isProviderProtocol(rawModel.providerProtocol)
     ? rawModel.providerProtocol

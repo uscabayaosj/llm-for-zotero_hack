@@ -13,6 +13,12 @@ import {
   normalizeTemperature,
 } from "../utils/normalization";
 import {
+  getModelInputModeLabel,
+  getModelInputModeOptionsForRuntime,
+  normalizeModelInputModeForRuntime,
+  resolveModelInputMode,
+} from "../utils/modelInputMode";
+import {
   createEmptyProviderGroup,
   createProviderModelEntry,
   getModelProviderGroups,
@@ -163,16 +169,21 @@ import {
   setClaudeBlockStreamingEnabled,
 } from "../claudeCode/prefs";
 import {
+  getCodexAppServerApprovalsReviewerPref,
   getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
+  isCodexAppServerNativeApprovalsEnabled,
   isCodexAppServerModeEnabled,
   isNativeZoteroMcpToolsEnabled,
+  setCodexAppServerApprovalsReviewerPref,
   setCodexAppServerModeEnabled,
+  setCodexAppServerNativeApprovalsEnabled,
   setCodexBinaryPathPref,
   setNativeZoteroMcpToolsEnabled,
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
+  type CodexAppServerApprovalsReviewer,
 } from "../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
@@ -538,6 +549,7 @@ const INPUT_SM_STYLE =
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 5px;" +
   " box-sizing: border-box; background: Field; color: FieldText;";
 
+const INPUT_MODE_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 108px;";
 const PROTOCOL_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 135px;";
 
 const LABEL_STYLE =
@@ -846,6 +858,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLButtonElement | null;
   const codexAppServerMcpStatus = doc.querySelector(
     `#${config.addonRef}-codex-app-server-mcp-status`,
+  ) as HTMLSpanElement | null;
+  const codexAppServerNativeApprovalsEnableInput = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-native-approvals-enable`,
+  ) as HTMLInputElement | null;
+  const codexAppServerApprovalsReviewerSelect = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-approvals-reviewer`,
+  ) as HTMLSelectElement | null;
+  const codexAppServerNativeApprovalsStatus = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-native-approvals-status`,
   ) as HTMLSpanElement | null;
 
   if (!modelSections) return;
@@ -1485,6 +1506,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                       temperature: existing.temperature,
                       maxTokens: existing.maxTokens,
                       inputTokenCap: existing.inputTokenCap,
+                      inputMode: existing.inputMode,
                     }
                   : undefined,
                 m.protocol,
@@ -1730,6 +1752,43 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "optional",
         );
 
+        const inputModeOptions = getModelInputModeOptionsForRuntime(
+          group.authMode,
+        );
+        let inputModeFieldWrap: HTMLDivElement | null = null;
+        let inputModeSelect: HTMLSelectElement | null = null;
+        if (inputModeOptions.length > 0) {
+          inputModeFieldWrap = el(
+            doc,
+            "div",
+            "display: flex; flex-direction: column; gap: 3px;",
+          );
+          const inputModeFieldLabel = el(
+            doc,
+            "label",
+            "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
+            t("Input mode"),
+          );
+          inputModeSelect = el(
+            doc,
+            "select",
+            INPUT_MODE_SELECT_SM_STYLE,
+          ) as HTMLSelectElement;
+          for (const mode of inputModeOptions) {
+            const opt = el(doc, "option") as HTMLOptionElement;
+            opt.value = mode;
+            opt.textContent = t(getModelInputModeLabel(mode));
+            inputModeSelect.appendChild(opt);
+          }
+          inputModeSelect.value = resolveModelInputMode(
+            normalizeModelInputModeForRuntime(
+              modelEntry.inputMode,
+              group.authMode,
+            ),
+          );
+          inputModeFieldWrap.append(inputModeFieldLabel, inputModeSelect);
+        }
+
         // ── Per-model protocol override ──
         const protocolFieldWrap = el(
           doc,
@@ -1767,21 +1826,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           protocolFieldWrap.style.display = "none";
         }
 
-        advFields.append(
-          tempField.wrap,
-          maxTokField.wrap,
-          inputCapField.wrap,
-          protocolFieldWrap,
-        );
+        advFields.append(tempField.wrap, maxTokField.wrap, inputCapField.wrap);
+        if (inputModeFieldWrap) advFields.append(inputModeFieldWrap);
+        advFields.append(protocolFieldWrap);
+        const inputModeHelpText = inputModeFieldWrap
+          ? "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit  ·  Input mode: auto/text-only/vision"
+          : "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)";
         advRow.append(
           advFields,
           el(
             doc,
             "span",
             "font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 2px; display: block;",
-            t(
-              "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)",
-            ),
+            t(inputModeHelpText),
           ),
         );
 
@@ -1794,6 +1851,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           modelEntry.inputTokenCap = normalizeOptionalInputTokenCap(
             inputCapField.input.value,
           );
+          const nextInputMode = inputModeSelect
+            ? normalizeModelInputModeForRuntime(
+                inputModeSelect.value,
+                group.authMode,
+              )
+            : undefined;
+          if (nextInputMode) {
+            modelEntry.inputMode = nextInputMode;
+          } else {
+            delete modelEntry.inputMode;
+          }
           modelEntry.providerProtocol = isProviderProtocol(
             protocolFieldSelect.value,
           )
@@ -1805,12 +1873,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             modelEntry.inputTokenCap !== undefined
               ? `${modelEntry.inputTokenCap}`
               : "";
+          if (inputModeSelect) {
+            inputModeSelect.value = resolveModelInputMode(
+              normalizeModelInputModeForRuntime(
+                modelEntry.inputMode,
+                group.authMode,
+              ),
+            );
+          }
           persistGroups(groups);
         };
         for (const f of [tempField, maxTokField, inputCapField]) {
           f.input.addEventListener("change", commitAdvanced);
           f.input.addEventListener("blur", commitAdvanced);
         }
+        inputModeSelect?.addEventListener("change", commitAdvanced);
         protocolFieldSelect.addEventListener("change", commitAdvanced);
 
         const syncAdvAvailability = () => {
@@ -1819,6 +1896,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           advRow.style.pointerEvents = hasModel ? "" : "none";
           for (const f of [tempField, maxTokField, inputCapField])
             f.input.disabled = !hasModel;
+          if (inputModeSelect) inputModeSelect.disabled = !hasModel;
           protocolFieldSelect.disabled = !hasModel;
         };
         syncAdvAvailability();
@@ -2472,6 +2550,46 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : t(
               "Zotero MCP tools disabled for native Codex and Claude Code turns.",
             ),
+      );
+    });
+  }
+
+  const renderCodexNativeApprovalsStatus = (message: string) => {
+    if (!codexAppServerNativeApprovalsStatus) return;
+    codexAppServerNativeApprovalsStatus.style.display = "inline";
+    codexAppServerNativeApprovalsStatus.style.color =
+      "var(--fill-secondary, #888)";
+    codexAppServerNativeApprovalsStatus.textContent = message;
+  };
+
+  if (codexAppServerNativeApprovalsEnableInput) {
+    codexAppServerNativeApprovalsEnableInput.checked =
+      isCodexAppServerNativeApprovalsEnabled();
+    codexAppServerNativeApprovalsEnableInput.addEventListener("change", () => {
+      setCodexAppServerNativeApprovalsEnabled(
+        codexAppServerNativeApprovalsEnableInput.checked,
+      );
+      renderCodexNativeApprovalsStatus(
+        codexAppServerNativeApprovalsEnableInput.checked
+          ? t("Native Codex approval bridge enabled.")
+          : t("Native Codex approval bridge disabled."),
+      );
+    });
+  }
+
+  if (codexAppServerApprovalsReviewerSelect) {
+    codexAppServerApprovalsReviewerSelect.value =
+      getCodexAppServerApprovalsReviewerPref();
+    codexAppServerApprovalsReviewerSelect.addEventListener("change", () => {
+      setCodexAppServerApprovalsReviewerPref(
+        codexAppServerApprovalsReviewerSelect.value as CodexAppServerApprovalsReviewer,
+      );
+      renderCodexNativeApprovalsStatus(
+        codexAppServerApprovalsReviewerSelect.value === "auto_review"
+          ? t(
+              "Codex may auto-review eligible native requests; Zotero still shows requests that reach the plugin.",
+            )
+          : t("Zotero will show native Codex approval requests."),
       );
     });
   }

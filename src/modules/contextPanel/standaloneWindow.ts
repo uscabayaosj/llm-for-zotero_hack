@@ -34,7 +34,11 @@ import {
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
-import { setupHandlers, type SetupHandlersHooks } from "./setupHandlers";
+import {
+  setupHandlers,
+  type ContextPreviewRenderMetrics,
+  type SetupHandlersHooks,
+} from "./setupHandlers";
 import {
   ensureConversationLoaded,
   getConversationKey,
@@ -119,6 +123,7 @@ import {
   buildClaudePaperStateKey,
 } from "../../claudeCode/state";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
+import { scheduleStandaloneWindowFitForElement } from "./standaloneWindowSizing";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -688,11 +693,84 @@ export function openStandaloneChat(options?: {
       const mainDocEl = mainWin.document.documentElement;
       let styleEl: HTMLStyleElement | null = null;
 
+      function parseCssRgbChannel(channel: string): number | null {
+        const trimmed = channel.trim();
+        if (!trimmed) return null;
+        const value = Number.parseFloat(trimmed);
+        if (!Number.isFinite(value)) return null;
+        if (trimmed.endsWith("%")) {
+          return Math.max(0, Math.min(255, (value / 100) * 255));
+        }
+        return Math.max(0, Math.min(255, value));
+      }
+
+      function parseCssRgbColor(
+        value: string,
+      ): [number, number, number] | null {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const hex = trimmed.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)?.[1];
+        if (hex) {
+          const full =
+            hex.length === 3
+              ? hex
+                  .split("")
+                  .map((part) => `${part}${part}`)
+                  .join("")
+              : hex;
+          return [
+            Number.parseInt(full.slice(0, 2), 16),
+            Number.parseInt(full.slice(2, 4), 16),
+            Number.parseInt(full.slice(4, 6), 16),
+          ];
+        }
+        const rgb = trimmed.match(/^rgba?\(([^)]+)\)$/i)?.[1];
+        if (!rgb) return null;
+        const parts = rgb
+          .replace(/\s*\/\s*[^, ]+$/, "")
+          .split(/[,\s]+/)
+          .filter(Boolean);
+        if (parts.length < 3) return null;
+        const channels = parts.slice(0, 3).map(parseCssRgbChannel);
+        if (channels.some((channel) => channel === null)) return null;
+        return channels as [number, number, number];
+      }
+
+      function getCssRgbLuminance(color: [number, number, number]): number {
+        const [r, g, b] = color.map((channel) => {
+          const value = channel / 255;
+          return value <= 0.03928
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+
+      function isLightStandaloneTheme(
+        style: CSSStyleDeclaration | null,
+      ): boolean {
+        const background =
+          style?.getPropertyValue("--material-background").trim() ||
+          style?.getPropertyValue("--material-sidepane").trim() ||
+          "";
+        const color = parseCssRgbColor(background);
+        if (color) return getCssRgbLuminance(color) > 0.5;
+        return !mainWin.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+      }
+
       const syncZoteroVarsToStandalone = () => {
         if (cancelled || newWin.closed) return;
         const freshStyle = mainDocEl
           ? mainWin.getComputedStyle(mainDocEl)
           : null;
+        const rootEl = doc.getElementById(
+          "llmforzotero-standalone-chat-root",
+        ) as HTMLElement | null;
+        if (rootEl) {
+          rootEl.dataset.standaloneTheme = isLightStandaloneTheme(freshStyle)
+            ? "light"
+            : "dark";
+        }
         const decls = zoteroVars
           .map((v) => {
             const val = freshStyle?.getPropertyValue(v).trim();
@@ -1725,14 +1803,44 @@ export function openStandaloneChat(options?: {
           activeContextPanels.set(contentArea, () => activeItem);
           activeContextPanelRawItems.set(contentArea, rawItemForPanel);
           void retainClaudeRuntimeForBody(contentArea, mountedItem);
+          let standaloneInputFitRequestId = 0;
+          const cancelPendingStandaloneInputFit = () => {
+            standaloneInputFitRequestId += 1;
+          };
+          const scheduleStandaloneInputFit = () => {
+            if (cancelled || newWin.closed) return;
+            const fitRequestId = (standaloneInputFitRequestId += 1);
+            const inputSection = contentArea.querySelector(
+              ".llm-input-section",
+            ) as HTMLElement | null;
+            scheduleStandaloneWindowFitForElement(newWin, inputSection, {
+              shouldRun: () => fitRequestId === standaloneInputFitRequestId,
+            });
+          };
+          const scheduleStandaloneInputFitAfterContextPreviewRender = (
+            metrics: ContextPreviewRenderMetrics,
+          ) => {
+            if (metrics.nextHeight <= metrics.previousHeight) {
+              cancelPendingStandaloneInputFit();
+              return;
+            }
+            scheduleStandaloneInputFit();
+          };
           const chatHooks: SetupHandlersHooks = {
             onConversationHistoryChanged: () => {
               if (cancelled) return;
               scheduleStandaloneSidebarRender();
             },
+            onDefaultContextRendered: scheduleStandaloneInputFit,
+            onContextPreviewRendered:
+              scheduleStandaloneInputFitAfterContextPreviewRender,
             onWebChatModeChanged: (isWebChat) => {
               if (cancelled) return;
               updateStandaloneWebChatUI(isWebChat);
+            },
+            prepareItemsAsDefaultContextTarget: async () => {
+              if (cancelled || newWin.closed) return;
+              return await createStandaloneOpenConversationForContext();
             },
           };
           setupHandlers(contentArea, mountedItem as any, chatHooks);
@@ -3258,42 +3366,41 @@ export function openStandaloneChat(options?: {
         });
       };
 
-      const restoreStandaloneOpenConversation = async (
-        forceFresh = false,
-      ): Promise<boolean> => {
+      const mountStandaloneOpenConversation = (
+        conversationKey: number,
+      ): boolean => {
+        const normalizedKey = Number.isFinite(conversationKey)
+          ? Math.floor(conversationKey)
+          : 0;
+        if (normalizedKey <= 0 || cancelled) return false;
         standaloneMode = "open";
         paperTab.classList.remove("active");
         openTab.classList.add("active");
-        const conversationKey =
-          await resolveStandaloneGlobalConversation(forceFresh);
-        if (!conversationKey || cancelled) {
-          return false;
-        }
-        activeConversationKey = conversationKey;
+        activeConversationKey = normalizedKey;
         const currentLibraryID = getCurrentLibraryScopeID();
         if (isClaudeConversationSystem()) {
           activeClaudeGlobalConversationByLibrary.set(
             buildClaudeLibraryStateKey(currentLibraryID),
-            conversationKey,
+            normalizedKey,
           );
         } else if (isCodexConversationSystem()) {
           activeCodexGlobalConversationByLibrary.set(
             buildCodexLibraryStateKey(currentLibraryID),
-            conversationKey,
+            normalizedKey,
           );
           setLastUsedCodexGlobalConversationKey(
             currentLibraryID,
-            conversationKey,
+            normalizedKey,
           );
         } else {
           activeGlobalConversationByLibrary.set(
             currentLibraryID,
-            conversationKey,
+            normalizedKey,
           );
         }
         const nextItem = buildStandalonePortalItem({
           mode: "open",
-          conversationKey,
+          conversationKey: normalizedKey,
         });
         if (!nextItem) {
           return false;
@@ -3301,6 +3408,35 @@ export function openStandaloneChat(options?: {
         mountChatPanel(nextItem);
         scheduleStandaloneSidebarRender();
         return true;
+      };
+
+      const createStandaloneOpenConversationForContext =
+        async (): Promise<boolean> => {
+          const currentLibraryID = getCurrentLibraryScopeID();
+          if (!currentLibraryID) return false;
+          const summary = await conversationRepository.createCatalogEntry({
+            system: currentConversationSystem,
+            kind: "global",
+            libraryID: currentLibraryID,
+          });
+          const conversationKey = Number(summary?.conversationKey || 0);
+          if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+            return false;
+          }
+          if (cancelled) return false;
+          await touchStandaloneEmptyDraftActivity(conversationKey, "global");
+          return mountStandaloneOpenConversation(conversationKey);
+        };
+
+      const restoreStandaloneOpenConversation = async (
+        options: boolean | StandaloneCreateConversationOptions = false,
+      ): Promise<boolean> => {
+        const conversationKey =
+          await resolveStandaloneGlobalConversation(options);
+        if (!conversationKey || cancelled) {
+          return false;
+        }
+        return mountStandaloneOpenConversation(conversationKey);
       };
 
       // Icon strip handlers — new chat

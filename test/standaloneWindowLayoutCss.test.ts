@@ -9,6 +9,13 @@ function readPanelCss(): string {
   return readFileSync(resolve(here, "../addon/content/zoteroPane.css"), "utf8");
 }
 
+function readStandaloneWindowSource(): string {
+  return readFileSync(
+    resolve(here, "../src/modules/contextPanel/standaloneWindow.ts"),
+    "utf8",
+  );
+}
+
 function extractCssRule(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`));
@@ -33,5 +40,67 @@ describe("standalone window layout CSS", function () {
       "max-width: min(100%, var(--llm-standalone-chat-max-width))",
     );
     assert.notInclude(rule, "max-width: 820px");
+  });
+
+  it("preserves default standalone tab styling and scopes light theme overrides", function () {
+    const css = readPanelCss();
+    const lightRootRule = extractCssRule(
+      css,
+      '#llmforzotero-standalone-chat-root[data-standalone-theme="light"]',
+    );
+    const tabGroupRule = extractCssRule(css, ".llm-standalone-tab-group");
+    const activeTabRule = extractCssRule(css, ".llm-standalone-tab.active");
+
+    assert.match(
+      lightRootRule,
+      /--llm-standalone-tab-track-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 88%,\s*var\(--fill-primary\) 12%\s*\);/,
+    );
+    assert.match(
+      lightRootRule,
+      /--llm-standalone-tab-active-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 78%,\s*var\(--fill-primary\) 22%\s*\);/,
+    );
+    assert.include(
+      tabGroupRule,
+      "background: color-mix(in srgb, var(--material-background) 80%, black 20%)",
+    );
+    assert.include(activeTabRule, "background: var(--fill-quinary);");
+    assert.notInclude(activeTabRule, "background: var(--fill-quaternary);");
+    assert.notInclude(activeTabRule, "--fill-quternary");
+  });
+
+  it("preserves default standalone sidebar styling and scopes light theme overrides", function () {
+    const css = readPanelCss();
+    const lightRootRule = extractCssRule(
+      css,
+      '#llmforzotero-standalone-chat-root[data-standalone-theme="light"]',
+    );
+    const sidebarRule = extractCssRule(css, ".llm-standalone-sidebar");
+    const iconStripRule = extractCssRule(css, ".llm-standalone-icon-strip");
+
+    assert.match(
+      lightRootRule,
+      /--llm-standalone-sidebar-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 92%,\s*var\(--fill-primary\) 8%\s*\);/,
+    );
+    assert.match(
+      lightRootRule,
+      /--llm-standalone-icon-strip-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 90%,\s*var\(--fill-primary\) 10%\s*\);/,
+    );
+    assert.include(
+      sidebarRule,
+      "background: color-mix(in srgb, var(--material-background) 96%, black 4%)",
+    );
+    assert.include(
+      iconStripRule,
+      "background: color-mix(in srgb, var(--material-background) 96%, black 4%)",
+    );
+  });
+
+  it("marks standalone windows with a light or dark theme without changing dark CSS defaults", function () {
+    const source = readStandaloneWindowSource();
+
+    assert.include(source, "function isLightStandaloneTheme");
+    assert.include(source, "rootEl.dataset.standaloneTheme =");
+    assert.include(source, '"light"');
+    assert.include(source, '"dark"');
   });
 });

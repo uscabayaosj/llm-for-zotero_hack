@@ -40,8 +40,9 @@ export const selectedReasoningProviderCache = new Map<
 >();
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
-// 30-minute TTL, max 20 entries — PDF text can be re-extracted on demand.
-export const pdfTextCache = new TTLMap<number, PdfContext>(30 * 60 * 1000, 20);
+// 30-minute TTL, sized above multi-paper retrieval caps to avoid evicting
+// body text while a folder/tag synthesis pass is still assembling evidence.
+export const pdfTextCache = new TTLMap<number, PdfContext>(30 * 60 * 1000, 100);
 export const pdfTextLoadingTasks = new Map<number, Promise<void>>();
 export const shortcutTextCache = new Map<string, string>();
 export const shortcutMoveModeState = new WeakMap<Element, boolean>();
@@ -346,6 +347,7 @@ export const selectedPaperPreviewExpandedCache = new Map<
   number,
   number | false
 >();
+export const selectedPaperContextListExpandedCache = new Map<number, boolean>();
 export const activeGlobalConversationByLibrary = new Map<number, number>();
 export const activeConversationModeByLibrary = new Map<
   number,
@@ -470,6 +472,7 @@ export function clearAllState(): void {
   paperContextModeOverrides.clear();
   paperContentSourceOverrides.clear();
   selectedPaperPreviewExpandedCache.clear();
+  selectedPaperContextListExpandedCache.clear();
   activeGlobalConversationByLibrary.clear();
   activeConversationModeByLibrary.clear();
   draftInputCache.clear();

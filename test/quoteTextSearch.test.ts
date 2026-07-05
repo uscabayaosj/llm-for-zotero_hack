@@ -36,6 +36,7 @@ describe("quoteTextSearch", function () {
       "T\u2011PHATE takes as input multi\u2011voxel activity patterns (that is, a matrix with timepoints/samples as rows and voxels/features as columns) and learns two 'views' among pairs of samples: a PHATE\u2011based affinity matrix and a temporal autocorrelation\u2011based affinity matrix.",
     );
 
+    assert.include(result[0], "T\u2011PHATE takes as input");
     assert.isTrue(
       result.some((query) => query.includes("T-PHATE takes as input")),
       result.join("\n"),
@@ -45,6 +46,28 @@ describe("quoteTextSearch", function () {
         query.includes("autocorrelation-based affinity matrix"),
       ),
       result.join("\n"),
+    );
+  });
+
+  it("tries the exact quote text before normalized dash fallbacks for PDF reader search", function () {
+    const quote =
+      "Drift therefore provides a measurable signal that can reveal systems–level properties of biological plasticity mechanisms, such as their precision and effective learning rates.";
+    const quoteQueries = buildFindControllerQuoteQueries(quote);
+    const highlightQueries = buildFindControllerHighlightQueries(quote);
+
+    assert.equal(quoteQueries[0], quote);
+    assert.include(
+      quoteQueries,
+      quote.replace("systems–level", "systems-level").replace(/\.$/, ""),
+    );
+    assert.include(
+      quoteQueries,
+      quote.replace("systems–level", "systems level").replace(/\.$/, ""),
+    );
+    assert.equal(highlightQueries[0], quote);
+    assert.include(
+      highlightQueries,
+      quote.replace("systems–level", "systems-level"),
     );
   });
 

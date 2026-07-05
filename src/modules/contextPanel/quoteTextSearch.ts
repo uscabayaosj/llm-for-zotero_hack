@@ -514,11 +514,42 @@ function normalizeFindControllerQueryText(value: string): string {
     .trim();
 }
 
+function normalizeFindControllerRawQueryText(value: string): string {
+  return sanitizeText(value || "")
+    .replace(/\u00ad/g, "")
+    .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function stripFindControllerQueryBoundary(value: string): string {
   return value
     .replace(/^[\s"'`“”‘’([{<.,;:!?-]+/, "")
     .replace(/[\s"'`“”‘’)\]}>.,;:!?-]+$/, "")
     .trim();
+}
+
+function stripFindControllerRawQueryBoundary(value: string): string {
+  return value
+    .replace(/^[\s"'`“”‘’([{<]+/, "")
+    .replace(/[\s"'`“”‘’)\]}>]+$/, "")
+    .trim();
+}
+
+function pushFindControllerRawQuery(
+  queries: string[],
+  seen: Set<string>,
+  query: string,
+): void {
+  const rawQuery = stripFindControllerRawQueryBoundary(
+    normalizeFindControllerRawQueryText(query),
+  );
+  if (rawQuery.length < 12) return;
+  if (isWeakQuoteSearchQuery(normalizeLocatorText(rawQuery))) return;
+  const key = rawQuery.toLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  queries.push(rawQuery);
 }
 
 function pushFindControllerQuery(
@@ -542,6 +573,7 @@ function pushFindControllerQueryVariants(
   seen: Set<string>,
   query: string,
 ): void {
+  pushFindControllerRawQuery(queries, seen, query);
   const normalized = normalizeFindControllerQueryText(query);
   pushFindControllerQuery(queries, seen, normalized);
   const asciiHyphen = normalized.replace(FIND_CONTROLLER_HYPHEN_RE, "-");
@@ -572,6 +604,7 @@ function pushFindControllerHighlightQueryVariants(
   seen: Set<string>,
   query: string,
 ): void {
+  pushFindControllerRawQuery(queries, seen, query);
   const normalized = normalizeFindControllerQueryText(query);
   pushFindControllerHighlightQuery(queries, seen, normalized);
   pushFindControllerQueryVariants(queries, seen, normalized);
@@ -785,6 +818,7 @@ export function buildFindControllerQuoteQueries(
   options?: { maxQueries?: number },
 ): string[] {
   const maxQueries = Math.max(4, options?.maxQueries ?? 28);
+  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
   const queries: string[] = [];
   const seen = new Set<string>();
   const pushGroup = (group: string[]) => {
@@ -795,6 +829,9 @@ export function buildFindControllerQuoteQueries(
     }
   };
 
+  if (clean.length <= 220) {
+    pushGroup([clean]);
+  }
   pushGroup(buildRawPrefixQueries(text));
   pushGroup(buildFindControllerMiddleQueries(text));
   pushGroup(buildFindControllerWindowQueries(text));

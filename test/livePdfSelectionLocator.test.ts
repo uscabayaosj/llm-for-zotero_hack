@@ -845,6 +845,34 @@ describe("scrollToExactQuoteInReader", function () {
     assert.deepEqual(dispatchedQueries, [locator, fullQuote]);
   });
 
+  it("tries the exact Unicode-dash quote before normalized paragraph fallbacks", async function () {
+    const fullQuote =
+      "Drift therefore provides a measurable signal that can reveal systems–level properties of biological plasticity mechanisms, such as their precision and effective learning rates.";
+    const normalizedFallback = fullQuote
+      .replace("systems–level", "systems-level")
+      .replace(/\.$/, "");
+    const shortPrefix = "Drift therefore provides a measurable signal that";
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [fullQuote]: [[], [0], []],
+        [normalizedFallback]: [[], [0], []],
+        [shortPrefix]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, fullQuote, {
+      expectedPageIndex: 1,
+      highlightTextCandidates: [fullQuote],
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.queryUsed, fullQuote);
+    assert.deepEqual(dispatchedQueries, [fullQuote]);
+  });
+
   it("extends long highlights to the final quoted word when terminal punctuation differs", async function () {
     const locator = "This preservation of input similarity";
     const fullQuote = [

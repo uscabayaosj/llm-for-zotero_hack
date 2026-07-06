@@ -442,6 +442,16 @@ function setCitationButtonLabel(
   button.setAttribute("aria-label", `Jump to cited source: ${labelText}`);
 }
 
+function getCitationBaseLabelForRefresh(textSpan: Element): string {
+  const rawText = sanitizeText(
+    (textSpan as HTMLElement).dataset?.rawText || "",
+  ).trim();
+  if (rawText) return rawText;
+  const currentText = sanitizeText(textSpan.textContent || "").trim();
+  if (!currentText) return "";
+  return currentText.replace(/,\s*page\s+[^,)]*(\))$/i, "$1").trim();
+}
+
 function normalizeQuoteKey(value: string): string {
   return sanitizeText(value || "")
     .replace(/\s+/g, " ")
@@ -3381,10 +3391,8 @@ function refreshAllCitationButtonPages(
   panelItem: Zotero.Item,
 ): void {
   try {
-    const doc = body.ownerDocument;
-    if (!doc) return;
     const buttons = Array.from(
-      doc.querySelectorAll("button.llm-citation-icon"),
+      body.querySelectorAll("button.llm-citation-icon"),
     ) as HTMLButtonElement[];
     for (const button of buttons) {
       if (!button.isConnected) continue;
@@ -3410,10 +3418,7 @@ function refreshAllCitationButtonPages(
         .closest(".llm-citation-row, .llm-citation-inline-wrap")
         ?.querySelector(".llm-citation-text");
       if (!textSpan) continue;
-      const currentText = sanitizeText(textSpan.textContent || "").trim();
-      if (!currentText) continue;
-      // Strip existing "page X" suffix to get the base citation label
-      const baseLabel = currentText.replace(/,\s*page\s+\S+$/i, "").trim();
+      const baseLabel = getCitationBaseLabelForRefresh(textSpan);
       if (baseLabel) {
         setCitationButtonLabel(button, baseLabel, cachedPageLabel);
       }
@@ -3422,6 +3427,9 @@ function refreshAllCitationButtonPages(
     // Best-effort refresh — don't crash if DOM structure is unexpected
   }
 }
+
+export const refreshAllCitationButtonPagesForTests =
+  refreshAllCitationButtonPages;
 
 function resolveMatchingCandidatesForExtractedCitation(
   extractedCitation: ExtractedCitationLabel,
@@ -4724,7 +4732,8 @@ export function decorateAssistantCitationLinks(params: {
       extractedCitation,
     );
     const trustedQuoteText = trustedQuoteCitation.quoteText;
-    const lookupQuoteText = resolveQuoteCitationLookupText(trustedQuoteCitation);
+    const lookupQuoteText =
+      resolveQuoteCitationLookupText(trustedQuoteCitation);
 
     // Try to match the trusted quote citation against known paper candidates.
     const matchingCandidates = resolveQuoteCitationCandidates(

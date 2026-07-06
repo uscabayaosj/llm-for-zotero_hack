@@ -18,6 +18,7 @@ import {
   lookupCachedCitationPage,
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
+  refreshAllCitationButtonPagesForTests,
   resolveQuoteCitationPageHintForTests,
   resolveAutoNavigableCitationCandidatesForTests,
   resolveAuthoritativeNonPdfCitationCandidateForTests,
@@ -1425,6 +1426,48 @@ describe("assistantCitationLinks", function () {
         "B-8",
       );
       assert.isNull(lookupCachedCitationPageForContextIdsForTests("", quote));
+    });
+
+    it("refreshes visible page labels from button context ids without corrupting parenthesized labels", function () {
+      const quote =
+        "The same quoted sentence can appear in two PDFs with different printed page labels.";
+      rememberCachedCitationPage(11, quote, 2, "A-3");
+      const textSpan = {
+        dataset: {},
+        textContent: "(Smith et al., 2024, page 12)",
+      };
+      let ariaLabel = "";
+      const container = {
+        querySelector: (selector: string) =>
+          selector === ".llm-citation-text" ? textSpan : null,
+      };
+      const button = {
+        dataset: {
+          citationSyncKey: `smith et al., 2024\u241f${quote.toLowerCase()}`,
+          citationContextItemIds: "11",
+        },
+        isConnected: true,
+        parentElement: container,
+        closest: () => container,
+        setAttribute: (name: string, value: string) => {
+          if (name === "aria-label") ariaLabel = value;
+        },
+      };
+      const body = {
+        querySelectorAll: (selector: string) =>
+          selector === "button.llm-citation-icon" ? [button] : [],
+      };
+
+      refreshAllCitationButtonPagesForTests(
+        body as unknown as Element,
+        makeZoteroItem({ id: 1, kind: "regular" }),
+      );
+
+      assert.equal(textSpan.textContent, "(Smith et al., 2024, page A-3)");
+      assert.equal(
+        ariaLabel,
+        "Jump to cited source: (Smith et al., 2024, page A-3)",
+      );
     });
 
     it("normalizes stored quote citation page hints as non-authoritative hints", function () {

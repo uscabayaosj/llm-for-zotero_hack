@@ -257,6 +257,8 @@ describe("livePdfSelectionLocator", function () {
 });
 
 describe("citation page cache warming", function () {
+  const PAGE_TEXT_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+
   afterEach(function () {
     clearPageTextCache();
   });
@@ -313,6 +315,86 @@ describe("citation page cache warming", function () {
       release();
       await Promise.all([first, second]);
       assert.equal(calls, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("evicts least-recently-used page-text entries beyond the entry limit", async function () {
+    clearPageTextCache();
+    const initialIds = Array.from({ length: 50 }, (_value, index) => index + 1);
+    const calls: number[] = [];
+    const restore = installPdfWorkerStub(async (itemId) => {
+      calls.push(itemId);
+      return {
+        text: `Attachment ${itemId} has enough text for cache testing.`,
+        pageChars: [
+          `Attachment ${itemId} has enough text for cache testing.`.length,
+        ],
+      };
+    });
+
+    try {
+      for (const itemId of initialIds) {
+        await warmPageTextCacheForAttachment(itemId);
+      }
+      await warmPageTextCacheForAttachment(1);
+      assert.deepEqual(calls, initialIds);
+
+      await warmPageTextCacheForAttachment(51);
+      await warmPageTextCacheForAttachment(2);
+
+      assert.deepEqual(calls, [...initialIds, 51, 2]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("expires page-text entries after the cache TTL", async function () {
+    clearPageTextCache();
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    let calls = 0;
+    const restore = installPdfWorkerStub(async () => {
+      calls += 1;
+      return {
+        text: `TTL cache read ${calls} with enough searchable text.`,
+        pageChars: [
+          `TTL cache read ${calls} with enough searchable text.`.length,
+        ],
+      };
+    });
+
+    try {
+      await warmPageTextCacheForAttachment(707);
+      await warmPageTextCacheForAttachment(707);
+      now += PAGE_TEXT_CACHE_TTL_MS + 1;
+      await warmPageTextCacheForAttachment(707);
+
+      assert.equal(calls, 2);
+    } finally {
+      Date.now = originalNow;
+      restore();
+    }
+  });
+
+  it("evicts page-text entries when the total text budget is exceeded", async function () {
+    clearPageTextCache();
+    const calls: number[] = [];
+    const largeText = "A".repeat(4_100_000);
+    const restore = installPdfWorkerStub(async (itemId) => {
+      calls.push(itemId);
+      const text = `${largeText}${itemId}`;
+      return { text, pageChars: [text.length] };
+    });
+
+    try {
+      await warmPageTextCacheForAttachment(901);
+      await warmPageTextCacheForAttachment(902);
+      await warmPageTextCacheForAttachment(901);
+
+      assert.deepEqual(calls, [901, 902, 901]);
     } finally {
       restore();
     }
@@ -413,6 +495,67 @@ describe("citation page cache warming", function () {
           "The quote to jump to is here with enough context.",
         )?.pageIndex,
         1,
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("expires hidden quote locations after the cache TTL and recomputes them", async function () {
+    clearPageTextCache();
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    const quote =
+      "The hidden quote location should expire after the same cache ttl.";
+    let calls = 0;
+    const restore = installPdfWorkerStub(async () => {
+      calls += 1;
+      return { text: quote, pageChars: [quote.length] };
+    });
+
+    try {
+      const first = await warmQuoteLocationCacheForAttachment(515, quote);
+      assert.equal(first?.pageIndex, 0);
+
+      now += PAGE_TEXT_CACHE_TTL_MS + 1;
+      assert.isNull(lookupCachedQuoteLocationForAttachment(515, quote));
+
+      const second = await warmQuoteLocationCacheForAttachment(515, quote);
+      assert.equal(second?.pageIndex, 0);
+      assert.equal(calls, 2);
+    } finally {
+      Date.now = originalNow;
+      restore();
+    }
+  });
+
+  it("evicts hidden quote locations by LRU limit without blocking fresh lookup", async function () {
+    this.timeout(10_000);
+    clearPageTextCache();
+    const quotes = Array.from(
+      { length: 1001 },
+      (_value, index) =>
+        `Hidden quote ${index + 1} contains enough unique words for lookup.`,
+    );
+    const fullText = quotes.join(" ");
+    const restore = installPdfWorkerStub(async () => ({
+      text: fullText,
+      pageChars: [fullText.length],
+    }));
+
+    try {
+      for (const quote of quotes) {
+        const location = await warmQuoteLocationCacheForAttachment(909, quote);
+        assert.equal(location?.pageIndex, 0);
+      }
+
+      assert.isNull(lookupCachedQuoteLocationForAttachment(909, quotes[0]));
+      const fresh = await warmQuoteLocationCacheForAttachment(909, quotes[0]);
+      assert.equal(fresh?.pageIndex, 0);
+      assert.equal(
+        lookupCachedQuoteLocationForAttachment(909, quotes[0])?.pageIndex,
+        0,
       );
     } finally {
       restore();

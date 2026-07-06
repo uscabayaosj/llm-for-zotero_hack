@@ -966,14 +966,34 @@ export type HiddenQuoteLocationCacheEntry = {
   debugSummary?: string[];
 };
 
-const pageTextCacheByKey = new Map<string, CachedPageTextIndex>();
+const MAX_PAGE_TEXT_CACHE_ENTRIES = 50;
+const PAGE_TEXT_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_PAGE_TEXT_CACHE_CHARS = 8_000_000;
+const MAX_HIDDEN_QUOTE_LOCATION_CACHE_ENTRIES = 1000;
+
+type CachedPageTextRecord = {
+  index: CachedPageTextIndex;
+  createdAt: number;
+  lastAccessedAt: number;
+  lastAccessedOrder: number;
+  textChars: number;
+};
+
+type HiddenQuoteLocationCacheRecord = {
+  entry: HiddenQuoteLocationCacheEntry;
+  createdAt: number;
+  lastAccessedAt: number;
+  lastAccessedOrder: number;
+};
+
+const pageTextCacheByKey = new Map<string, CachedPageTextRecord>();
 const pageTextCachePromisesByKey = new Map<
   string,
   Promise<CachedPageTextIndex | null>
 >();
 const hiddenQuoteLocationCache = new Map<
   string,
-  HiddenQuoteLocationCacheEntry
+  HiddenQuoteLocationCacheRecord
 >();
 const hiddenQuoteLocationTasks = new Map<
   string,
@@ -982,6 +1002,7 @@ const hiddenQuoteLocationTasks = new Map<
 let anonymousReaderKeys = new WeakMap<object, string>();
 let anonymousReaderKeySequence = 0;
 let pageTextCacheGeneration = 0;
+let cacheAccessSequence = 0;
 
 function normalizePageTextCacheKey(value: unknown): string | null {
   const key = sanitizeText(String(value || "")).trim();
@@ -1041,9 +1062,14 @@ function getReaderCacheKeys(reader: any): string[] {
 }
 
 function getCachedPageTextIndex(keys: string[]): CachedPageTextIndex | null {
+  const currentTime = Date.now();
+  evictExpiredPageTextCacheRecords(currentTime);
   for (const key of keys) {
     const cached = pageTextCacheByKey.get(key);
-    if (cached) return cached;
+    if (cached) {
+      touchPageTextCacheRecord(cached, currentTime);
+      return cached.index;
+    }
   }
   return null;
 }
@@ -1062,9 +1088,32 @@ function storeCachedPageTextIndex(
   keys: string[],
   index: CachedPageTextIndex,
 ): void {
+  const currentTime = Date.now();
+  evictExpiredPageTextCacheRecords(currentTime);
+  const record: CachedPageTextRecord = {
+    index,
+    createdAt: currentTime,
+    lastAccessedAt: currentTime,
+    lastAccessedOrder: nextCacheAccessOrder(),
+    textChars: estimateCachedPageTextChars(index),
+  };
   for (const key of keys) {
-    pageTextCacheByKey.set(key, index);
+    pageTextCacheByKey.set(key, record);
   }
+  enforcePageTextCacheLimits(currentTime);
+}
+
+function nextCacheAccessOrder(): number {
+  cacheAccessSequence += 1;
+  return cacheAccessSequence;
+}
+
+function touchPageTextCacheRecord(
+  record: CachedPageTextRecord,
+  currentTime: number,
+): void {
+  record.lastAccessedAt = currentTime;
+  record.lastAccessedOrder = nextCacheAccessOrder();
 }
 
 function storeCachedPageTextPromise(
@@ -1083,6 +1132,76 @@ function clearCachedPageTextPromise(
   for (const key of keys) {
     if (task && pageTextCachePromisesByKey.get(key) !== task) continue;
     pageTextCachePromisesByKey.delete(key);
+  }
+}
+
+function estimateCachedPageTextChars(index: CachedPageTextIndex): number {
+  let total = 0;
+  for (const page of index.pages) {
+    total += String(page.text || "").length;
+  }
+  for (const page of index.normalised) {
+    total += String(page.normalizedText || "").length;
+  }
+  return total;
+}
+
+function getUniquePageTextCacheRecords(): CachedPageTextRecord[] {
+  const seen = new Set<CachedPageTextRecord>();
+  const records: CachedPageTextRecord[] = [];
+  for (const record of pageTextCacheByKey.values()) {
+    if (seen.has(record)) continue;
+    seen.add(record);
+    records.push(record);
+  }
+  return records;
+}
+
+function deletePageTextCacheRecord(record: CachedPageTextRecord): void {
+  for (const [key, cached] of pageTextCacheByKey) {
+    if (cached === record) {
+      pageTextCacheByKey.delete(key);
+    }
+  }
+}
+
+function evictExpiredPageTextCacheRecords(currentTime: number): void {
+  for (const record of getUniquePageTextCacheRecords()) {
+    if (currentTime - record.createdAt > PAGE_TEXT_CACHE_TTL_MS) {
+      deletePageTextCacheRecord(record);
+    }
+  }
+}
+
+function getPageTextCacheTotalChars(records: CachedPageTextRecord[]): number {
+  return records.reduce((total, record) => total + record.textChars, 0);
+}
+
+function findLeastRecentlyUsedPageTextRecord(
+  records: CachedPageTextRecord[],
+): CachedPageTextRecord | null {
+  let oldest: CachedPageTextRecord | null = null;
+  for (const record of records) {
+    if (!oldest || record.lastAccessedOrder < oldest.lastAccessedOrder) {
+      oldest = record;
+    }
+  }
+  return oldest;
+}
+
+function enforcePageTextCacheLimits(currentTime: number): void {
+  evictExpiredPageTextCacheRecords(currentTime);
+  let records = getUniquePageTextCacheRecords();
+  let totalChars = getPageTextCacheTotalChars(records);
+  while (
+    records.length > MAX_PAGE_TEXT_CACHE_ENTRIES ||
+    (records.length > 1 && totalChars > MAX_PAGE_TEXT_CACHE_CHARS)
+  ) {
+    const oldest = findLeastRecentlyUsedPageTextRecord(records);
+    if (!oldest) return;
+    deletePageTextCacheRecord(oldest);
+    records = getUniquePageTextCacheRecords();
+    totalChars = getPageTextCacheTotalChars(records);
   }
 }
 
@@ -1126,6 +1245,53 @@ function buildHiddenQuoteLocationCacheKey(
   );
   if (!normalizedQuote) return null;
   return `${itemId}\u241f${normalizedQuote}`;
+}
+
+function isCacheRecordExpired(
+  currentTime: number,
+  record: { createdAt: number },
+): boolean {
+  return currentTime - record.createdAt > PAGE_TEXT_CACHE_TTL_MS;
+}
+
+function evictExpiredHiddenQuoteLocationRecords(currentTime: number): void {
+  for (const [key, record] of hiddenQuoteLocationCache) {
+    if (isCacheRecordExpired(currentTime, record)) {
+      hiddenQuoteLocationCache.delete(key);
+    }
+  }
+}
+
+function enforceHiddenQuoteLocationCacheLimit(currentTime: number): void {
+  evictExpiredHiddenQuoteLocationRecords(currentTime);
+  while (
+    hiddenQuoteLocationCache.size > MAX_HIDDEN_QUOTE_LOCATION_CACHE_ENTRIES
+  ) {
+    let oldestKey = "";
+    let oldestAccessOrder = Number.POSITIVE_INFINITY;
+    for (const [key, record] of hiddenQuoteLocationCache) {
+      if (record.lastAccessedOrder < oldestAccessOrder) {
+        oldestAccessOrder = record.lastAccessedOrder;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) return;
+    hiddenQuoteLocationCache.delete(oldestKey);
+  }
+}
+
+function rememberHiddenQuoteLocationCacheEntry(
+  key: string,
+  entry: HiddenQuoteLocationCacheEntry,
+): void {
+  const currentTime = Date.now();
+  hiddenQuoteLocationCache.set(key, {
+    entry,
+    createdAt: currentTime,
+    lastAccessedAt: currentTime,
+    lastAccessedOrder: nextCacheAccessOrder(),
+  });
+  enforceHiddenQuoteLocationCacheLimit(currentTime);
 }
 
 function toHiddenQuoteLocationCacheEntry(
@@ -1528,7 +1694,17 @@ export function lookupCachedQuoteLocationForAttachment(
   quoteText: string,
 ): HiddenQuoteLocationCacheEntry | null {
   const key = buildHiddenQuoteLocationCacheKey(contextItemId, quoteText);
-  return key ? hiddenQuoteLocationCache.get(key) || null : null;
+  if (!key) return null;
+  const currentTime = Date.now();
+  const record = hiddenQuoteLocationCache.get(key);
+  if (!record) return null;
+  if (isCacheRecordExpired(currentTime, record)) {
+    hiddenQuoteLocationCache.delete(key);
+    return null;
+  }
+  record.lastAccessedAt = currentTime;
+  record.lastAccessedOrder = nextCacheAccessOrder();
+  return record.entry;
 }
 
 export async function warmQuoteLocationCacheForAttachment(
@@ -1537,7 +1713,10 @@ export async function warmQuoteLocationCacheForAttachment(
 ): Promise<HiddenQuoteLocationCacheEntry | null> {
   const key = buildHiddenQuoteLocationCacheKey(contextItemId, quoteText);
   if (!key) return null;
-  const cached = hiddenQuoteLocationCache.get(key);
+  const cached = lookupCachedQuoteLocationForAttachment(
+    contextItemId,
+    quoteText,
+  );
   if (cached) return cached;
   const existingTask = hiddenQuoteLocationTasks.get(key);
   if (existingTask) return existingTask;
@@ -1556,7 +1735,7 @@ export async function warmQuoteLocationCacheForAttachment(
         pageTextCache,
       );
       if (location && generation === pageTextCacheGeneration) {
-        hiddenQuoteLocationCache.set(key, location);
+        rememberHiddenQuoteLocationCacheEntry(key, location);
       }
       return location;
     } catch (e) {
@@ -1585,6 +1764,7 @@ export function clearPageTextCache(): void {
   clearCitationPageCache();
   anonymousReaderKeys = new WeakMap<object, string>();
   anonymousReaderKeySequence = 0;
+  cacheAccessSequence = 0;
 }
 
 export function locateQuoteByRawPrefixInPages(

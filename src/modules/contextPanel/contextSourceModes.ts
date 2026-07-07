@@ -93,6 +93,19 @@ const CONTEXT_SOURCE_MODE_DESCRIPTORS: Record<
     isReaderNavigable: false,
     isTextLikeAttachment: true,
   },
+  epub: {
+    mode: "epub",
+    badgeLabel: "EPUB",
+    humanLabel: "EPUB attachment",
+    sourceTitle: "Source: EPUB attachment",
+    cssClassName: "llm-paper-context-chip-text",
+    attachmentSourceTypeLabel: "EPUB attachment",
+    isPdfBacked: false,
+    // Zotero 7's reader opens EPUBs; citation clicks locate quotes via the
+    // reader's DOM text search instead of PDF page navigation.
+    isReaderNavigable: true,
+    isTextLikeAttachment: true,
+  },
 };
 
 export function getContextSourceModeDescriptor(

@@ -305,7 +305,8 @@ function isPaperContentSourceMode(
     value === "markdown" ||
     value === "html" ||
     value === "txt" ||
-    value === "docx"
+    value === "docx" ||
+    value === "epub"
   );
 }
 

@@ -40,7 +40,8 @@ export type PaperContentSourceMode =
   | "markdown"
   | "html"
   | "txt"
-  | "docx";
+  | "docx"
+  | "epub";
 
 export type ModelInputMode = "text_only" | "vision_allowed";
 

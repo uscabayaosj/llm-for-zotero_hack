@@ -356,6 +356,7 @@ function formatAttachmentPoolCountSummary(
     ["html", "HTML"],
     ["txt", "TXT"],
     ["docx", "DOCX"],
+    ["epub", "EPUB"],
     ["unsupported", "unsupported"],
   ];
   return labels

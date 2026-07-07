@@ -20,7 +20,22 @@
  *   POST /llm-for-zotero/webchat/update_chat_history
  *   POST /llm-for-zotero/webchat/update_chat_url
  *   POST /llm-for-zotero/webchat/load_chat
+ *
+ * Every endpoint requires a per-installation bearer token
+ * (see getOrCreateWebChatRelayToken). Zotero's HTTP server is reachable by
+ * any local process, so unauthenticated endpoints would let arbitrary local
+ * software inject prompts or fake LLM responses.
  */
+import {
+  getOrCreateWebChatRelayToken,
+  timingSafeTokenEquals,
+} from "./relayAuth";
+
+export {
+  getOrCreateWebChatRelayToken,
+  resetWebChatRelayToken,
+  WEBCHAT_RELAY_TOKEN_PREF_KEY,
+} from "./relayAuth";
 
 const PREFIX = "/llm-for-zotero/webchat";
 const PRE_SUBMIT_RECLAIM_MS = 120_000;
@@ -590,6 +605,49 @@ function jsonReply(
   return [status, "application/json", JSON.stringify(data)];
 }
 
+// ---------------------------------------------------------------------------
+// Authentication
+//
+// Zotero's built-in HTTP server accepts connections from any local process,
+// so every relay endpoint requires a per-installation bearer token (managed
+// in relayAuth.ts). The Chrome extension reads the token from its options
+// page (the user copies it from the plugin's WebChat settings) and sends it
+// on every request.
+// ---------------------------------------------------------------------------
+
+function getRequestHeader(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string {
+  if (!headers) return "";
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) return String(value ?? "");
+  }
+  return "";
+}
+
+function isRelayRequestAuthorized(opts: EndpointOptions): boolean {
+  const expected = getOrCreateWebChatRelayToken();
+  const authorization = getRequestHeader(opts.headers, "Authorization").trim();
+  if (
+    authorization.startsWith("Bearer ") &&
+    timingSafeTokenEquals(
+      authorization.slice("Bearer ".length).trim(),
+      expected,
+    )
+  ) {
+    return true;
+  }
+  const headerToken = getRequestHeader(
+    opts.headers,
+    "X-Zotero-Relay-Token",
+  ).trim();
+  if (headerToken && timingSafeTokenEquals(headerToken, expected)) return true;
+  const queryToken = String(opts.query?.token || "").trim();
+  return Boolean(queryToken) && timingSafeTokenEquals(queryToken, expected);
+}
+
 function parseBody(data: unknown): Record<string, unknown> {
   if (typeof data === "string") return JSON.parse(data);
   if (typeof data === "object" && data !== null)
@@ -848,6 +906,9 @@ function createEndpoint(
     supportedDataTypes = ["application/json"];
     init = async (opts: EndpointOptions): Promise<EndpointResponse> => {
       try {
+        if (!isRelayRequestAuthorized(opts)) {
+          return jsonReply({ error: "unauthorized" }, 401);
+        }
         return await handler(opts);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

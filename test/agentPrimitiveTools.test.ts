@@ -1858,7 +1858,7 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("run_command confirmation keeps read-only and simple new writes direct while destructive and unknown writes stay gated", async function () {
+  it("run_command requires confirmation for every command", async function () {
     const tool = createRunCommandTool();
     const existingPaths = new Set<string>([
       "/tmp/existing.md",
@@ -1907,24 +1907,27 @@ describe("primitive agent tools", function () {
     };
 
     try {
+      // Shell access is confirmation-gated for every command — even
+      // read-only ones — because regex heuristics cannot classify commands
+      // reliably (interpreters, encodings, and aliases bypass blocklists).
       const readOnly = tool.validate({ command: 'rg "notes" src' });
       assert.isTrue(readOnly.ok);
       if (!readOnly.ok) return;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(readOnly.value, context),
       );
 
       const dateRead = tool.validate({ command: "date +%F" });
       assert.isTrue(dateRead.ok);
       if (!dateRead.ok) return;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(dateRead.value, context),
       );
 
       const localTest = tool.validate({ command: "npm test" });
       assert.isTrue(localTest.ok);
       if (!localTest.ok) return;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(localTest.value, context),
       );
 
@@ -1933,10 +1936,10 @@ describe("primitive agent tools", function () {
       });
       assert.isTrue(newRedirect.ok);
       if (!newRedirect.ok) return;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(newRedirect.value, context),
       );
-      await tool.execute(newRedirect.value, context);
+      await tool.execute({ ...newRedirect.value, allowUnsafe: true }, context);
       await peekUndoEntry(context.request.conversationKey)?.revert();
       assert.deepEqual(removedPaths, ["/tmp/new-note.md"]);
 
@@ -1971,7 +1974,7 @@ describe("primitive agent tools", function () {
       const commandWrite = tool.validate({ command: "python3 analyze.py" });
       assert.isTrue(commandWrite.ok);
       if (!commandWrite.ok) return;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(commandWrite.value, context),
       );
 
@@ -1991,7 +1994,7 @@ describe("primitive agent tools", function () {
       assert.isTrue(readOnlyPythonComparison.ok);
       if (!readOnlyPythonComparison.ok) return;
       (globalThis as { IOUtils?: unknown }).IOUtils = undefined;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(
           readOnlyPythonComparison.value,
           context,
@@ -2134,7 +2137,7 @@ describe("primitive agent tools", function () {
       });
       assert.isTrue(unrelated.ok);
       if (!unrelated.ok) return;
-      assert.isFalse(
+      assert.isTrue(
         await tool.shouldRequireConfirmation?.(unrelated.value, context),
       );
       assert.isFalse(executed);
@@ -3701,7 +3704,7 @@ describe("primitive agent tools", function () {
     assert.equal((result as { noteText: string }).noteText, "Approved *note*");
   });
 
-  it("zotero_script write mode runs directly and records undo snapshots", async function () {
+  it("zotero_script write mode pauses for confirmation, then runs and records undo snapshots", async function () {
     const fakeItem = createFakeZoteroItem();
     globalScope.Zotero = {
       ...(globalScope.Zotero || {}),
@@ -3735,13 +3738,41 @@ env.log('updated');
       baseContext,
     );
 
-    assert.equal(prepared.kind, "result");
-    if (prepared.kind !== "result") return;
-    assert.equal(prepared.execution.result.ok, true);
+    assert.equal(prepared.kind, "confirmation");
+    if (prepared.kind !== "confirmation") return;
+    assert.equal(fakeItem.getField("title"), "Original title");
+    const execution = await prepared.execute({});
+    assert.equal(execution.result.ok, true);
     assert.equal(fakeItem.getField("title"), "Updated title");
     assert.sameMembers(Array.from(fakeItem.tags), ["existing", "new-tag"]);
     assert.sameMembers(Array.from(fakeItem.collections), [5, 9]);
     assert.exists(peekUndoEntry(baseContext.request.conversationKey));
+  });
+
+  it("zotero_script requires confirmation in read mode and refuses unapproved execution", async function () {
+    globalScope.Zotero = {
+      ...(globalScope.Zotero || {}),
+      Libraries: { userLibraryID: 1 },
+      Items: { get: () => null },
+      debug: () => undefined,
+    };
+    const tool = createZoteroScriptTool();
+    const validated = tool.validate({
+      mode: "read",
+      description: "Scan items",
+      script: "env.log('scan');",
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    assert.isTrue(
+      await tool.shouldRequireConfirmation?.(validated.value, baseContext),
+    );
+    const refused = (await tool.execute(validated.value, baseContext)) as {
+      error?: string;
+      output?: string;
+    };
+    assert.include(String(refused.error || ""), "requires user confirmation");
+    assert.notInclude(String(refused.output || ""), "scan");
   });
 
   it("apply_tags paged actions render through the shared review-card layout", function () {
@@ -3820,7 +3851,10 @@ await item.saveTx();
     assert.isTrue(validated.ok);
     if (!validated.ok) return;
 
-    await scriptTool.execute(validated.value, baseContext);
+    await scriptTool.execute(
+      { ...validated.value, approved: true },
+      baseContext,
+    );
     assert.equal(fakeItem.getField("title"), "Temporary title");
     assert.sameMembers(Array.from(fakeItem.tags), ["temporary"]);
     assert.sameMembers(Array.from(fakeItem.collections), [9]);

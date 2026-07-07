@@ -497,6 +497,7 @@ export type AgentAttachmentType =
   | "html"
   | "txt"
   | "docx"
+  | "epub"
   | "unsupported";
 
 export type AgentAttachmentResource = {

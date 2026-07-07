@@ -325,6 +325,7 @@ export type AgentEvent =
       ok?: boolean;
       text?: string;
       codeBlock?: string;
+      artifacts?: AgentToolArtifact[];
     }
   | {
       type: "usage";

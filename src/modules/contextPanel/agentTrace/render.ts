@@ -4,6 +4,7 @@ import type {
   AgentPendingField,
   AgentRunEventRecord,
   AgentTraceDetail,
+  AgentToolArtifact,
   AgentToolResultCard,
   AgentTraceChip,
   AgentTraceRequestSummary,
@@ -18,6 +19,8 @@ import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
 } from "../normalizers";
+import type { GeneratedChatImage } from "../../../shared/types";
+import { renderAssistantGeneratedImagesInto } from "../generatedImageRender";
 import { agentReasoningExpandedCache } from "../agentState";
 import { buildTextDiffPreview } from "./diffPreview";
 import {
@@ -71,6 +74,10 @@ type AgentTraceDisplayItem =
   | {
       type: "card_list";
       cards: AgentToolResultCard[];
+    }
+  | {
+      type: "image_grid";
+      images: GeneratedChatImage[];
     }
   | {
       type: "reasoning";
@@ -2919,8 +2926,11 @@ function summarizeCodexToolActivity(input: {
   toolName?: string;
   toolLabel?: string;
   serverName?: string;
+  args?: unknown;
+  ok?: boolean;
   text?: string;
   codeBlock?: string;
+  artifacts?: AgentToolArtifact[];
 }): AgentTraceSummaryRow {
   const explicitText = readAgentTraceText(input.text);
   if (explicitText) {
@@ -2936,6 +2946,24 @@ function summarizeCodexToolActivity(input: {
     readAgentTraceText(input.toolLabel) ||
     (toolName ? toolLabelFromName(toolName) : "") ||
     "Zotero MCP tool";
+  const imageArtifacts = normalizeImageArtifacts(input.artifacts);
+  if (
+    input.phase === "completed" &&
+    input.ok !== false &&
+    imageArtifacts.length &&
+    normalizeMcpToolName(toolName || "") === "paper_read" &&
+    readToolArgsMode(input.args) === "figures"
+  ) {
+    return {
+      kind: "tool",
+      icon: "⌘",
+      text:
+        imageArtifacts.length === 1
+          ? "Extracted 1 figure"
+          : `Extracted ${imageArtifacts.length} figures`,
+      codeBlock: readAgentTraceText(input.codeBlock) || undefined,
+    };
+  }
   const verb = input.phase === "completed" ? "Used" : "Using";
   return {
     kind: "tool",
@@ -2943,6 +2971,126 @@ function summarizeCodexToolActivity(input: {
     text: `${verb} ${label}`,
     codeBlock: readAgentTraceText(input.codeBlock) || undefined,
   };
+}
+
+function normalizeMcpToolName(value: string): string {
+  const clean = value.trim();
+  const match = clean.match(/^mcp__.+__(.+)$/);
+  return match?.[1] || clean;
+}
+
+function readToolArgsMode(args: unknown): string {
+  let value = args;
+  if (typeof value === "string") {
+    const clean = value.trim();
+    if (/^[{\[]/.test(clean)) {
+      try {
+        value = JSON.parse(clean) as unknown;
+      } catch {
+        return "";
+      }
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const mode = (value as Record<string, unknown>).mode;
+  return typeof mode === "string" ? mode.trim() : "";
+}
+
+type ImageAgentToolArtifact = Extract<AgentToolArtifact, { kind: "image" }>;
+
+function normalizeImageArtifacts(
+  artifacts: unknown,
+): ImageAgentToolArtifact[] {
+  if (!Array.isArray(artifacts)) return [];
+  const images: ImageAgentToolArtifact[] = [];
+  const seenPaths = new Set<string>();
+  for (const artifact of artifacts) {
+    if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+      continue;
+    }
+    const record = artifact as Partial<ImageAgentToolArtifact>;
+    const storedPath =
+      typeof record.storedPath === "string" ? record.storedPath.trim() : "";
+    const mimeType =
+      typeof record.mimeType === "string" ? record.mimeType.trim() : "";
+    if (record.kind !== "image" || !storedPath || !/^image\//i.test(mimeType)) {
+      continue;
+    }
+    if (seenPaths.has(storedPath)) continue;
+    seenPaths.add(storedPath);
+    images.push({
+      kind: "image",
+      mimeType,
+      storedPath,
+      ...(typeof record.contentHash === "string" && record.contentHash.trim()
+        ? { contentHash: record.contentHash.trim() }
+        : {}),
+      ...(typeof record.title === "string" && record.title.trim()
+        ? { title: sanitizeText(record.title).trim() }
+        : {}),
+      ...(Number.isFinite(record.pageIndex)
+        ? { pageIndex: Math.floor(Number(record.pageIndex)) }
+        : {}),
+      ...(typeof record.pageLabel === "string" && record.pageLabel.trim()
+        ? { pageLabel: sanitizeText(record.pageLabel).trim() }
+        : {}),
+      ...(record.paperContext ? { paperContext: record.paperContext } : {}),
+    });
+  }
+  return images;
+}
+
+function basenameFromLocalPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function imageArtifactLabel(artifact: ImageAgentToolArtifact): string {
+  const title = sanitizeText(artifact.title || "").trim();
+  if (title) return title;
+  const basename = sanitizeText(basenameFromLocalPath(artifact.storedPath));
+  if (basename) return basename;
+  const pageLabel = sanitizeText(artifact.pageLabel || "").trim();
+  return pageLabel ? `Page ${pageLabel}` : "Image artifact";
+}
+
+function imageArtifactTooltip(artifact: ImageAgentToolArtifact): string {
+  const parts = [
+    artifact.paperContext?.title,
+    artifact.pageLabel ? `Page ${artifact.pageLabel}` : "",
+    artifact.storedPath,
+  ]
+    .map((part) => sanitizeText(part || "").trim())
+    .filter(Boolean);
+  return parts.join(" · ");
+}
+
+function imageArtifactsToGeneratedImages(
+  artifacts: unknown,
+  keyPrefix: string,
+): GeneratedChatImage[] {
+  return normalizeImageArtifacts(artifacts).map((artifact, index) => ({
+    id:
+      artifact.contentHash ||
+      `${keyPrefix}:${index}:${artifact.storedPath}`.slice(0, 200),
+    label: imageArtifactLabel(artifact),
+    path: artifact.storedPath,
+    ...(imageArtifactTooltip(artifact)
+      ? { revisedPrompt: imageArtifactTooltip(artifact) }
+      : {}),
+  }));
+}
+
+function appendImageArtifactGrid(
+  ctx: AgentTraceAdapterContext,
+  artifacts: unknown,
+  keyPrefix: string,
+): boolean {
+  const images = imageArtifactsToGeneratedImages(artifacts, keyPrefix);
+  if (images.length) {
+    ctx.items.push({ type: "image_grid", images });
+    return true;
+  }
+  return false;
 }
 
 function isGenericAgentStatusText(text: string): boolean {
@@ -3258,6 +3406,25 @@ function appendLegacyAgentTraceEvent(
           }
         }
       }
+      if (entry.payload.ok) {
+        const hasImageGrid = appendImageArtifactGrid(
+          ctx,
+          entry.payload.artifacts,
+          `tool-result:${entry.payload.callId}`,
+        );
+        if (hasImageGrid && !row) {
+          const inserted = ctx.items.pop();
+          ctx.items.push({
+            type: "action",
+            row: {
+              kind: "ok",
+              icon: "✓",
+              text: "Prepared image artifact",
+            },
+          });
+          if (inserted) ctx.items.push(inserted);
+        }
+      }
       return true;
     }
     case "message_delta":
@@ -3313,8 +3480,11 @@ function appendCodexAgentTraceEvent(
           toolName,
           toolLabel: entry.payload.toolLabel,
           serverName: entry.payload.serverName,
+          args: entry.payload.args,
+          ok: entry.payload.ok,
           text: entry.payload.text,
           codeBlock: entry.payload.codeBlock,
+          artifacts: entry.payload.artifacts,
         }),
         chips: toolName
           ? buildAgentTraceToolChips(
@@ -3326,6 +3496,13 @@ function appendCodexAgentTraceEvent(
         details,
         detailKey: `codex:${entry.payload.itemId}`,
       });
+      if (entry.payload.phase === "completed" && entry.payload.ok !== false) {
+        appendImageArtifactGrid(
+          ctx,
+          entry.payload.artifacts,
+          `codex:${entry.payload.itemId}`,
+        );
+      }
       return true;
     }
     case "codex_progress": {
@@ -3653,6 +3830,22 @@ export function renderAgentTrace({
 
     if (itemEntry.type === "card_list") {
       list.appendChild(renderResultCardList(doc, itemEntry.cards));
+      continue;
+    }
+
+    if (itemEntry.type === "image_grid") {
+      const container = doc.createElement("div") as HTMLDivElement;
+      container.className = "llm-agent-image-artifacts";
+      const rendered = renderAssistantGeneratedImagesInto(
+        container,
+        itemEntry.images,
+        doc,
+        {
+          wrapClassName: "llm-agent-image-artifacts-grid",
+          frameClassName: "llm-agent-image-artifact-frame",
+        },
+      );
+      if (rendered) list.appendChild(container);
       continue;
     }
 

@@ -22,6 +22,7 @@ import type {
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentRuntimeRequest,
+  AgentToolArtifact,
   AgentToolContext,
   PreparedToolExecution,
   ToolSpec,
@@ -169,6 +170,7 @@ export type ZoteroMcpToolActivityEvent = {
   arguments?: unknown;
   ok?: boolean;
   error?: string;
+  artifacts?: AgentToolArtifact[];
   profileSignature?: string;
   conversationKey?: number;
   libraryID?: number;
@@ -966,6 +968,7 @@ function buildMcpToolActivityEvent(params: {
   ok?: boolean;
   error?: string;
   quoteCitations?: QuoteCitation[];
+  artifacts?: AgentToolArtifact[];
   headers?: Record<string, string>;
 }): ZoteroMcpToolActivityEvent {
   const scope = resolveMcpToolActivityScope(params.headers);
@@ -978,6 +981,7 @@ function buildMcpToolActivityEvent(params: {
     arguments: params.args,
     ok: params.ok,
     error: params.error,
+    artifacts: params.artifacts,
     quoteCitations: params.quoteCitations,
     profileSignature: scope?.profileSignature,
     conversationKey: scope?.conversationKey,
@@ -1126,6 +1130,23 @@ function formatToolResult(
   };
 }
 
+function extractArtifactsFromMcpToolCallResult(
+  result: McpToolCallResult,
+): AgentToolArtifact[] | undefined {
+  for (const part of result.content || []) {
+    if (part?.type !== "text" || typeof part.text !== "string") continue;
+    try {
+      const parsed = JSON.parse(part.text) as { artifacts?: unknown };
+      if (Array.isArray(parsed.artifacts)) {
+        return parsed.artifacts as AgentToolArtifact[];
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 function extractToolCallErrorText(
   result: McpToolCallResult,
 ): string | undefined {
@@ -1225,6 +1246,7 @@ async function handleToolsCall(
     ok: boolean;
     error?: string;
     quoteCitations?: QuoteCitation[];
+    artifacts?: AgentToolArtifact[];
   }) => {
     emitZoteroMcpToolActivity(
       buildMcpToolActivityEvent({
@@ -1235,6 +1257,7 @@ async function handleToolsCall(
         args: scopeArgs.toolArgs,
         ok: result.ok,
         error: result.error,
+        artifacts: result.artifacts,
         quoteCitations: result.quoteCitations,
         headers,
       }),
@@ -1269,6 +1292,7 @@ async function handleToolsCall(
       completeActivity({
         ok: true,
         quoteCitations: extractQuoteCitationsFromToolContent(cachedReadResult),
+        artifacts: extractArtifactsFromMcpToolCallResult(cachedReadResult),
       });
       return cachedReadResult;
     }
@@ -1295,6 +1319,7 @@ async function handleToolsCall(
       completeActivity({
         ok: !result.isError,
         error: extractToolCallErrorText(result),
+        artifacts: extractArtifactsFromMcpToolCallResult(result),
       });
       clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
       return result;
@@ -1306,6 +1331,7 @@ async function handleToolsCall(
       quoteCitations: extractQuoteCitationsFromToolContent(
         prepared.execution.result.content,
       ),
+      artifacts: prepared.execution.result.artifacts,
     });
     clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
     rememberMcpReadResult(readDedupeKey, result);

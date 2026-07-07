@@ -1210,6 +1210,7 @@ function buildClaudeMcpToolActivityEvent(
     args: event.arguments,
     ok: event.ok,
     text: event.error,
+    artifacts: event.artifacts,
   };
 }
 

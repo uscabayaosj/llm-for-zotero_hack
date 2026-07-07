@@ -70,6 +70,7 @@ export type CodexToolActivityDedupeInput = Pick<
   | "args"
   | "text"
   | "codeBlock"
+  | "artifacts"
 >;
 
 function normalizeDedupeValue(value: unknown): unknown {
@@ -213,5 +214,9 @@ export function mergeToolActivityPayload(
     args:
       nextPayload.args !== undefined ? nextPayload.args : previousPayload.args,
     codeBlock: nextPayload.codeBlock || previousPayload.codeBlock,
+    artifacts:
+      nextPayload.artifacts !== undefined
+        ? nextPayload.artifacts
+        : previousPayload.artifacts,
   };
 }

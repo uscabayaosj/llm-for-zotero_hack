@@ -1894,6 +1894,247 @@ describe("agentTrace render", function () {
     ]);
   });
 
+  it("renders local image artifacts from successful built-in tool results", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "figures-1",
+          name: "paper_read",
+          ok: true,
+          content: {
+            mode: "figures",
+            status: "ok",
+            figures: [{ label: "Figure 1" }, { label: "Figure 2" }],
+          },
+          artifacts: [
+            {
+              kind: "image",
+              mimeType: "image/png",
+              storedPath: "/tmp/mineru-paper/figure_crops/figure-1.png",
+              title: "Figure 1",
+              pageLabel: "2",
+            },
+            {
+              kind: "image",
+              mimeType: "image/png",
+              storedPath: "/tmp/mineru-paper/figure_crops/page-4.png",
+              pageLabel: "4",
+            },
+          ],
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    assert.exists(trace.findByClass("llm-agent-image-artifacts"));
+    const images = trace.findAllByClass("llm-assistant-generated-image");
+    assert.lengthOf(images, 2);
+    assert.deepEqual(
+      images.map((image) => (image as unknown as { src?: string }).src),
+      [
+        "file:///tmp/mineru-paper/figure_crops/figure-1.png",
+        "file:///tmp/mineru-paper/figure_crops/page-4.png",
+      ],
+    );
+    const captions = trace
+      .findAllByClass("llm-assistant-generated-image-caption")
+      .map(collectFakeText);
+    assert.deepEqual(captions, ["Figure 1", "page-4.png"]);
+  });
+
+  it("preserves Codex MCP image artifacts through native tool activity coalescing", function () {
+    const args = { mode: "visual", pages: [3] };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:visual-1",
+      phase: "completed",
+      toolName: "paper_read",
+      toolLabel: "Read Paper",
+      serverName: "llm_for_zotero",
+      arguments: args,
+      ok: true,
+      artifacts: [
+        {
+          kind: "image",
+          mimeType: "image/png",
+          storedPath: "/tmp/pages/page-3.png",
+          title: "Paper - page 3",
+          pageLabel: "3",
+        },
+      ],
+    });
+    controller.appendItemStatus(
+      {
+        id: "native-tool-item-1",
+        type: "tool_call",
+        name: "mcp__llm_for_zotero__paper_read",
+        title: "Read Paper",
+        serverName: "llm_for_zotero",
+        arguments: args,
+      },
+      "completed",
+    );
+
+    const events = assistantMessage.pendingAgentTraceEvents || [];
+    const activityEvents = events.filter(
+      (entry) => entry.payload.type === "codex_tool_activity",
+    );
+    assert.lengthOf(activityEvents, 1);
+    assert.deepEqual(
+      (
+        activityEvents[0].payload as Extract<
+          AgentRunEventRecord["payload"],
+          { type: "codex_tool_activity" }
+        > & { artifacts?: Array<{ storedPath?: string }> }
+      ).artifacts?.map((artifact) => artifact.storedPath),
+      ["/tmp/pages/page-3.png"],
+    );
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: assistantMessage,
+      events,
+    }) as unknown as FakeElement;
+
+    assert.exists(trace.findByClass("llm-agent-image-artifacts"));
+    const image = trace.findByClass("llm-assistant-generated-image") as
+      | (FakeElement & { src?: string; alt?: string })
+      | null;
+    assert.equal(image?.src, "file:///tmp/pages/page-3.png");
+    assert.equal(image?.alt, "Paper - page 3");
+  });
+
+  it("renders Claude bridge codex activity image artifacts", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp:claude-visual-1",
+        phase: "completed",
+        toolName: "view_pdf_pages",
+        toolLabel: "View PDF Pages",
+        serverName: "llm_for_zotero",
+        args: { pages: [1] },
+        ok: true,
+        artifacts: [
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/pages/page-1.png",
+            title: "Page 1",
+          },
+        ],
+      }),
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Claude Code",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    assert.exists(trace.findByClass("llm-agent-image-artifacts"));
+    assert.equal(
+      (
+        trace.findByClass("llm-assistant-generated-image") as
+          | (FakeElement & { src?: string })
+          | null
+      )?.src,
+      "file:///tmp/pages/page-1.png",
+    );
+  });
+
+  it("does not render image artifact holders for failed or non-image results", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "failed-image",
+          name: "file_io",
+          ok: false,
+          content: { error: "Image file not found" },
+          artifacts: [
+            {
+              kind: "image",
+              mimeType: "image/png",
+              storedPath: "/tmp/missing.png",
+            },
+          ],
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "pdf-file",
+          name: "read_attachment",
+          ok: true,
+          content: { ok: true },
+          artifacts: [
+            {
+              kind: "file_ref",
+              mimeType: "application/pdf",
+              storedPath: "/tmp/paper.pdf",
+              name: "paper.pdf",
+            },
+          ],
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    assert.isNull(trace.findByClass("llm-agent-image-artifacts"));
+    assert.isEmpty(trace.findAllByClass("llm-assistant-generated-image"));
+  });
+
   it("renders generated assistant images outside user screenshot UI", function () {
     const savedPathContainer = fakeDocument.createElement("div") as unknown as
       | HTMLElement
@@ -1967,6 +2208,83 @@ describe("agentTrace render", function () {
         fakeDocument,
       ),
     );
+  });
+
+  it("reveals path-backed generated assistant images in the file browser", async function () {
+    const globalScope = globalThis as typeof globalThis & {
+      Components?: unknown;
+      Zotero?: {
+        File?: { reveal?: (path: string) => void };
+        launchURL?: (url: string) => void;
+      };
+    };
+    const originalComponents = globalScope.Components;
+    const originalZotero = globalScope.Zotero;
+    let revealedPath = "";
+    let launchedUrl = "";
+    globalScope.Components = undefined;
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      File: {
+        reveal: (path: string) => {
+          revealedPath = path;
+        },
+      },
+      launchURL: (url: string) => {
+        launchedUrl = url;
+      },
+    };
+
+    try {
+      const container = fakeDocument.createElement("div") as HTMLElement;
+      const statuses: string[] = [];
+      assert.isTrue(
+        renderAssistantGeneratedImagesInto(
+          container,
+          [
+            {
+              id: "figure-1",
+              label: "Figure 1",
+              path: "/tmp/mineru-cache/paper-1/figure-crops/figure-1.png",
+            },
+          ],
+          fakeDocument,
+          {
+            onImageActionStatus: (message) => statuses.push(message),
+          },
+        ),
+      );
+      const openButton = (container as unknown as FakeElement).findByClass(
+        "llm-generated-image-action-open",
+      ) as FakeElement;
+
+      const openClick = await openButton.dispatchFakeEventAsync("click");
+
+      assert.isTrue(openClick.defaultPrevented);
+      assert.isTrue(openClick.propagationStopped);
+      assert.equal(
+        revealedPath,
+        "/tmp/mineru-cache/paper-1/figure-crops/figure-1.png",
+      );
+      assert.equal(launchedUrl, "");
+      assert.deepEqual(statuses, ["Showed image in folder"]);
+      assert.equal(openButton.title, "Show image in folder");
+      assert.equal(
+        openButton.attributes["aria-label"],
+        "Show image in folder",
+      );
+    } finally {
+      if (originalComponents) {
+        globalScope.Components = originalComponents;
+      } else {
+        delete globalScope.Components;
+      }
+      if (originalZotero) {
+        globalScope.Zotero = originalZotero;
+      } else {
+        delete globalScope.Zotero;
+      }
+    }
   });
 
   it("saves generated assistant images through the Zotero file picker", async function () {

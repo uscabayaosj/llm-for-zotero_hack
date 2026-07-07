@@ -3899,6 +3899,30 @@
   text-overflow: ellipsis;
 }
 
+.llm-agent-image-artifacts {
+  width: calc(100% - 18px);
+  max-width: 620px;
+  margin: -2px 0 2px 18px;
+}
+
+.llm-agent-image-artifacts .llm-agent-image-artifacts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 8px;
+  width: 100%;
+  margin-top: 0;
+}
+
+.llm-agent-image-artifacts .llm-agent-image-artifact-frame {
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.llm-agent-image-artifacts .llm-assistant-generated-image {
+  max-height: 240px;
+  background: color-mix(in srgb, var(--material-background) 92%, white 8%);
+}
+
 .llm-model-header {
   display: flex;
   align-items: center;

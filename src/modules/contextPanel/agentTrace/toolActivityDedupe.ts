@@ -151,7 +151,7 @@ function normalizeCodexToolIdentityForDedupe(
 function normalizeCodexToolActivityArgsForDedupe(value: unknown): unknown {
   if (typeof value !== "string") return value;
   const clean = sanitizeText(value).trim();
-  if (!/^[{\[]/.test(clean)) return value;
+  if (!clean.startsWith("{") && !clean.startsWith("[")) return value;
   try {
     return JSON.parse(clean);
   } catch {

@@ -1,3 +1,4 @@
+/* eslint-disable mocha/max-top-level-suites -- This file groups related context-panel render suites around shared fake DOM helpers. */
 import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import {
@@ -1894,6 +1895,125 @@ describe("agentTrace render", function () {
     ]);
   });
 
+  it("preserves artifacts when duplicate Codex tool activity rows are compacted", function () {
+    const args = { mode: "figures", query: "Figure 1" };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(
+        1,
+        {
+          type: "codex_tool_activity",
+          itemId: "native-tool-item-1",
+          phase: "completed",
+          toolName: "mcp__llm_for_zotero__paper_read",
+          toolLabel: "Read Paper",
+          serverName: "llm_for_zotero",
+          args,
+          ok: true,
+        },
+        1000,
+      ),
+      codexToolActivityEvent(
+        2,
+        {
+          type: "codex_tool_activity",
+          itemId: "mcp:jsonrpc:figures-1",
+          phase: "completed",
+          toolName: "paper_read",
+          toolLabel: "Read Paper",
+          serverName: "llm_for_zotero",
+          args,
+          ok: true,
+          artifacts: [
+            {
+              kind: "image",
+              mimeType: "image/png",
+              storedPath: "/tmp/mineru-paper/figure_crops/figure-1.png",
+              title: "Figure 1",
+              pageLabel: "2",
+            },
+          ],
+        },
+        1001,
+      ),
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Codex",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    assert.exists(trace.findByClass("llm-agent-image-artifacts"));
+    assert.equal(
+      (
+        trace.findByClass("llm-assistant-generated-image") as
+          | (FakeElement & { src?: string })
+          | null
+      )?.src,
+      "file:///tmp/mineru-paper/figure_crops/figure-1.png",
+    );
+  });
+
+  it("renders distinct image artifact paths even when content hashes match", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp:jsonrpc:figures-duplicate-hash",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args: { mode: "figures", query: "Figure 1" },
+        ok: true,
+        artifacts: [
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/mineru-paper/figure_crops/figure-1-a.png",
+            contentHash: "same-image-bytes",
+            title: "Figure 1A",
+          },
+          {
+            kind: "image",
+            mimeType: "image/png",
+            storedPath: "/tmp/mineru-paper/figure_crops/figure-1-b.png",
+            contentHash: "same-image-bytes",
+            title: "Figure 1B",
+          },
+        ],
+      }),
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Codex",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    assert.deepInclude(getCodexTraceActionTexts(events), "Extracted 2 figures");
+    assert.deepEqual(
+      trace
+        .findAllByClass("llm-assistant-generated-image")
+        .map((image) => (image as unknown as { src?: string }).src),
+      [
+        "file:///tmp/mineru-paper/figure_crops/figure-1-a.png",
+        "file:///tmp/mineru-paper/figure_crops/figure-1-b.png",
+      ],
+    );
+  });
+
   it("renders local image artifacts from successful built-in tool results", function () {
     const events: AgentRunEventRecord[] = [
       {
@@ -2269,10 +2389,7 @@ describe("agentTrace render", function () {
       assert.equal(launchedUrl, "");
       assert.deepEqual(statuses, ["Showed image in folder"]);
       assert.equal(openButton.title, "Show image in folder");
-      assert.equal(
-        openButton.attributes["aria-label"],
-        "Show image in folder",
-      );
+      assert.equal(openButton.attributes["aria-label"], "Show image in folder");
     } finally {
       if (originalComponents) {
         globalScope.Components = originalComponents;

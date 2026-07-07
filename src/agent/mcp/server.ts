@@ -372,10 +372,11 @@ function normalizePositiveInt(value: unknown): number | undefined {
 
 function normalizeText(value: unknown, maxLength = 240): string | undefined {
   if (typeof value !== "string") return undefined;
-  const normalized = value
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const withoutControlChars = Array.from(value, (char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f ? " " : char;
+  }).join("");
+  const normalized = withoutControlChars.replace(/\s+/g, " ").trim();
   return normalized ? normalized.slice(0, maxLength) : undefined;
 }
 
@@ -658,7 +659,7 @@ function cloneMcpResultWithDuplicateMarker(
     } catch {
       return {
         ...part,
-        text: `${part.text}\n\n{\"duplicate\":true}`,
+        text: `${part.text}\n\n{"duplicate":true}`,
       };
     }
   });

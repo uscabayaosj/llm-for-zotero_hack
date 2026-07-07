@@ -124,6 +124,17 @@ export function compactAgentTraceEvents(
             previousVisibleEntry.createdAt,
           )
         ) {
+          compact[previousVisibleIndex] = {
+            ...previousVisibleEntry,
+            payload: mergeToolActivityPayload(
+              previousVisibleEntry.payload,
+              entry.payload,
+            ),
+          };
+          codexActivityIndexByItemId.set(
+            entry.payload.itemId,
+            previousVisibleIndex,
+          );
           continue;
         }
       }

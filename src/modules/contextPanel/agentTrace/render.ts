@@ -2983,7 +2983,7 @@ function readToolArgsMode(args: unknown): string {
   let value = args;
   if (typeof value === "string") {
     const clean = value.trim();
-    if (/^[{\[]/.test(clean)) {
+    if (clean.startsWith("{") || clean.startsWith("[")) {
       try {
         value = JSON.parse(clean) as unknown;
       } catch {
@@ -2998,9 +2998,7 @@ function readToolArgsMode(args: unknown): string {
 
 type ImageAgentToolArtifact = Extract<AgentToolArtifact, { kind: "image" }>;
 
-function normalizeImageArtifacts(
-  artifacts: unknown,
-): ImageAgentToolArtifact[] {
+function normalizeImageArtifacts(artifacts: unknown): ImageAgentToolArtifact[] {
   if (!Array.isArray(artifacts)) return [];
   const images: ImageAgentToolArtifact[] = [];
   const seenPaths = new Set<string>();
@@ -3069,9 +3067,9 @@ function imageArtifactsToGeneratedImages(
   keyPrefix: string,
 ): GeneratedChatImage[] {
   return normalizeImageArtifacts(artifacts).map((artifact, index) => ({
-    id:
-      artifact.contentHash ||
-      `${keyPrefix}:${index}:${artifact.storedPath}`.slice(0, 200),
+    id: `${keyPrefix}:${index}:${artifact.storedPath}${
+      artifact.contentHash ? `:${artifact.contentHash}` : ""
+    }`.slice(0, 200),
     label: imageArtifactLabel(artifact),
     path: artifact.storedPath,
     ...(imageArtifactTooltip(artifact)

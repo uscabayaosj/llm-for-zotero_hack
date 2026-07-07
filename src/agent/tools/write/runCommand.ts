@@ -546,7 +546,8 @@ export function createRunCommandTool(): AgentToolDefinition<
       name: "run_command",
       description:
         "Run a shell command on the local machine. The command string is passed directly to the native shell (cmd.exe on Windows, zsh on macOS, bash on Linux). " +
-        "Use this for explicit shell tasks, data analysis scripts, conversion, or CLI tools. Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer. Returns stdout, stderr, and exit code.",
+        "Use this for explicit shell tasks, data analysis scripts, conversion, or CLI tools. Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer. Returns stdout, stderr, and exit code. " +
+        "Every command requires explicit user confirmation before it runs.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -638,8 +639,13 @@ export function createRunCommandTool(): AgentToolDefinition<
     },
 
     async shouldRequireConfirmation(input, _context) {
+      // Execution will be refused outright, so there is nothing to confirm.
       if (getNoteWriteBypassRefusal(input, _context)) return false;
-      return Boolean(await getRunCommandConfirmationReason(input));
+      // Shell access is the highest-risk capability the agent has. Regex
+      // heuristics cannot reliably classify commands as safe (encodings,
+      // interpreters, aliases all bypass blocklists), so every command
+      // requires explicit user confirmation.
+      return true;
     },
 
     createPendingAction(input) {
@@ -689,12 +695,16 @@ export function createRunCommandTool(): AgentToolDefinition<
           command: input.command,
         };
       }
-      const confirmationReason = await getRunCommandConfirmationReason(input);
-      if (confirmationReason && !input.allowUnsafe) {
+      if (!input.allowUnsafe) {
+        // Defense in depth: even if a caller skips the registry confirmation
+        // flow, execution is refused until the user has approved the command.
+        const confirmationReason = await getRunCommandConfirmationReason(input);
         return {
           exitCode: -1,
           stdout: "",
-          stderr: confirmationReason,
+          stderr:
+            confirmationReason ||
+            "run_command requires user confirmation before executing",
           command: input.command,
         };
       }

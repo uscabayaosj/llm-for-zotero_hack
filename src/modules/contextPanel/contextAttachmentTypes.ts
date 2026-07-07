@@ -2,7 +2,7 @@ import type { PaperContentSourceMode } from "../../shared/types";
 
 export type TextAttachmentSourceMode = Extract<
   PaperContentSourceMode,
-  "markdown" | "html" | "txt" | "docx"
+  "markdown" | "html" | "txt" | "docx" | "epub"
 >;
 
 export type SupportedContextAttachmentType = "pdf" | TextAttachmentSourceMode;

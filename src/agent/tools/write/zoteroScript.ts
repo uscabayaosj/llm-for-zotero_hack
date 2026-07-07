@@ -4,7 +4,7 @@
  * can perform any operation the Zotero API supports.
  *
  * Two modes:
- * - "read": gather data across many items, no confirmation needed
+ * - "read": gather data across many items
  * - "write": executes directly with undo instrumentation required
  */
 import type { AgentToolDefinition, AgentToolContext } from "../../types";
@@ -18,6 +18,7 @@ type ZoteroScriptInput = {
   script: string;
   description: string;
   timeoutMs: number;
+  approved?: boolean;
 };
 
 type ItemSnapshot = {
@@ -354,7 +355,7 @@ env.log(\`Total: \${count} items\`);
 4. The script body is an async function — top-level await is supported
 5. Do NOT use \`eraseTx()\` — use Zotero trash instead (item.deleted = true; await item.saveTx())
 6. Do NOT create or edit Zotero notes here. Use note_write for all Zotero note creation, edits, and appends so note validation still runs.
-7. Write straightforward code — no dry-run branching needed. The script runs directly, and undo_last_action uses snapshots/custom undo steps to revert it.`;
+7. Write straightforward code — no dry-run branching needed. The script runs after user confirmation, and undo_last_action uses snapshots/custom undo steps to revert it.`;
 
 // ── Tool definition ─────────────────────────────────────────────────────────
 
@@ -367,8 +368,9 @@ export function createZoteroScriptTool(): AgentToolDefinition<
       name: "zotero_script",
       description:
         "Execute a JavaScript script inside Zotero's runtime with full API access. " +
-        "Two modes: mode:'read' for gathering data across many items (no confirmation); " +
-        "mode:'write' for mutations (runs directly with undo support; env.snapshot(item) or env.addUndoStep(fn) is required). " +
+        "Two modes: mode:'read' for gathering data across many items; " +
+        "mode:'write' for mutations (undo support; env.snapshot(item) or env.addUndoStep(fn) is required). " +
+        "Every script requires explicit user confirmation before it runs, in both modes. " +
         "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.addUndoStep, env.libraryID). " +
         "Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer.",
       inputSchema: {
@@ -400,7 +402,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
         },
       },
       mutability: "write",
-      requiresConfirmation: false,
+      requiresConfirmation: true,
     },
 
     guidance: {
@@ -486,10 +488,51 @@ export function createZoteroScriptTool(): AgentToolDefinition<
     },
 
     shouldRequireConfirmation() {
-      return false;
+      // Scripts run in Zotero's privileged Gecko runtime with full access to
+      // Zotero.*, IOUtils, and Components — read mode is just as capable of
+      // exfiltrating data or mutating state as write mode, so both require
+      // explicit user confirmation.
+      return true;
+    },
+
+    createPendingAction(input) {
+      return {
+        toolName: "zotero_script",
+        title:
+          input.mode === "read"
+            ? "Run Zotero script (read)"
+            : "Run Zotero script (write)",
+        description: input.description,
+        confirmLabel: "Run script",
+        cancelLabel: "Cancel",
+        fields: [
+          {
+            type: "code_preview" as const,
+            id: "script",
+            label: "Script",
+            value: input.script,
+            language: "javascript",
+          },
+        ],
+      };
+    },
+
+    applyConfirmation(input) {
+      return ok({ ...input, approved: true });
     },
 
     async execute(input, context) {
+      if (!input.approved) {
+        // Defense in depth: even if a caller skips the registry confirmation
+        // flow, scripts never run in the privileged runtime without approval.
+        return {
+          mode: input.mode,
+          description: input.description,
+          output: "",
+          itemsAffected: 0,
+          error: "zotero_script requires user confirmation before executing",
+        };
+      }
       const libraryID = resolveLibraryID(context);
 
       const result = await executeScript({

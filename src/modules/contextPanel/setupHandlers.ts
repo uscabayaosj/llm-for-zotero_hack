@@ -2753,7 +2753,9 @@ export function setupHandlers(
                 ? "TXT"
                 : mode === "docx"
                   ? "DOCX"
-                  : null);
+                  : mode === "epub"
+                    ? "EPUB"
+                    : null);
     if (badgeText) {
       const badge = createElement(ownerDoc, "span", "llm-paper-picker-badge", {
         textContent: badgeText,

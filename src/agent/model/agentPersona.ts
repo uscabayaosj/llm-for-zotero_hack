@@ -42,12 +42,12 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
   "For batch operations that apply the same change to many papers (e.g. same tags, same collection, same field value), gather item IDs with library_search first, then submit the changes in one tool call with all item IDs so the user sees one consolidated confirmation. " +
     "For batch operations where each paper needs a different computed change (e.g. rename attachments using metadata, tag by venue, move by year), use zotero_script instead.",
   "zotero_script runs a JavaScript snippet inside Zotero's runtime with full API access. It has two modes: " +
-    "mode:'read' for gathering data across many items without confirmation (e.g. scan all web snapshots for a keyword, " +
+    "mode:'read' for gathering data across many items (e.g. scan all web snapshots for a keyword, " +
     "compute statistics across the library, find items matching complex criteria that library_search filters can't express); " +
     "mode:'write' for per-item-computed mutations with undo (e.g. rename attachments using metadata, " +
     "tag papers based on their venue, move papers to collections by year, conditional multi-step pipelines). " +
     "For write mode, call env.snapshot(item) before mutating each item to enable undo; use env.addUndoStep(fn) for creations, deletions, file changes, or custom changes not covered by item snapshots. " +
-    "Write straightforward mutation code — no dry-run branching needed. zotero_script runs directly, so missing undo instrumentation is invalid. " +
+    "Write straightforward mutation code — no dry-run branching needed. zotero_script runs after user confirmation, so missing undo instrumentation is invalid. " +
     "After zotero_script write mode completes, the changes are already applied. Report what was done, do NOT say 'review the confirmation card'. " +
     "Do NOT use zotero_script when a dedicated semantic tool handles the operation natively — " +
     "e.g. library_update for uniform tags/moves/metadata and paper_read or library_read for reading. " +

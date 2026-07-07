@@ -74,6 +74,7 @@ function normalizePaperContentSourceMode(
     case "html":
     case "txt":
     case "docx":
+    case "epub":
       return normalized;
     default:
       return undefined;
@@ -143,7 +144,16 @@ export const PAPER_CONTEXT_REF_SCHEMA = {
     year: { type: "string" as const },
     contentSourceMode: {
       type: "string" as const,
-      enum: ["text", "mineru", "pdf", "markdown", "html", "txt", "docx"],
+      enum: [
+        "text",
+        "mineru",
+        "pdf",
+        "markdown",
+        "html",
+        "txt",
+        "docx",
+        "epub",
+      ],
       description:
         "Selected source mode for this Zotero context item. Preserve it from context summaries.",
     },

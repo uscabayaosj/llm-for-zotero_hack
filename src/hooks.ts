@@ -7,6 +7,7 @@ import {
   registerLLMStyles,
   registerNoteEditingSelectionTracking,
   registerReaderSelectionTracking,
+  unregisterReaderSelectionTracking,
   openStandaloneChat,
 } from "./modules/contextPanel";
 import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
@@ -364,6 +365,7 @@ function onShutdown(): void {
     paperSearchInvalidateTimer = null;
   }
   ztoolkit.unregisterAll();
+  unregisterReaderSelectionTracking();
   addon.data.dialog?.window?.close();
   addon.data.standaloneWindow?.close();
   try {

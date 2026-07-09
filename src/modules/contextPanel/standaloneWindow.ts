@@ -85,10 +85,7 @@ import {
 } from "./setupHandlers/controllers/historySearchController";
 import { createHistorySearchPopupController } from "./setupHandlers/controllers/historySearchPopupController";
 import { primeHistoryNavigationMode } from "./historyNavigationModeSync";
-import {
-  resolveStandaloneNoteWindowTitle,
-  resolveStandalonePaperTabLabel,
-} from "./standaloneTabLabel";
+import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import { resolveFreshConversationDraft } from "./freshConversationDraft";
 import { collapseDuplicateReusableConversationDrafts } from "./standaloneConversationResolution";
 import { buildDefaultClaudeGlobalConversationKey } from "../../claudeCode/constants";
@@ -879,9 +876,7 @@ export function openStandaloneChat(options?: {
       ) as HTMLButtonElement;
       paperTab.className = "llm-standalone-tab";
       paperTab.type = "button";
-      paperTab.textContent = resolveStandalonePaperTabLabel({
-        paperSlotItem: currentPaperItem,
-      });
+      paperTab.textContent = resolveStandalonePaperTabLabel();
       paperTab.dataset.tab = "paper";
 
       const openTab = doc.createElementNS(
@@ -1307,9 +1302,6 @@ export function openStandaloneChat(options?: {
 
       const syncPaperTabLabel = () => {
         paperTab.textContent = resolveStandalonePaperTabLabel({
-          paperSlotItem: resolveActiveNoteSession(activeItem)
-            ? activeItem
-            : currentPaperItem,
           isWebChat: isInWebChatMode,
         });
       };
@@ -1662,10 +1654,7 @@ export function openStandaloneChat(options?: {
       // Mount chat UI into contentArea
       // -----------------------------------------------------------------------
       const updateContentTitle = () => {
-        const noteTitle = resolveStandaloneNoteWindowTitle(activeItem);
-        if (noteTitle) {
-          contentTitleText.textContent = noteTitle;
-        } else if (standaloneMode === "paper" && currentBasePaperItem) {
+        if (standaloneMode === "paper" && currentBasePaperItem) {
           try {
             const title =
               (currentBasePaperItem as any).getField?.("title") || "";

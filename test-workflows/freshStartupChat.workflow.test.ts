@@ -118,7 +118,7 @@ describe("workflow: fresh startup chat", function () {
     );
   });
 
-  it("labels standalone item-note windows with the note kind and note title", async function () {
+  it("labels standalone item-note windows as ordinary paper chat", async function () {
     const fixture = await api.createItemNoteFixture({
       title: "Workflow Standalone Item Note Parent",
       pdfTitle: "Workflow Standalone Item Note PDF",
@@ -127,25 +127,35 @@ describe("workflow: fresh startup chat", function () {
     fixtures.push(fixture);
 
     const diagnostics = await api.openStandaloneForItem(fixture.noteItemId);
-    assert.equal(diagnostics.paperTabText, "Item note");
+    assert.equal(
+      diagnostics.activeTab,
+      "paper",
+      diagnosticsMessage(diagnostics),
+    );
+    assert.equal(diagnostics.paperTabText, "Paper chat");
     assert.equal(
       diagnostics.titleText,
-      "Item note: Workflow item note title",
+      "Workflow Standalone Item Note Parent",
       diagnosticsMessage(diagnostics),
     );
   });
 
-  it("labels standalone standalone-note windows with the note kind and note title", async function () {
+  it("labels standalone standalone-note windows as ordinary library chat", async function () {
     const fixture = await api.createStandaloneNoteFixture({
       noteHtml: "<p>Workflow standalone note title</p><p>Body.</p>",
     });
     fixtures.push(fixture);
 
     const diagnostics = await api.openStandaloneForItem(fixture.noteItemId);
-    assert.equal(diagnostics.paperTabText, "Standalone note");
+    assert.equal(
+      diagnostics.activeTab,
+      "open",
+      diagnosticsMessage(diagnostics),
+    );
+    assert.equal(diagnostics.openTabText, "Library chat");
     assert.equal(
       diagnostics.titleText,
-      "Standalone note: Workflow standalone note title",
+      "Library chat",
       diagnosticsMessage(diagnostics),
     );
   });

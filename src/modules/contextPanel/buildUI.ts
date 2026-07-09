@@ -171,9 +171,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   modeSwitchWrap.dataset.mode = hasItem && isGlobalMode ? "global" : "paper";
 
   const modeChipLabel = activeNoteSession
-    ? activeNoteSession.noteKind === "item"
-      ? t("Item note")
-      : t("Standalone note")
+    ? activeNoteSession.conversationKind === "global"
+      ? t("Library chat")
+      : t("Paper chat")
     : isGlobalMode
       ? t("Library chat")
       : t("Paper chat");

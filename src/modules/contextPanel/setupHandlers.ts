@@ -1443,9 +1443,9 @@ export function setupHandlers(
       // [webchat] Don't overwrite — applyWebChatModeUI manages the chip in webchat mode
       if (!modeChipBtn.querySelector(".llm-webchat-dot")) {
         const currentLabel = noteSession
-          ? noteSession.noteKind === "item"
-            ? t("Item note")
-            : t("Standalone note")
+          ? noteSession.conversationKind === "global"
+            ? t("Library chat")
+            : t("Paper chat")
           : mode === "global"
             ? t("Library chat")
             : t("Paper chat");

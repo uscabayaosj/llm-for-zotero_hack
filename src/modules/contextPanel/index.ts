@@ -72,6 +72,11 @@ import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "./readerSelection";
+import {
+  registerReaderSelectionTrackingListener,
+  unregisterReaderSelectionTrackingListener,
+  type ReaderSelectionTrackingReader,
+} from "./readerSelectionTracking";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
 import {
   resolveInitialPanelItemState,
@@ -512,15 +517,15 @@ export function registerReaderContextPanel() {
   });
 }
 
-export function registerReaderSelectionTracking() {
-  const readerAPI = Zotero.Reader as _ZoteroTypes.Reader & {
-    __llmSelectionTrackingRegistered?: boolean;
-  };
-  if (!readerAPI || readerAPI.__llmSelectionTrackingRegistered) return;
+type ReaderTextSelectionPopupHandler =
+  _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">;
 
-  const handler: _ZoteroTypes.Reader.EventHandler<
-    "renderTextSelectionPopup"
-  > = (event) => {
+let readerSelectionTrackingHandler: ReaderTextSelectionPopupHandler | null =
+  null;
+
+function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
+  if (readerSelectionTrackingHandler) return readerSelectionTrackingHandler;
+  readerSelectionTrackingHandler = (event) => {
     const selectedText = (() => {
       const fromAnnotation = normalizeSelectedText(
         event.params?.annotation?.text || "",
@@ -1085,13 +1090,31 @@ export function registerReaderSelectionTracking() {
       }
     }
   };
+  return readerSelectionTrackingHandler;
+}
 
-  Zotero.Reader.registerEventListener(
-    "renderTextSelectionPopup",
-    handler,
+export function registerReaderSelectionTracking() {
+  const readerAPI = Zotero.Reader as
+    | ReaderSelectionTrackingReader<ReaderTextSelectionPopupHandler>
+    | undefined;
+  if (!readerAPI || typeof readerAPI.registerEventListener !== "function") {
+    return;
+  }
+  registerReaderSelectionTrackingListener(
+    readerAPI,
     config.addonID,
+    getReaderSelectionTrackingHandler(),
   );
-  readerAPI.__llmSelectionTrackingRegistered = true;
+}
+
+export function unregisterReaderSelectionTracking() {
+  const readerAPI = Zotero.Reader as
+    | ReaderSelectionTrackingReader<ReaderTextSelectionPopupHandler>
+    | undefined;
+  if (readerAPI) {
+    unregisterReaderSelectionTrackingListener(readerAPI, config.addonID);
+  }
+  readerSelectionTrackingHandler = null;
 }
 
 type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {

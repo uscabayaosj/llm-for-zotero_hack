@@ -4433,13 +4433,11 @@ export function setupHandlers(
 
   const maybeStartWithFreshConversation = () => {
     const startupBody = body as Element & {
-      __llmFreshStartupConversationHandled?: boolean;
       __llmFreshStartupConversationInFlight?: boolean;
     };
     if (!hooks?.startWithFreshConversation) return;
     if (isStandalonePanel || isWebChatMode()) return;
-    if (!item || startupBody.__llmFreshStartupConversationHandled) return;
-    startupBody.__llmFreshStartupConversationHandled = true;
+    if (!item || startupBody.__llmFreshStartupConversationInFlight) return;
     startupBody.__llmFreshStartupConversationInFlight = true;
     void (async () => {
       try {

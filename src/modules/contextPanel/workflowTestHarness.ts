@@ -46,6 +46,7 @@ import {
 } from "./workflowTestHooks";
 import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
 import { appendMessage } from "../../utils/chatStore";
+import { FreshStartupConversationSession } from "./freshStartupConversation";
 
 type PanelRecord = {
   id: string;
@@ -58,6 +59,7 @@ const panels = new Map<string, PanelRecord>();
 let panelCounter = 0;
 let lastSend: SendQuestionOptions | null = null;
 let lastFinalRequest: WorkflowTestFinalRequestSnapshot | null = null;
+const workflowFreshStartupConversation = new FreshStartupConversationSession();
 
 function assertWorkflowTestEnabled(): void {
   if (__env__ !== "test" && __env__ !== "development") {
@@ -308,7 +310,7 @@ async function renderStartupPanelForItem(
   itemId: number,
 ): Promise<WorkflowTestPanel> {
   return renderPanelForItemInternal(itemId, {
-    startWithFreshConversation: true,
+    startWithFreshConversation: workflowFreshStartupConversation.consume(),
   });
 }
 
@@ -353,6 +355,8 @@ async function renderPanelForItemInternal(
   }
   const mountedItem = activeContextPanels.get(body)?.() || item;
   await ensureConversationLoaded(mountedItem).catch(() => undefined);
+  refreshChat(body, mountedItem);
+  await Zotero.Promise.delay(50);
   const contextSnapshot = await resolveContextSourceItemAsync(mountedItem);
   const panel = { id: panelId, body, item: mountedItem, contextSnapshot };
   panels.set(panelId, panel);
@@ -815,6 +819,7 @@ async function getDiagnostics(
 
 async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
+  workflowFreshStartupConversation.begin();
   await closeStandalone();
   lastSend = null;
   lastFinalRequest = null;

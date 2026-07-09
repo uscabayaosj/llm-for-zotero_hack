@@ -118,6 +118,78 @@ describe("workflow: fresh startup chat", function () {
     );
   });
 
+  it("preserves the active library conversation after navigating into a paper and back", async function () {
+    const standaloneNote = await api.createStandaloneNoteFixture({
+      noteHtml: "<p>Workflow library navigation note.</p>",
+    });
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Workflow Library Navigation Paper",
+      pdfTitle: "Workflow Library Navigation PDF",
+    });
+    fixtures.push(standaloneNote, paper);
+
+    const startupPanel = await api.renderStartupPanelForItem(
+      standaloneNote.noteItemId,
+    );
+    const marker = "workflow active library conversation marker";
+    const activeLibrary = await api.seedPanelStoredUserMessage(
+      startupPanel.panelId,
+      marker,
+    );
+    assert.equal(
+      activeLibrary.conversationKind,
+      "global",
+      diagnosticsMessage(activeLibrary),
+    );
+
+    await api.renderStartupPanelForItem(paper.parentItemId);
+    const returnedPanel = await api.renderStartupPanelForItem(
+      standaloneNote.noteItemId,
+    );
+    const returnedLibrary = await api.getDiagnostics(returnedPanel.panelId);
+
+    assert.equal(
+      returnedLibrary.conversationKey,
+      activeLibrary.conversationKey,
+      diagnosticsMessage(returnedLibrary),
+    );
+    assert.include(
+      returnedLibrary.messageText || "",
+      marker,
+      diagnosticsMessage(returnedLibrary),
+    );
+  });
+
+  it("preserves the active paper conversation when opening a standalone window after startup", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Workflow Standalone Persistence Paper",
+      pdfTitle: "Workflow Standalone Persistence PDF",
+    });
+    fixtures.push(paper);
+
+    const startupPanel = await api.renderStartupPanelForItem(
+      paper.parentItemId,
+    );
+    const marker = "workflow active paper standalone marker";
+    const activePaper = await api.seedPanelStoredUserMessage(
+      startupPanel.panelId,
+      marker,
+    );
+
+    const standalone = await api.openStandaloneForItem(paper.parentItemId);
+
+    assert.equal(
+      standalone.conversationKey,
+      activePaper.conversationKey,
+      diagnosticsMessage(standalone),
+    );
+    assert.include(
+      standalone.messageText || "",
+      marker,
+      diagnosticsMessage(standalone),
+    );
+  });
+
   it("labels standalone item-note windows as ordinary paper chat", async function () {
     const fixture = await api.createItemNoteFixture({
       title: "Workflow Standalone Item Note Parent",

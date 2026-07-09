@@ -3953,122 +3953,21 @@ export function openStandaloneChat(options?: {
         });
       };
 
-      const rememberStandaloneGlobalConversationKey = (
-        libraryID: number,
-        conversationKey: number,
-      ) => {
-        if (isClaudeConversationSystem()) {
-          activeClaudeGlobalConversationByLibrary.set(
-            buildClaudeLibraryStateKey(libraryID),
-            conversationKey,
-          );
-        } else if (isCodexConversationSystem()) {
-          activeCodexGlobalConversationByLibrary.set(
-            buildCodexLibraryStateKey(libraryID),
-            conversationKey,
-          );
-          setLastUsedCodexGlobalConversationKey(libraryID, conversationKey);
-        } else {
-          activeGlobalConversationByLibrary.set(libraryID, conversationKey);
-        }
-      };
-
-      const rememberStandalonePaperConversationKey = (
-        paperItem: Zotero.Item,
-        conversationKey: number,
-      ) => {
-        const paperItemID = Number(paperItem.id || 0);
-        const paperLibraryID = getLibraryIDForPaperItem(paperItem);
-        if (!paperItemID || !paperLibraryID) return;
-        if (isClaudeConversationSystem()) {
-          activeClaudePaperConversationByPaper.set(
-            buildClaudePaperStateKey(paperLibraryID, paperItemID),
-            conversationKey,
-          );
-        } else if (isCodexConversationSystem()) {
-          activeCodexPaperConversationByPaper.set(
-            buildCodexPaperStateKey(paperLibraryID, paperItemID),
-            conversationKey,
-          );
-          setLastUsedCodexPaperConversationKey(
-            paperLibraryID,
-            paperItemID,
-            conversationKey,
-          );
-        } else {
-          activePaperConversationByPaper.set(
-            buildPaperStateKey(paperLibraryID, paperItemID),
-            conversationKey,
-          );
-        }
-      };
-
-      const mountInitialStandaloneConversation = async () => {
-        const initialNoteSession = resolveActiveNoteSession(initialMountedItem);
-        if (initialNoteSession?.noteKind === "standalone") {
-          const conversationKey =
-            await resolveStandaloneGlobalConversation(true);
-          if (conversationKey && !cancelled) {
-            const libraryID = getCurrentLibraryScopeID();
-            rememberStandaloneGlobalConversationKey(libraryID, conversationKey);
-            standaloneMode = "open";
-            paperTab.classList.toggle("active", false);
-            openTab.classList.toggle("active", true);
-            mountChatPanel(initialMountedItem, currentRawContextItem);
-            return;
-          }
-        }
-        if (initialNoteSession?.noteKind === "item" && initialBasePaperItem) {
-          const freshPaper = await resolveStandalonePaperConversation(
-            true,
-            initialBasePaperItem,
-          );
-          if (freshPaper.conversationKey && !cancelled) {
-            rememberStandalonePaperConversationKey(
-              initialBasePaperItem,
-              freshPaper.conversationKey,
-            );
-            standaloneMode = "paper";
-            currentBasePaperItem = initialBasePaperItem;
-            currentPaperItem = initialMountedItem;
-            paperTab.classList.toggle("active", true);
-            openTab.classList.toggle("active", false);
-            mountChatPanel(initialMountedItem, currentRawContextItem);
-            return;
-          }
-        }
-        if (initialMode === "open") {
-          if (await restoreStandaloneOpenConversation(true)) return;
-        } else if (initialBasePaperItem) {
-          if (
-            await mountStandalonePaperConversation({
-              paperItem: initialBasePaperItem,
-              rawItem: currentRawContextItem,
-              forceFresh: true,
-            })
-          ) {
-            return;
-          }
-        }
-        mountChatPanel(initialMountedItem, currentRawContextItem);
-      };
-
-      // Initial mount — default to a true blank draft for this standalone open.
+      // Initial mount preserves the current paper/library conversation. The
+      // only automatic blank draft is created once during Zotero startup.
       ztoolkit.log(
         "LLM: standalone mounting initial item",
         "mode=" + standaloneMode,
         "itemId=" + (initialMountedItem?.id ?? "null"),
         "convKey=" + getConversationKey(initialMountedItem),
       );
-      void mountInitialStandaloneConversation().finally(() => {
-        if (cancelled) return;
-        ztoolkit.log(
-          "LLM: standalone renderSidebar start",
-          "mode=" + standaloneMode,
-        );
-        scheduleStandaloneSidebarRender();
-        renderStandalonePlaceholdersInEmbeddedPanels(contentArea);
-      });
+      mountChatPanel(initialMountedItem, currentRawContextItem);
+      ztoolkit.log(
+        "LLM: standalone renderSidebar start",
+        "mode=" + standaloneMode,
+      );
+      scheduleStandaloneSidebarRender();
+      renderStandalonePlaceholdersInEmbeddedPanels(contentArea);
     } catch (err) {
       ztoolkit.log("LLM: standalone initWindow failed", err);
       // Show a visible error so the window isn't silently blank

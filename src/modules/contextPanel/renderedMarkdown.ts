@@ -2009,7 +2009,7 @@ function setCodeBlockSourceCollapsed(
   body.setAttribute("aria-hidden", collapsed ? "true" : "false");
   button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   const label = collapsed ? "Show source" : "Hide source";
-  button.textContent = label;
+  button.textContent = "";
   button.title = label;
   button.setAttribute("aria-label", label);
 }
@@ -2021,9 +2021,8 @@ function setCodeBlockWordWrap(
 ): void {
   shell.dataset.wordWrap = enabled ? "true" : "false";
   button.setAttribute("aria-pressed", enabled ? "true" : "false");
-  const label = enabled ? "No wrap" : "Wrap";
   const ariaLabel = enabled ? "Disable word wrap" : "Enable word wrap";
-  button.textContent = label;
+  button.textContent = "";
   button.title = ariaLabel;
   button.setAttribute("aria-label", ariaLabel);
 }

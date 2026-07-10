@@ -759,7 +759,9 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(shell.dataset.sourceCollapsed, "true");
     assert.equal(body.attributes["aria-hidden"], "true");
     assert.equal(toggle?.attributes["aria-expanded"], "false");
-    assert.equal(toggle?.textContent, "Show source");
+    assert.equal(toggle?.textContent, "");
+    assert.equal(toggle?.title, "Show source");
+    assert.equal(toggle?.attributes["aria-label"], "Show source");
     assert.isNotEmpty(body.id);
 
     toggle?.dispatchFakeEvent("click");
@@ -767,7 +769,9 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(shell.dataset.sourceCollapsed, "false");
     assert.equal(body.attributes["aria-hidden"], "false");
     assert.equal(toggle?.attributes["aria-expanded"], "true");
-    assert.equal(toggle?.textContent, "Hide source");
+    assert.equal(toggle?.textContent, "");
+    assert.equal(toggle?.title, "Hide source");
+    assert.equal(toggle?.attributes["aria-label"], "Hide source");
   });
 
   it("adds a PNG figure-copy control for safe SVG previews", function () {
@@ -807,7 +811,9 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(shell.dataset.sourceCollapsed, "true");
     assert.equal(body.attributes["aria-hidden"], "true");
     assert.equal(toggle?.attributes["aria-expanded"], "false");
-    assert.equal(toggle?.textContent, "Show source");
+    assert.equal(toggle?.textContent, "");
+    assert.equal(toggle?.title, "Show source");
+    assert.equal(toggle?.attributes["aria-label"], "Show source");
   });
 
   it("adds a disabled PNG figure-copy control for pending Mermaid previews", function () {
@@ -841,14 +847,18 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(shell.dataset.sourceCollapsed, "false");
     assert.equal(body.attributes["aria-hidden"], "false");
     assert.equal(toggle?.attributes["aria-expanded"], "true");
-    assert.equal(toggle?.textContent, "Hide source");
+    assert.equal(toggle?.textContent, "");
+    assert.equal(toggle?.title, "Hide source");
+    assert.equal(toggle?.attributes["aria-label"], "Hide source");
 
     toggle?.dispatchFakeEvent("click");
 
     assert.equal(shell.dataset.sourceCollapsed, "true");
     assert.equal(body.attributes["aria-hidden"], "true");
     assert.equal(toggle?.attributes["aria-expanded"], "false");
-    assert.equal(toggle?.textContent, "Show source");
+    assert.equal(toggle?.textContent, "");
+    assert.equal(toggle?.title, "Show source");
+    assert.equal(toggle?.attributes["aria-label"], "Show source");
   });
 
   it("adds a per-block word-wrap toggle for code blocks", function () {
@@ -866,21 +876,24 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(shell.dataset.wordWrap, "false");
     assert.equal(wrapToggle?.attributes["aria-pressed"], "false");
     assert.equal(wrapToggle?.attributes["aria-label"], "Enable word wrap");
-    assert.equal(wrapToggle?.textContent, "Wrap");
+    assert.equal(wrapToggle?.title, "Enable word wrap");
+    assert.equal(wrapToggle?.textContent, "");
 
     wrapToggle?.dispatchFakeEvent("click");
 
     assert.equal(shell.dataset.wordWrap, "true");
     assert.equal(wrapToggle?.attributes["aria-pressed"], "true");
     assert.equal(wrapToggle?.attributes["aria-label"], "Disable word wrap");
-    assert.equal(wrapToggle?.textContent, "No wrap");
+    assert.equal(wrapToggle?.title, "Disable word wrap");
+    assert.equal(wrapToggle?.textContent, "");
 
     wrapToggle?.dispatchFakeEvent("click");
 
     assert.equal(shell.dataset.wordWrap, "false");
     assert.equal(wrapToggle?.attributes["aria-pressed"], "false");
     assert.equal(wrapToggle?.attributes["aria-label"], "Enable word wrap");
-    assert.equal(wrapToggle?.textContent, "Wrap");
+    assert.equal(wrapToggle?.title, "Enable word wrap");
+    assert.equal(wrapToggle?.textContent, "");
   });
 
   it("wraps plain text fences by default while keeping the toggle reversible", function () {
@@ -898,14 +911,16 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(shell.dataset.wordWrap, "true");
     assert.equal(wrapToggle?.attributes["aria-pressed"], "true");
     assert.equal(wrapToggle?.attributes["aria-label"], "Disable word wrap");
-    assert.equal(wrapToggle?.textContent, "No wrap");
+    assert.equal(wrapToggle?.title, "Disable word wrap");
+    assert.equal(wrapToggle?.textContent, "");
 
     wrapToggle?.dispatchFakeEvent("click");
 
     assert.equal(shell.dataset.wordWrap, "false");
     assert.equal(wrapToggle?.attributes["aria-pressed"], "false");
     assert.equal(wrapToggle?.attributes["aria-label"], "Enable word wrap");
-    assert.equal(wrapToggle?.textContent, "Wrap");
+    assert.equal(wrapToggle?.title, "Enable word wrap");
+    assert.equal(wrapToggle?.textContent, "");
   });
 
   it("treats unsafe SVG without a preview like ordinary expanded code", function () {

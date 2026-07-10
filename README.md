@@ -20,6 +20,38 @@ and save notes without leaving your library. It works with standard API
 providers, local OpenAI-compatible models, WebChat, Codex App-Server,
 and Claude Code.
 
+> <a id="this-is-a-fork"></a>
+>
+> ### 🔀 This is a fork
+>
+> This repository (`uscabayaosj/llm-for-zotero_hack`) is a **fork** of
+> [`yilewang/llm-for-zotero`](https://github.com/yilewang/llm-for-zotero),
+> the original project. It tracks upstream closely and regularly merges
+> upstream `main` in, but it also carries **additional changes not (yet)
+> merged upstream**, built on top of an independent security audit
+> (MIMO, 2026-07-07 — see [`MIMO_AUDIT_REPORT.md`](./MIMO_AUDIT_REPORT.md)).
+>
+> **What's different in this fork:**
+>
+> - **Priority-1 security hardening** — `run_command` and `zotero_script`
+>   (both modes) now always require explicit user confirmation before
+>   running, closing the audit's top-priority gap where a prompt-injected
+>   PDF/EPUB could otherwise trigger unattended code execution or Zotero
+>   script actions. The WebChat relay endpoints also now require a bearer
+>   token, so no other local process can read or inject chat traffic.
+> - **EPUB attachments as first-class cited sources** — EPUB text is
+>   extracted locally in spine order for chat context and agent reads,
+>   just like PDFs, and generated citations from EPUB sources are
+>   click-to-locate: clicking one opens the EPUB in Zotero's reader and
+>   jumps straight to the cited passage.
+>
+> Design rationale and the remaining hardening roadmap are documented in
+> [`doc/GROUNDED_ASSISTANT_REBUILD.md`](./doc/GROUNDED_ASSISTANT_REBUILD.md).
+> These changes have been proposed upstream but are not yet merged into
+> `yilewang/llm-for-zotero`; until they are, this fork is the place to get
+> them. Everything else in this README describes functionality shared with
+> upstream unless noted otherwise.
+
 Documentation:
 
 - [English](https://yilewang.github.io/llm-for-zotero)
@@ -35,6 +67,7 @@ Documentation:
 
 ## Table of Contents
 
+- [About This Fork](#this-is-a-fork)
 - [At a Glance](#at-a-glance)
 - [Quick Start](#quick-start)
 - [What's New](#whats-new)

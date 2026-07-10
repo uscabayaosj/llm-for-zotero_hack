@@ -197,6 +197,43 @@ export function reconcileCodexAppServerReasoningMode(
   );
 }
 
+export function resolveCodexAppServerReasoningSelection(params: {
+  mode: string;
+  choices: CodexAppServerReasoningChoice[];
+  catalogReady: boolean;
+}): {
+  mode: string;
+  choices: CodexAppServerReasoningChoice[];
+} {
+  if (params.catalogReady) {
+    return {
+      mode: reconcileCodexAppServerReasoningMode(params.mode, params.choices),
+      choices: params.choices,
+    };
+  }
+
+  const normalizedMode = params.mode.trim();
+  if (!normalizedMode || normalizedMode.toLowerCase() === "auto") {
+    return { mode: "auto", choices: params.choices };
+  }
+  const existingChoice = params.choices.find(
+    (choice) => choice.value.toLowerCase() === normalizedMode.toLowerCase(),
+  );
+  if (existingChoice) {
+    return { mode: existingChoice.value, choices: params.choices };
+  }
+  return {
+    mode: normalizedMode,
+    choices: [
+      ...params.choices,
+      {
+        value: normalizedMode,
+        label: formatCodexAppServerReasoningLabel(normalizedMode),
+      },
+    ],
+  };
+}
+
 function createRuntimeModelEntry(params: {
   model: string;
   displayModelLabel: string;

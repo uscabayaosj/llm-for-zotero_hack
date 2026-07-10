@@ -3442,6 +3442,7 @@ export function openStandaloneChat(options?: {
           });
           if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
+          setConversationSystemPref(resolvedNextSystem);
           currentConversationSystem = resolvedNextSystem;
           activeConversationKey = getConversationKey(activeNoteItem);
           mountChatPanel(activeNoteItem);

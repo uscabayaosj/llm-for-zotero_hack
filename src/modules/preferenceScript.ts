@@ -189,7 +189,7 @@ import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryP
 import {
   getCodexAppServerReasoningChoices,
   loadCodexAppServerModelCatalog,
-  reconcileCodexAppServerReasoningMode,
+  resolveCodexAppServerReasoningSelection,
   type CodexAppServerModelCatalogEntry,
 } from "../codexAppServer/modelCatalog";
 import {
@@ -2471,29 +2471,30 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   let codexReasoningCatalogRefreshId = 0;
   const renderCodexReasoningOptions = (
     models: CodexAppServerModelCatalogEntry[],
+    catalogReady: boolean,
   ) => {
     if (!codexAppServerReasoningSelect) return;
-    const choices = getCodexAppServerReasoningChoices({
-      models,
-      selectedModel:
-        codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
-    });
     const currentMode = getCodexReasoningModePref();
-    const reconciledMode = reconcileCodexAppServerReasoningMode(
-      currentMode,
-      choices,
-    );
-    if (reconciledMode !== currentMode) {
-      setCodexReasoningModePref(reconciledMode);
+    const selection = resolveCodexAppServerReasoningSelection({
+      mode: currentMode,
+      choices: getCodexAppServerReasoningChoices({
+        models,
+        selectedModel:
+          codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
+      }),
+      catalogReady,
+    });
+    if (catalogReady && selection.mode !== currentMode) {
+      setCodexReasoningModePref(selection.mode);
     }
-    const options = choices.map((choice) => {
+    const options = selection.choices.map((choice) => {
       const option = el(doc, "option") as HTMLOptionElement;
       option.value = choice.value;
       option.textContent = choice.label;
       return option;
     });
     codexAppServerReasoningSelect.replaceChildren(...options);
-    codexAppServerReasoningSelect.value = reconciledMode;
+    codexAppServerReasoningSelect.value = selection.mode;
   };
   const refreshCodexReasoningOptions = async () => {
     if (!codexAppServerReasoningSelect) return;
@@ -2504,14 +2505,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         codexPath: getConfiguredCodexAppServerBinaryPath(),
       });
       if (refreshId !== codexReasoningCatalogRefreshId) return;
-      renderCodexReasoningOptions(catalog.models);
+      renderCodexReasoningOptions(catalog.models, true);
     } catch (error) {
       if (refreshId !== codexReasoningCatalogRefreshId) return;
       ztoolkit.log(
         "Codex app-server: failed to load reasoning options in preferences",
         error,
       );
-      renderCodexReasoningOptions([]);
+      renderCodexReasoningOptions([], false);
     }
   };
 

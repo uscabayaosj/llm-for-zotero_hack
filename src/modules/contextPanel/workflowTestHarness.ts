@@ -620,6 +620,7 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
     basePaperItemId: parsePositiveInt(panelRoot?.dataset.basePaperItemId),
     contextItemId: parsePositiveInt(panelRoot?.dataset.contextItemId),
     conversationKind: panelRoot?.dataset.conversationKind || undefined,
+    conversationSystem: panelRoot?.dataset.conversationSystem || undefined,
     titleText: titleEl?.textContent?.trim() || undefined,
     chipText: Array.from(
       contentArea?.querySelectorAll(".llm-paper-context-chip-text") || [],
@@ -666,6 +667,18 @@ async function clickStandaloneTab(
     `.llm-standalone-tab[data-tab='${tab}']`,
   ) as HTMLButtonElement | null;
   if (!button) throw new Error(`Standalone ${tab} tab was not rendered`);
+  button.click();
+  await Zotero.Promise.delay(250);
+  return readStandaloneDiagnostics();
+}
+
+async function clickStandaloneSystemToggle(): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const button = doc.querySelector(
+    ".llm-standalone-claude-toggle",
+  ) as HTMLButtonElement | null;
+  if (!button) throw new Error("Standalone system toggle was not rendered");
   button.click();
   await Zotero.Promise.delay(250);
   return readStandaloneDiagnostics();
@@ -883,6 +896,7 @@ export function installWorkflowTestHarness(targetAddon: {
     renderAssistantForPanel,
     openStandaloneForItem,
     clickStandaloneTab,
+    clickStandaloneSystemToggle,
     askStandalone,
     seedStandaloneUserMessage,
     notifyStandaloneItemChanged,

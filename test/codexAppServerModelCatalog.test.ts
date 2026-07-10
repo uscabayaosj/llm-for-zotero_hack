@@ -4,6 +4,7 @@ import {
   getCodexAppServerReasoningChoices,
   loadCodexAppServerModelCatalog,
   reconcileCodexAppServerReasoningMode,
+  resolveCodexAppServerReasoningSelection,
 } from "../src/codexAppServer/modelCatalog";
 
 describe("Codex app-server model catalog", function () {
@@ -267,5 +268,34 @@ describe("Codex app-server model catalog", function () {
       "auto",
     );
     assert.equal(reconcileCodexAppServerReasoningMode("", solChoices), "auto");
+  });
+
+  it("preserves the selected reasoning effort until a catalog loads successfully", function () {
+    const fallbackChoices = getCodexAppServerReasoningChoices({
+      models: [],
+      selectedModel: "future",
+    });
+
+    const unavailable = resolveCodexAppServerReasoningSelection({
+      mode: "ultra",
+      choices: fallbackChoices,
+      catalogReady: false,
+    });
+    assert.equal(unavailable.mode, "ultra");
+    assert.include(
+      unavailable.choices.map((choice) => choice.value),
+      "ultra",
+    );
+
+    const ready = resolveCodexAppServerReasoningSelection({
+      mode: "ultra",
+      choices: fallbackChoices,
+      catalogReady: true,
+    });
+    assert.equal(ready.mode, "auto");
+    assert.notInclude(
+      ready.choices.map((choice) => choice.value),
+      "ultra",
+    );
   });
 });

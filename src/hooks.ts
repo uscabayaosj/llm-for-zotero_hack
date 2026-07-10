@@ -7,6 +7,8 @@ import {
   registerLLMStyles,
   registerNoteEditingSelectionTracking,
   registerReaderSelectionTracking,
+  unregisterAllNoteEditingSelectionTracking,
+  unregisterNoteEditingSelectionTracking,
   unregisterReaderSelectionTracking,
   openStandaloneChat,
 } from "./modules/contextPanel";
@@ -352,6 +354,7 @@ function registerPrefsPane() {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  unregisterNoteEditingSelectionTracking(win);
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
   addon.data.standaloneWindow?.close();
@@ -366,6 +369,7 @@ function onShutdown(): void {
   }
   ztoolkit.unregisterAll();
   unregisterReaderSelectionTracking();
+  unregisterAllNoteEditingSelectionTracking();
   addon.data.dialog?.window?.close();
   addon.data.standaloneWindow?.close();
   try {

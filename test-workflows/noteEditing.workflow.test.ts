@@ -405,6 +405,49 @@ describe("workflow: note editing mode", function () {
     );
   });
 
+  it("routes a standalone note through the runtime selected in its toolbar", async function () {
+    fixture = await api.createItemNoteFixture({
+      title: "Workflow Standalone Runtime Parent",
+      pdfTitle: "Workflow Standalone Runtime PDF",
+      noteHtml: "<p>Standalone note routing must follow its toolbar.</p>",
+    });
+
+    await withPrefs(
+      {
+        enableCodexAppServerMode: true,
+        enableClaudeCodeMode: false,
+        conversationSystem: "upstream",
+      },
+      async () => {
+        const initial = await api.openStandaloneForItem(
+          (fixture as WorkflowTestNoteFixture).noteItemId,
+        );
+        assert.equal(initial.conversationSystem, "upstream");
+
+        const switched = await api.clickStandaloneSystemToggle();
+        assert.equal(switched.conversationSystem, "codex");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "codex",
+            "paper",
+            switched.conversationKey || 0,
+          ),
+          JSON.stringify(switched, null, 2),
+        );
+
+        const send = await api.askStandalone(
+          "Route this standalone note through Codex",
+        );
+        assertNoteSendRouting({
+          send,
+          system: "codex",
+          noteItemId: (fixture as WorkflowTestNoteFixture).noteItemId,
+          conversationKind: "paper",
+        });
+      },
+    );
+  });
+
   it("clears only the transient note-edit selection", async function () {
     const selectedSentence = "This selected sentence is transient.";
     fixture = await api.createItemNoteFixture({

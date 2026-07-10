@@ -67,6 +67,7 @@ export type WorkflowTestStandaloneDiagnostics = {
   basePaperItemId?: number;
   contextItemId?: number;
   conversationKind?: string;
+  conversationSystem?: string;
   titleText?: string;
   chipText: string[];
   selectedContextLabels: string[];
@@ -120,6 +121,7 @@ export type WorkflowTestApi = {
   clickStandaloneTab: (
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  clickStandaloneSystemToggle: () => Promise<WorkflowTestStandaloneDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
   seedStandaloneUserMessage: (

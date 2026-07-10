@@ -473,7 +473,7 @@ import {
   buildCodexRuntimeModelEntries,
   getCodexAppServerReasoningChoices,
   loadCodexAppServerModelCatalog,
-  reconcileCodexAppServerReasoningMode,
+  resolveCodexAppServerReasoningSelection,
   type CodexAppServerModelCatalogEntry,
 } from "../../codexAppServer/modelCatalog";
 import {
@@ -845,18 +845,21 @@ export function setupHandlers(
   let codexModelCatalogModels: CodexAppServerModelCatalogEntry[] = [];
   let codexModelCatalogInFlight: Promise<void> | null = null;
   let codexModelCatalogPath = "";
-  const getCodexReasoningChoices = () =>
-    getCodexAppServerReasoningChoices({
-      models: codexModelCatalogModels,
-      selectedModel: getCodexRuntimeModelPref(),
+  const resolveCurrentCodexReasoningSelection = () =>
+    resolveCodexAppServerReasoningSelection({
+      mode: getCodexReasoningModePref(),
+      choices: getCodexAppServerReasoningChoices({
+        models: codexModelCatalogModels,
+        selectedModel: getCodexRuntimeModelPref(),
+      }),
+      catalogReady: codexModelCatalogStatus === "ready",
     });
+  const getCodexReasoningChoices = () =>
+    resolveCurrentCodexReasoningSelection().choices;
   const reconcileSelectedCodexReasoningMode = () => {
     const currentMode = getCodexReasoningModePref();
-    const reconciledMode = reconcileCodexAppServerReasoningMode(
-      currentMode,
-      getCodexReasoningChoices(),
-    );
-    if (reconciledMode !== currentMode) {
+    const reconciledMode = resolveCurrentCodexReasoningSelection().mode;
+    if (codexModelCatalogStatus === "ready" && reconciledMode !== currentMode) {
       setCodexReasoningModePref(reconciledMode);
     }
     return reconciledMode;
@@ -900,7 +903,6 @@ export function setupHandlers(
       .catch((error: unknown) => {
         codexModelCatalogModels = [];
         codexModelCatalogStatus = "error";
-        reconcileSelectedCodexReasoningMode();
         codexModelCatalogError =
           error instanceof Error ? error.message : String(error);
         ztoolkit.log("Codex app-server: failed to load model catalog", error);
@@ -5933,8 +5935,7 @@ export function setupHandlers(
     }
     if (isCodexConversationSystem()) {
       const mode =
-        codexModelCatalogStatus === "ready" ||
-        codexModelCatalogStatus === "error"
+        codexModelCatalogStatus === "ready"
           ? reconcileSelectedCodexReasoningMode()
           : getCodexReasoningModePref();
       return buildCodexAppServerReasoningConfig(mode);

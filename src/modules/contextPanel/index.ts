@@ -66,6 +66,10 @@ import {
   getNoteFocusConversationKey,
   syncNoteEditingSelectedText,
 } from "./noteEditing/selectionController";
+import {
+  createNoteEditingSelectionTrackingLifecycle,
+  type NoteEditingSelectionTrackingLifecycle,
+} from "./noteEditing/selectionTrackingLifecycle";
 import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
 import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
 import {
@@ -1136,16 +1140,15 @@ export function unregisterReaderSelectionTracking() {
 }
 
 type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {
-  __llmNoteEditingSelectionTracking?: {
-    intervalId: number;
-    refresh: () => void;
-    trackSelectionDocument: (doc: Document) => void;
-    trackedSelectionDocuments: Set<Document>;
+  __llmNoteEditingSelectionTracking?: NoteEditingSelectionTrackingLifecycle & {
     lastNoteId: number;
     lastNoteFocusConversationKey: number;
     lastSelectionText: string;
   };
 };
+
+const noteEditingSelectionTrackingWindows =
+  new Set<MainWindowWithNoteEditingTracker>();
 
 function collectAccessibleDocuments(
   rootDoc: Document,
@@ -1493,58 +1496,44 @@ export function registerNoteEditingSelectionTracking(
   const refresh = () => {
     refreshTrackedNoteEditingSelection(trackedWindow);
   };
-  // Debounce noisy selectionchange events, but refresh immediately after the
-  // user completes mouse or keyboard selection so the Editing chip appears
-  // without waiting for runtime conversation refresh.
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let immediateTimer: ReturnType<typeof setTimeout> | null = null;
-  const debouncedRefresh = () => {
-    if (debounceTimer !== null) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(refresh, 150);
+  const handleUnload = () => {
+    unregisterNoteEditingSelectionTracking(trackedWindow);
   };
-  const immediateRefresh = () => {
-    if (immediateTimer !== null) clearTimeout(immediateTimer);
-    immediateTimer = setTimeout(refresh, 0);
-  };
-  const trackedSelectionDocuments = new Set<Document>();
-  const trackSelectionDocument = (doc: Document) => {
-    if (trackedSelectionDocuments.has(doc)) return;
-    trackedSelectionDocuments.add(doc);
-    doc.addEventListener("selectionchange", debouncedRefresh, true);
-    doc.addEventListener("mouseup", immediateRefresh, true);
-    doc.addEventListener("keyup", immediateRefresh, true);
-  };
-  // Event listeners handle real-time changes; this interval is only a fallback
-  // safety net for note-editor documents that do not emit selection events.
-  const intervalId = win.setInterval(refresh, 250);
-  trackedWindow.__llmNoteEditingSelectionTracking = {
-    intervalId,
+  const lifecycle = createNoteEditingSelectionTrackingLifecycle({
+    timerHost: win,
     refresh,
-    trackSelectionDocument,
-    trackedSelectionDocuments,
+    onDispose: () => {
+      win.removeEventListener("unload", handleUnload);
+      noteEditingSelectionTrackingWindows.delete(trackedWindow);
+      if (
+        trackedWindow.__llmNoteEditingSelectionTracking?.dispose ===
+        lifecycle.dispose
+      ) {
+        delete trackedWindow.__llmNoteEditingSelectionTracking;
+      }
+    },
+  });
+  trackedWindow.__llmNoteEditingSelectionTracking = {
+    ...lifecycle,
     lastNoteId: 0,
     lastNoteFocusConversationKey: 0,
     lastSelectionText: "",
   };
-  trackSelectionDocument(win.document);
-  win.addEventListener(
-    "unload",
-    () => {
-      const tracker = trackedWindow.__llmNoteEditingSelectionTracking;
-      if (!tracker) return;
-      win.clearInterval(tracker.intervalId);
-      if (debounceTimer !== null) clearTimeout(debounceTimer);
-      if (immediateTimer !== null) clearTimeout(immediateTimer);
-      for (const doc of tracker.trackedSelectionDocuments) {
-        doc.removeEventListener("selectionchange", debouncedRefresh, true);
-        doc.removeEventListener("mouseup", immediateRefresh, true);
-        doc.removeEventListener("keyup", immediateRefresh, true);
-      }
-      delete trackedWindow.__llmNoteEditingSelectionTracking;
-    },
-    { once: true },
-  );
+  noteEditingSelectionTrackingWindows.add(trackedWindow);
+  lifecycle.trackSelectionDocument(win.document);
+  win.addEventListener("unload", handleUnload, { once: true });
   refresh();
+}
+
+export function unregisterNoteEditingSelectionTracking(win: Window): void {
+  const trackedWindow = win as MainWindowWithNoteEditingTracker;
+  trackedWindow.__llmNoteEditingSelectionTracking?.dispose();
+}
+
+export function unregisterAllNoteEditingSelectionTracking(): void {
+  for (const win of [...noteEditingSelectionTrackingWindows]) {
+    unregisterNoteEditingSelectionTracking(win);
+  }
 }
 
 export function clearConversation(itemId: number) {

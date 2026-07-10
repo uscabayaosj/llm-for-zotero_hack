@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
@@ -129,6 +130,47 @@ class CaptionWindowTests(unittest.TestCase):
         self.assertGreater(candidate.confidence, 0.9)
         self.assertGreater(candidate.rect.width, 700)
 
+    def test_caption_region_ignores_vertical_page_margin_furniture(self):
+        margin_text = [
+            self.text_box(800, 100 + index * 24, 0, 15, "journal margin")
+            for index in range(12)
+        ]
+        page = {
+            "width": 820.0,
+            "height": 1180.0,
+            "texts": margin_text,
+        }
+        target = self.extractor.Target(
+            label="Figure 1",
+            page_number=3,
+            caption_box=self.extractor.Rect(80, 700, 500, 12),
+            caption_text="Figure 1. Full-width figure above the caption.",
+            source="pdf-text",
+        )
+        image = self.image(
+            [
+                (80, 90, 700, 680),
+                *[
+                    (792, 100 + index * 24, 810, 115 + index * 24)
+                    for index in range(12)
+                ],
+            ]
+        )
+
+        candidate = self.extractor.choose_caption_region_candidate(
+            image,
+            page,
+            target,
+            [target],
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertLessEqual(candidate.rect.right, 710)
+
+    def test_crop_margin_preserves_sparse_panel_labels(self):
+        self.assertEqual(self.extractor.figure_crop_margin_pixels(216), 13)
+        self.assertEqual(self.extractor.figure_crop_margin_pixels(72), 4)
+
     def test_adjacent_same_page_figures_use_detected_columns(self):
         page = {
             "width": 820.0,
@@ -172,7 +214,7 @@ class CaptionWindowTests(unittest.TestCase):
         self.assertGreaterEqual(candidate4.rect.width, 320)
         self.assertGreaterEqual(candidate5.rect.left, 445)
 
-    def test_default_targets_ignore_mineru_visual_geometry(self):
+    def test_mineru_semantics_ignore_all_mineru_visual_geometry(self):
         with tempfile.TemporaryDirectory() as tmp:
             mineru_dir = Path(tmp)
             (mineru_dir / "manifest.json").write_text(
@@ -181,9 +223,9 @@ class CaptionWindowTests(unittest.TestCase):
                         "allFigures": [
                             {
                                 "label": "Figure 1",
-                                "page": 9,
-                                "caption": "Figure 1. Bogus MinerU target.",
-                                "pdfCropBox": [10, 10, 20, 20],
+                                "page": 0,
+                                "caption": "Figure 1. Semantic caption from MinerU.",
+                                "pdfCropRange": [10, 10, 800, 900],
                             },
                         ],
                     },
@@ -194,10 +236,12 @@ class CaptionWindowTests(unittest.TestCase):
                     [
                         {
                             "type": "image",
-                            "page_idx": 8,
-                            "bbox": [10, 10, 20, 20],
-                            "image_path": "images/bogus.png",
-                            "img_caption": ["Figure 1. Bogus MinerU target."],
+                            "page_idx": 0,
+                            "bbox": [20, 30, 780, 880],
+                            "img_path": "images/bogus.png",
+                            "image_caption": [
+                                "Figure 1. Longer semantic caption from MinerU content."
+                            ],
                         },
                     ],
                 ),
@@ -205,15 +249,8 @@ class CaptionWindowTests(unittest.TestCase):
             page = {
                 "width": 820.0,
                 "height": 1180.0,
-                "texts": [
-                    self.text_box(
-                        82,
-                        547,
-                        320,
-                        12,
-                        "Figure 1. PDF caption should be the crop target.",
-                    ),
-                ],
+                "texts": [],
+                "images": [],
             }
             case = self.extractor.PdfCase(
                 attachment_id=1,
@@ -227,13 +264,51 @@ class CaptionWindowTests(unittest.TestCase):
             targets = self.extractor.build_case_targets(
                 case,
                 {1: page},
-                use_mineru_targets=False,
+                use_mineru_semantics=True,
             )
 
             self.assertEqual(len(targets), 1)
-            self.assertEqual(targets[0].source, "pdf-text")
+            self.assertIn("mineru-manifest", targets[0].source)
+            self.assertIn("mineru-caption", targets[0].source)
             self.assertEqual(targets[0].page_number, 1)
-            self.assertIsNone(targets[0].visual_box)
+            self.assertIn("Longer semantic caption", targets[0].caption_text)
+            self.assertFalse(hasattr(targets[0], "visual_box"))
+            self.assertFalse(hasattr(targets[0], "visual_aspect_ratio"))
+
+    def test_direct_mode_accepts_pdf_without_mineru_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "paper.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n")
+            json_out = root / "figures.json"
+            original_evaluate_case = self.extractor.evaluate_case
+            self.extractor.evaluate_case = lambda *args, **kwargs: None
+            try:
+                exit_code = self.extractor.run_direct_mode(
+                    SimpleNamespace(
+                        pdf=str(pdf_path),
+                        mineru_dir=None,
+                        out=str(root / "work"),
+                        clean_out=True,
+                        attachment_id="22",
+                        attachment_key="",
+                        source_filename="paper.pdf",
+                        poppler_bin="/tmp/poppler",
+                        dpi=216,
+                        json_out=str(json_out),
+                        pages="",
+                        query="Figure 1",
+                        crop_dir=str(root / "crops"),
+                    )
+                )
+            finally:
+                self.extractor.evaluate_case = original_evaluate_case
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(json_out.read_text())
+            self.assertEqual(payload["status"], "no_figures")
+            self.assertIsNone(payload.get("mineruDir"))
+            self.assertIn("PDF text", payload["warnings"][0])
 
     def test_run_uses_platform_path_separator_for_poppler_bin(self):
         original_run = self.extractor.subprocess.run
@@ -323,7 +398,6 @@ class CaptionWindowTests(unittest.TestCase):
                     source_filename="paper.pdf",
                     poppler_bin=str(root / "poppler"),
                     dpi=144,
-                    use_mineru_targets=True,
                     pages="",
                     query="Figure 1",
                     crop_dir=str(crop_dir),

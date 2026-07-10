@@ -96,6 +96,12 @@ const MERMAID_THEME_VARIABLES: Record<
 };
 
 let renderedCodeBlockSourceIdCounter = 0;
+const WORD_WRAP_DEFAULT_CODE_LANGS = new Set([
+  "plain",
+  "plaintext",
+  "text",
+  "txt",
+]);
 
 const MERMAID_FLOWCHART_CONFIG = {
   htmlLabels: true,
@@ -505,9 +511,22 @@ const SAFE_GLOBAL_MARKDOWN_ATTRS = new Set([
 ]);
 
 const KATEX_SVG_TAGS = new Set(["svg", "path", "line"]);
+const RENDERED_URL_WHITESPACE = /\s/;
 
 function compactRenderedUrl(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f\s]+/g, "");
+  let compact = "";
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (
+      codePoint <= 0x1f ||
+      codePoint === 0x7f ||
+      RENDERED_URL_WHITESPACE.test(char)
+    ) {
+      continue;
+    }
+    compact += char;
+  }
+  return compact;
 }
 
 function isSafeRenderedMarkdownUrl(
@@ -1990,9 +2009,28 @@ function setCodeBlockSourceCollapsed(
   body.setAttribute("aria-hidden", collapsed ? "true" : "false");
   button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   const label = collapsed ? "Show source" : "Hide source";
-  button.textContent = label;
+  button.textContent = "";
   button.title = label;
   button.setAttribute("aria-label", label);
+}
+
+function setCodeBlockWordWrap(
+  shell: HTMLElement,
+  button: HTMLButtonElement,
+  enabled: boolean,
+): void {
+  shell.dataset.wordWrap = enabled ? "true" : "false";
+  button.setAttribute("aria-pressed", enabled ? "true" : "false");
+  const ariaLabel = enabled ? "Disable word wrap" : "Enable word wrap";
+  button.textContent = "";
+  button.title = ariaLabel;
+  button.setAttribute("aria-label", ariaLabel);
+}
+
+function shouldDefaultCodeBlockWordWrap(shell: HTMLElement): boolean {
+  return WORD_WRAP_DEFAULT_CODE_LANGS.has(
+    (shell.dataset.codeLang || "").trim().toLowerCase(),
+  );
 }
 
 function getVisualCodeBlockPreview(shell: HTMLElement): HTMLElement | null {
@@ -2126,6 +2164,34 @@ export function attachRenderedCodeBlockControls(
 
     button.setAttribute("aria-controls", body.id);
     setCodeBlockSourceCollapsed(shell, body, button, initialCollapsed);
+
+    let wrapButton = getDirectChildWithClass(
+      header,
+      "llm-codeblock-wrap-toggle",
+    ) as HTMLButtonElement | null;
+    const initialWordWrap =
+      shell.dataset.wordWrap === undefined
+        ? shouldDefaultCodeBlockWordWrap(shell)
+        : shell.dataset.wordWrap === "true";
+    if (!wrapButton) {
+      const createdWrapButton = doc.createElement(
+        "button",
+      ) as HTMLButtonElement;
+      createdWrapButton.type = "button";
+      createdWrapButton.className = "llm-codeblock-wrap-toggle";
+      createdWrapButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setCodeBlockWordWrap(
+          shell,
+          createdWrapButton,
+          shell.dataset.wordWrap !== "true",
+        );
+      });
+      header.insertBefore(createdWrapButton, button);
+      wrapButton = createdWrapButton;
+    }
+    setCodeBlockWordWrap(shell, wrapButton, initialWordWrap);
     attachCodeBlockFigureCopyButton(shell, header, doc);
   }
 }

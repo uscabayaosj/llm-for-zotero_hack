@@ -59,14 +59,28 @@ import {
   resolvePanelContextLifecycleState,
   appendSelectedTextContextForItem,
   applySelectedTextPreview,
-  syncSelectedTextContextForSource,
+  getSelectedTextContextEntries,
 } from "./contextResolution";
+import {
+  clearNoteEditingSelectedText,
+  getNoteFocusConversationKey,
+  syncNoteEditingSelectedText,
+} from "./noteEditing/selectionController";
+import {
+  createNoteEditingSelectionTrackingLifecycle,
+  type NoteEditingSelectionTrackingLifecycle,
+} from "./noteEditing/selectionTrackingLifecycle";
 import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
 import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "./readerSelection";
+import {
+  registerReaderSelectionTrackingListener,
+  unregisterReaderSelectionTrackingListener,
+  type ReaderSelectionTrackingReader,
+} from "./readerSelectionTracking";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
 import {
   resolveInitialPanelItemState,
@@ -101,6 +115,7 @@ import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
+import { freshStartupConversationSession } from "./freshStartupConversation";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -224,10 +239,27 @@ function isPanelConversationLoaded(
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
+  freshStartupConversationSession.begin();
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;
   let lastItemChangeSignature = "";
+  const setupEmbeddedPanelHandlers = (
+    body: Element,
+    rawItem: Zotero.Item | null | undefined,
+    resolvedItem: Zotero.Item | null | undefined,
+  ) => {
+    const startWithFreshConversation = resolvedItem
+      ? freshStartupConversationSession.consume()
+      : false;
+    setupHandlers(
+      body,
+      rawItem,
+      startWithFreshConversation
+        ? { startWithFreshConversation: true }
+        : undefined,
+    );
+  };
   Zotero.ItemPaneManager.registerSection({
     paneID: PANE_ID,
     pluginID: config.addonID,
@@ -384,12 +416,13 @@ export function registerReaderContextPanel() {
           void retainClaudeRuntimeForBody(body, resolvedState.item);
           // Attach handlers synchronously so buttons are
           // immediately interactive — don't gate on ensureConversationLoaded.
-          setupHandlers(body, item);
+          setupEmbeddedPanelHandlers(body, item, resolvedState.item);
           // Flag: onAsyncRender can skip the duplicate buildUI + setupHandlers.
           (body as any).__llmSyncRendered = true;
           // Defer conversation loading and chat rendering
           void (async () => {
             try {
+              if ((body as any).__llmFreshStartupConversationInFlight) return;
               if (resolvedState.item)
                 await ensureConversationLoaded(resolvedState.item);
               if (isStandaloneWindowActive()) return;
@@ -467,6 +500,7 @@ export function registerReaderContextPanel() {
       }
 
       if (resolvedItem) {
+        if ((body as any).__llmFreshStartupConversationInFlight) return;
         await ensureConversationLoaded(resolvedItem);
       }
       // Bail if a newer render has started while we were awaiting,
@@ -481,7 +515,7 @@ export function registerReaderContextPanel() {
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;
       if (!syncAlreadyRendered && !contextRefreshOnly) {
-        setupHandlers(body, item);
+        setupEmbeddedPanelHandlers(body, item, resolvedItem);
       }
       if (contextRefreshOnly) {
         const refreshContextSource = (body as any)
@@ -505,15 +539,15 @@ export function registerReaderContextPanel() {
   });
 }
 
-export function registerReaderSelectionTracking() {
-  const readerAPI = Zotero.Reader as _ZoteroTypes.Reader & {
-    __llmSelectionTrackingRegistered?: boolean;
-  };
-  if (!readerAPI || readerAPI.__llmSelectionTrackingRegistered) return;
+type ReaderTextSelectionPopupHandler =
+  _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">;
 
-  const handler: _ZoteroTypes.Reader.EventHandler<
-    "renderTextSelectionPopup"
-  > = (event) => {
+let readerSelectionTrackingHandler: ReaderTextSelectionPopupHandler | null =
+  null;
+
+function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
+  if (readerSelectionTrackingHandler) return readerSelectionTrackingHandler;
+  readerSelectionTrackingHandler = (event) => {
     const selectedText = (() => {
       const fromAnnotation = normalizeSelectedText(
         event.params?.annotation?.text || "",
@@ -1078,24 +1112,43 @@ export function registerReaderSelectionTracking() {
       }
     }
   };
+  return readerSelectionTrackingHandler;
+}
 
-  Zotero.Reader.registerEventListener(
-    "renderTextSelectionPopup",
-    handler,
+export function registerReaderSelectionTracking() {
+  const readerAPI = Zotero.Reader as
+    | ReaderSelectionTrackingReader<ReaderTextSelectionPopupHandler>
+    | undefined;
+  if (!readerAPI || typeof readerAPI.registerEventListener !== "function") {
+    return;
+  }
+  registerReaderSelectionTrackingListener(
+    readerAPI,
     config.addonID,
+    getReaderSelectionTrackingHandler(),
   );
-  readerAPI.__llmSelectionTrackingRegistered = true;
+}
+
+export function unregisterReaderSelectionTracking() {
+  const readerAPI = Zotero.Reader as
+    | ReaderSelectionTrackingReader<ReaderTextSelectionPopupHandler>
+    | undefined;
+  if (readerAPI) {
+    unregisterReaderSelectionTrackingListener(readerAPI, config.addonID);
+  }
+  readerSelectionTrackingHandler = null;
 }
 
 type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {
-  __llmNoteEditingSelectionTracking?: {
-    intervalId: number;
-    refresh: () => void;
+  __llmNoteEditingSelectionTracking?: NoteEditingSelectionTrackingLifecycle & {
     lastNoteId: number;
-    lastParentPaperItemId: number;
+    lastNoteFocusConversationKey: number;
     lastSelectionText: string;
   };
 };
+
+const noteEditingSelectionTrackingWindows =
+  new Set<MainWindowWithNoteEditingTracker>();
 
 function collectAccessibleDocuments(
   rootDoc: Document,
@@ -1196,6 +1249,107 @@ function refreshPanelsForConversationKey(conversationKey: number): void {
   }
 }
 
+export function refreshNoteEditingPanelsForNote(noteId: number): number {
+  const normalizedNoteId = Math.floor(Number(noteId || 0));
+  if (!Number.isFinite(normalizedNoteId) || normalizedNoteId <= 0) return 0;
+  let refreshedPanels = 0;
+  for (const [activeBody, syncPanelState] of activeContextPanelStateSync) {
+    if (!(activeBody as Element).isConnected) {
+      activeContextPanels.delete(activeBody);
+      activeContextPanelStateSync.delete(activeBody);
+      continue;
+    }
+    const activeRoot = activeBody.querySelector(
+      "#llm-main",
+    ) as HTMLDivElement | null;
+    const panelNoteId = Number(activeRoot?.dataset.noteId || 0);
+    if (
+      !Number.isFinite(panelNoteId) ||
+      Math.floor(panelNoteId) !== normalizedNoteId
+    ) {
+      continue;
+    }
+    const activeConversationKey = Number(activeRoot?.dataset.itemId || 0);
+    if (Number.isFinite(activeConversationKey) && activeConversationKey > 0) {
+      applySelectedTextPreview(activeBody, Math.floor(activeConversationKey));
+    } else {
+      syncPanelState();
+    }
+    refreshedPanels += 1;
+  }
+  return refreshedPanels;
+}
+
+function parseConversationSystem(value: unknown): ConversationSystem | null {
+  const raw = `${value || ""}`.trim().toLowerCase();
+  if (raw === "upstream") return "upstream";
+  if (raw === "claude_code") return "claude_code";
+  if (raw === "codex") return "codex";
+  return null;
+}
+
+function getActiveNotePanelConversationSystems(
+  noteId: number,
+): ConversationSystem[] {
+  if (!Number.isFinite(noteId) || noteId <= 0) return [];
+  const systems: ConversationSystem[] = [];
+  const seen = new Set<ConversationSystem>();
+  for (const [activeBody] of activeContextPanelStateSync) {
+    if (!(activeBody as Element).isConnected) continue;
+    const activeRoot = activeBody.querySelector(
+      "#llm-main",
+    ) as HTMLDivElement | null;
+    const panelNoteId = Number(activeRoot?.dataset.noteId || 0);
+    if (!Number.isFinite(panelNoteId) || Math.floor(panelNoteId) !== noteId) {
+      continue;
+    }
+    const system = parseConversationSystem(
+      activeRoot?.dataset.conversationSystem,
+    );
+    if (!system || seen.has(system)) continue;
+    seen.add(system);
+    systems.push(system);
+  }
+  return systems;
+}
+
+function hasCurrentNoteEditingSelectedText(params: {
+  conversationKey: number;
+  noteId: number;
+  text: string;
+}): boolean {
+  const conversationKey = Math.floor(Number(params.conversationKey || 0));
+  const noteId = Math.floor(Number(params.noteId || 0));
+  const text = params.text;
+  if (!conversationKey || !noteId || !text) return false;
+  return getSelectedTextContextEntries(conversationKey).some((entry) => {
+    if (entry.source !== "note-edit" || entry.text !== text) return false;
+    const entryNoteId = Math.floor(Number(entry.noteContext?.noteItemId || 0));
+    return !entryNoteId || entryNoteId === noteId;
+  });
+}
+
+function areCurrentNoteEditingSelectionsSynced(params: {
+  noteItem: Zotero.Item | null | undefined;
+  noteId: number;
+  text: string;
+  systems: ConversationSystem[];
+}): boolean {
+  if (!params.noteItem || !params.text) return true;
+  const targetSystems = params.systems.length ? params.systems : [null];
+  return targetSystems.every((system) => {
+    const conversationKey = getNoteFocusConversationKey(
+      params.noteItem,
+      system,
+    );
+    return hasCurrentNoteEditingSelectedText({
+      conversationKey: conversationKey || 0,
+      noteId: params.noteId,
+      text: params.text,
+    });
+  });
+}
+
 function refreshTrackedNoteEditingSelection(
   win: MainWindowWithNoteEditingTracker,
 ): void {
@@ -1226,17 +1380,10 @@ function refreshTrackedNoteEditingSelection(
     noteItem && Number.isFinite(noteItem.id) && noteItem.id > 0
       ? Math.floor(noteItem.id)
       : 0;
-  const nextParentPaperItemId: number = (() => {
-    if (!noteItem) return 0;
-    try {
-      const parentId = Number((noteItem as any).parentItemID ?? 0);
-      return Number.isFinite(parentId) && parentId > 0
-        ? Math.floor(parentId)
-        : 0;
-    } catch {
-      return 0;
-    }
-  })();
+  const panelSystems = getActiveNotePanelConversationSystems(nextNoteId);
+  const primaryPanelSystem = panelSystems[0] || null;
+  const nextNoteFocusConversationKey =
+    getNoteFocusConversationKey(noteItem, primaryPanelSystem) || 0;
 
   if (nextNoteId === 0 && tracker.lastNoteId === 0) {
     // No note was active before and none is active now — nothing to do.
@@ -1252,6 +1399,7 @@ function refreshTrackedNoteEditingSelection(
     if (
       tracker.lastSelectionText &&
       tracker.lastNoteId === nextNoteId &&
+      tracker.lastNoteFocusConversationKey === nextNoteFocusConversationKey &&
       typeof win.document.hasFocus === "function" &&
       !win.document.hasFocus()
     ) {
@@ -1261,8 +1409,15 @@ function refreshTrackedNoteEditingSelection(
     /* ignore */
   }
 
+  const noteSelectionDocs = noteItem
+    ? collectAccessibleDocuments(win.document)
+    : [];
+  for (const doc of noteSelectionDocs) {
+    tracker.trackSelectionDocument(doc);
+  }
+
   const nextSelectionText = noteItem
-    ? collectAccessibleDocuments(win.document).reduce((found, doc) => {
+    ? noteSelectionDocs.reduce((found, doc) => {
         if (found) return found;
         // Skip documents from background tab editors: only the focused
         // editor's selection matters.  Without this, switching from Note A
@@ -1278,59 +1433,58 @@ function refreshTrackedNoteEditingSelection(
 
   if (
     tracker.lastNoteId === nextNoteId &&
+    tracker.lastNoteFocusConversationKey === nextNoteFocusConversationKey &&
     tracker.lastSelectionText === nextSelectionText
   ) {
-    return;
+    if (
+      !nextSelectionText ||
+      areCurrentNoteEditingSelectionsSynced({
+        noteItem,
+        noteId: nextNoteId,
+        text: nextSelectionText,
+        systems: panelSystems,
+      })
+    ) {
+      return;
+    }
   }
 
   if (
-    tracker.lastNoteId > 0 &&
-    (tracker.lastNoteId !== nextNoteId || !nextSelectionText)
+    tracker.lastNoteFocusConversationKey > 0 &&
+    (tracker.lastNoteId !== nextNoteId ||
+      tracker.lastNoteFocusConversationKey !== nextNoteFocusConversationKey ||
+      !nextSelectionText)
   ) {
-    if (syncSelectedTextContextForSource(tracker.lastNoteId, "", "note-edit")) {
-      refreshPanelsForConversationKey(tracker.lastNoteId);
-    }
-    // Also clear from the parent paper panel (used by standalone window).
-    if (tracker.lastParentPaperItemId > 0) {
-      if (
-        syncSelectedTextContextForSource(
-          tracker.lastParentPaperItemId,
-          "",
-          "note-edit",
-        )
-      ) {
-        refreshPanelsForConversationKey(tracker.lastParentPaperItemId);
-      }
+    const cleared = clearNoteEditingSelectedText(
+      tracker.lastNoteFocusConversationKey,
+    );
+    if (cleared?.changed) {
+      refreshPanelsForConversationKey(cleared.conversationKey);
+      refreshNoteEditingPanelsForNote(tracker.lastNoteId);
     }
   }
 
+  let selectionChanged = false;
   if (nextNoteId > 0 && nextSelectionText) {
-    if (
-      syncSelectedTextContextForSource(
-        nextNoteId,
-        nextSelectionText,
-        "note-edit",
-      )
-    ) {
-      refreshPanelsForConversationKey(nextNoteId);
-    }
-    // Also sync to the parent paper panel so the standalone window (which is
-    // keyed to the parent paper item, not the note) shows the editing chip.
-    if (nextParentPaperItemId > 0) {
-      if (
-        syncSelectedTextContextForSource(
-          nextParentPaperItemId,
-          nextSelectionText,
-          "note-edit",
-        )
-      ) {
-        refreshPanelsForConversationKey(nextParentPaperItemId);
+    const targetSystems = panelSystems.length ? panelSystems : [null];
+    for (const system of targetSystems) {
+      const synced = syncNoteEditingSelectedText({
+        noteItem,
+        text: nextSelectionText,
+        system,
+      });
+      if (synced?.changed) {
+        selectionChanged = true;
+        refreshPanelsForConversationKey(synced.conversationKey);
       }
     }
+  }
+  if (selectionChanged) {
+    refreshNoteEditingPanelsForNote(nextNoteId);
   }
 
   tracker.lastNoteId = nextNoteId;
-  tracker.lastParentPaperItemId = nextParentPaperItemId;
+  tracker.lastNoteFocusConversationKey = nextNoteFocusConversationKey;
   tracker.lastSelectionText = nextSelectionText;
 }
 
@@ -1342,46 +1496,44 @@ export function registerNoteEditingSelectionTracking(
   const refresh = () => {
     refreshTrackedNoteEditingSelection(trackedWindow);
   };
-  // Debounced version for event-driven calls (selectionchange, mouseup,
-  // keyup) — prevents the expensive iframe traversal from firing dozens
-  // of times per second during rapid typing or drag-selecting.
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  const debouncedRefresh = () => {
-    if (debounceTimer !== null) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(refresh, 150);
+  const handleUnload = () => {
+    unregisterNoteEditingSelectionTracking(trackedWindow);
   };
-  // Interval reduced from 250ms → 1000ms.  The event listeners handle
-  // real-time changes; this interval is only a fallback safety net.
-  const intervalId = win.setInterval(refresh, 1000);
-  trackedWindow.__llmNoteEditingSelectionTracking = {
-    intervalId,
+  const lifecycle = createNoteEditingSelectionTrackingLifecycle({
+    timerHost: win,
     refresh,
+    onDispose: () => {
+      win.removeEventListener("unload", handleUnload);
+      noteEditingSelectionTrackingWindows.delete(trackedWindow);
+      if (
+        trackedWindow.__llmNoteEditingSelectionTracking?.dispose ===
+        lifecycle.dispose
+      ) {
+        delete trackedWindow.__llmNoteEditingSelectionTracking;
+      }
+    },
+  });
+  trackedWindow.__llmNoteEditingSelectionTracking = {
+    ...lifecycle,
     lastNoteId: 0,
-    lastParentPaperItemId: 0,
+    lastNoteFocusConversationKey: 0,
     lastSelectionText: "",
   };
-  win.document.addEventListener("selectionchange", debouncedRefresh, true);
-  win.document.addEventListener("mouseup", debouncedRefresh, true);
-  win.document.addEventListener("keyup", debouncedRefresh, true);
-  win.addEventListener(
-    "unload",
-    () => {
-      const tracker = trackedWindow.__llmNoteEditingSelectionTracking;
-      if (!tracker) return;
-      win.clearInterval(tracker.intervalId);
-      if (debounceTimer !== null) clearTimeout(debounceTimer);
-      win.document.removeEventListener(
-        "selectionchange",
-        debouncedRefresh,
-        true,
-      );
-      win.document.removeEventListener("mouseup", debouncedRefresh, true);
-      win.document.removeEventListener("keyup", debouncedRefresh, true);
-      delete trackedWindow.__llmNoteEditingSelectionTracking;
-    },
-    { once: true },
-  );
+  noteEditingSelectionTrackingWindows.add(trackedWindow);
+  lifecycle.trackSelectionDocument(win.document);
+  win.addEventListener("unload", handleUnload, { once: true });
   refresh();
+}
+
+export function unregisterNoteEditingSelectionTracking(win: Window): void {
+  const trackedWindow = win as MainWindowWithNoteEditingTracker;
+  trackedWindow.__llmNoteEditingSelectionTracking?.dispose();
+}
+
+export function unregisterAllNoteEditingSelectionTracking(): void {
+  for (const win of [...noteEditingSelectionTrackingWindows]) {
+    unregisterNoteEditingSelectionTracking(win);
+  }
 }
 
 export function clearConversation(itemId: number) {

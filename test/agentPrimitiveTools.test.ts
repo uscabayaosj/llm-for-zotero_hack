@@ -3926,6 +3926,9 @@ await note.saveTx();
       userText,
       "Selected text 1 [source=active note editing focus]:",
     );
+    assert.include(userText, "Note-editing output rule");
+    assert.include(userText, "do not use Markdown blockquotes");
+    assert.include(userText, "fenced `text` block");
     assert.include(userText, "This sentence needs work.");
   });
 

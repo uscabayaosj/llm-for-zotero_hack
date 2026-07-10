@@ -16,6 +16,16 @@ export type WorkflowTestAttachmentFixture = {
   contentType: string;
 };
 
+export type WorkflowTestNoteFixture = WorkflowTestFixture & {
+  noteItemId: number;
+  noteText: string;
+};
+
+export type WorkflowTestStandaloneNoteFixture = {
+  noteItemId: number;
+  noteText: string;
+};
+
 export type WorkflowTestPanel = {
   panelId: string;
   itemId: number;
@@ -25,10 +35,21 @@ export type WorkflowTestPanel = {
 export type WorkflowTestDiagnostics = {
   panelId?: string;
   activeItemId?: number;
+  conversationKey?: number;
+  panelConversationKey?: number;
+  conversationKind?: string;
+  conversationSystem?: string;
+  noteId?: number;
+  noteKind?: string;
+  noteParentItemId?: number;
   contextSnapshot?: ResolvedContextSource | null;
   chipText: string[];
+  selectedContextLabels: string[];
+  historyNewVisible?: boolean;
+  historyToggleVisible?: boolean;
   inputValue?: string;
   statusText?: string;
+  messageText?: string;
   lastSend: SendQuestionOptions | null;
   lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
 };
@@ -46,8 +67,10 @@ export type WorkflowTestStandaloneDiagnostics = {
   basePaperItemId?: number;
   contextItemId?: number;
   conversationKind?: string;
+  conversationSystem?: string;
   titleText?: string;
   chipText: string[];
+  selectedContextLabels: string[];
   messageText?: string;
   paperTabText?: string;
   openTabText?: string;
@@ -68,7 +91,22 @@ export type WorkflowTestApi = {
     contentType: string;
     text?: string;
   }) => Promise<WorkflowTestAttachmentFixture>;
+  createItemNoteFixture: (input: {
+    title: string;
+    pdfTitle: string;
+    noteHtml: string;
+  }) => Promise<WorkflowTestNoteFixture>;
+  createStandaloneNoteFixture: (input: {
+    noteHtml: string;
+  }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  renderStartupPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  seedPanelStoredUserMessage: (
+    panelId: string,
+    text: string,
+  ) => Promise<WorkflowTestDiagnostics>;
+  clickPanelSystemToggle: (panelId: string) => Promise<WorkflowTestDiagnostics>;
+  selectNoteEditorText: (panelId: string, text: string) => Promise<void>;
   ask: (panelId: string, text: string) => Promise<SendQuestionOptions>;
   renderAssistantForPanel: (
     panelId: string,
@@ -83,6 +121,7 @@ export type WorkflowTestApi = {
   clickStandaloneTab: (
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  clickStandaloneSystemToggle: () => Promise<WorkflowTestStandaloneDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
   seedStandaloneUserMessage: (
@@ -99,6 +138,10 @@ export type WorkflowTestApi = {
   getLastSend: () => SendQuestionOptions | null;
   getDiagnostics: (panelId?: string) => Promise<WorkflowTestDiagnostics>;
   cleanupFixture: (
-    fixture: WorkflowTestFixture | WorkflowTestAttachmentFixture,
+    fixture:
+      | WorkflowTestFixture
+      | WorkflowTestAttachmentFixture
+      | WorkflowTestNoteFixture
+      | WorkflowTestStandaloneNoteFixture,
   ) => Promise<void>;
 };

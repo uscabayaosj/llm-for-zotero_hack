@@ -21,7 +21,7 @@ import {
   resolvePaperChatSourceItem,
   resolveActiveNoteSession,
   resolvePreferredConversationSystem,
-  resolveNoteConversationSystemSwitch,
+  resolveNoteFocusSystemSwitch,
   resolveShortcutMode,
   createGlobalPortalItem,
   createPaperPortalItem,
@@ -86,11 +86,8 @@ import {
 import { createHistorySearchPopupController } from "./setupHandlers/controllers/historySearchPopupController";
 import { primeHistoryNavigationMode } from "./historyNavigationModeSync";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
-import {
-  collapseDuplicateReusableConversationDrafts,
-  findReusableStandaloneDraft,
-  isReusableStandaloneDraft,
-} from "./standaloneConversationResolution";
+import { resolveFreshConversationDraft } from "./freshConversationDraft";
+import { collapseDuplicateReusableConversationDrafts } from "./standaloneConversationResolution";
 import { buildDefaultClaudeGlobalConversationKey } from "../../claudeCode/constants";
 import {
   resolveRememberedClaudeConversationKey,
@@ -879,9 +876,7 @@ export function openStandaloneChat(options?: {
       ) as HTMLButtonElement;
       paperTab.className = "llm-standalone-tab";
       paperTab.type = "button";
-      paperTab.textContent = resolveStandalonePaperTabLabel({
-        paperSlotItem: currentPaperItem,
-      });
+      paperTab.textContent = resolveStandalonePaperTabLabel();
       paperTab.dataset.tab = "paper";
 
       const openTab = doc.createElementNS(
@@ -1307,7 +1302,6 @@ export function openStandaloneChat(options?: {
 
       const syncPaperTabLabel = () => {
         paperTab.textContent = resolveStandalonePaperTabLabel({
-          paperSlotItem: currentPaperItem,
           isWebChat: isInWebChatMode,
         });
       };
@@ -3184,88 +3178,25 @@ export function openStandaloneChat(options?: {
       const resolveStandaloneGlobalConversation = async (
         options: boolean | StandaloneCreateConversationOptions = false,
       ): Promise<number> => {
-        const { forceFresh, excludeConversationKey } =
+        const { excludeConversationKey } =
           normalizeStandaloneCreateConversationOptions(options);
         const currentLibraryID = getCurrentLibraryScopeID();
         if (!currentLibraryID) return 0;
-        const currentKey = Number(activeConversationKey || 0);
-        if (
-          Number.isFinite(currentKey) &&
-          currentKey > 0 &&
-          Math.floor(currentKey) !== excludeConversationKey
-        ) {
-          try {
-            const currentSummary = await conversationRepository.getCatalogEntry(
-              {
-                system: currentConversationSystem,
-                kind: "global",
-                conversationKey: Math.floor(currentKey),
-              },
-            );
-            if (
-              isReusableStandaloneDraft({
-                forceFresh,
-                summary: currentSummary,
-                kind: "global",
-                libraryID: currentLibraryID,
-              })
-            ) {
-              return Math.floor(currentKey);
-            }
-          } catch (err) {
-            ztoolkit.log(
-              "LLM: standalone failed to inspect active global draft",
-              err,
-            );
-          }
-        }
-        try {
-          const summaries = await conversationRepository.listCatalogEntries({
-            system: currentConversationSystem,
-            kind: "global",
-            libraryID: currentLibraryID,
-            limit: 50,
-            includeEmpty: true,
-          });
-          const latestEmpty = findReusableStandaloneDraft({
-            forceFresh,
-            summaries,
-            kind: "global",
-            libraryID: currentLibraryID,
-          });
-          const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
-          if (
-            Number.isFinite(latestEmptyKey) &&
-            latestEmptyKey > 0 &&
-            Math.floor(latestEmptyKey) !== excludeConversationKey
-          ) {
-            return Math.floor(latestEmptyKey);
-          }
-        } catch (err) {
-          ztoolkit.log(
-            "LLM: standalone failed to load latest global draft",
-            err,
-          );
-        }
-        const createdKey = Number(
-          (
-            await conversationRepository.createCatalogEntry({
-              system: currentConversationSystem,
-              kind: "global",
-              libraryID: currentLibraryID,
-            })
-          )?.conversationKey || 0,
-        );
-        return Math.floor(Number(createdKey || 0)) === excludeConversationKey
-          ? 0
-          : createdKey;
+        const result = await resolveFreshConversationDraft({
+          system: currentConversationSystem,
+          kind: "global",
+          libraryID: currentLibraryID,
+          currentConversationKey: activeConversationKey,
+          excludeConversationKey,
+        });
+        return result.conversationKey;
       };
 
       const resolveStandalonePaperConversation = async (
         options: boolean | StandaloneCreateConversationOptions = false,
         paperItemOverride?: Zotero.Item | null,
       ): Promise<{ conversationKey: number; sessionVersion?: number }> => {
-        const { forceFresh, excludeConversationKey } =
+        const { excludeConversationKey } =
           normalizeStandaloneCreateConversationOptions(options);
         const targetPaperItem = paperItemOverride || currentBasePaperItem;
         if (!targetPaperItem) {
@@ -3276,77 +3207,17 @@ export function openStandaloneChat(options?: {
         if (!paperLibraryID || !paperId) {
           return { conversationKey: 0 };
         }
-        const currentKey = Number(activeConversationKey || 0);
-        if (
-          Number.isFinite(currentKey) &&
-          currentKey > 0 &&
-          Math.floor(currentKey) !== excludeConversationKey
-        ) {
-          try {
-            const currentSummary = await conversationRepository.getCatalogEntry(
-              {
-                system: currentConversationSystem,
-                kind: "paper",
-                conversationKey: Math.floor(currentKey),
-              },
-            );
-            if (
-              isReusableStandaloneDraft({
-                forceFresh,
-                summary: currentSummary,
-                kind: "paper",
-                paperItemID: paperId,
-              })
-            ) {
-              return { conversationKey: Math.floor(currentKey) };
-            }
-          } catch (err) {
-            ztoolkit.log(
-              "LLM: standalone failed to inspect active paper draft",
-              err,
-            );
-          }
-        }
-        try {
-          const summaries = await conversationRepository.listCatalogEntries({
-            system: currentConversationSystem,
-            kind: "paper",
-            libraryID: paperLibraryID,
-            paperItemID: paperId,
-            limit: 50,
-            includeEmpty: true,
-          });
-          const emptyEntry = findReusableStandaloneDraft({
-            forceFresh,
-            summaries,
-            kind: "paper",
-            paperItemID: paperId,
-          });
-          const emptyConversationKey = Number(emptyEntry?.conversationKey || 0);
-          if (
-            Number.isFinite(emptyConversationKey) &&
-            emptyConversationKey > 0 &&
-            Math.floor(emptyConversationKey) !== excludeConversationKey
-          ) {
-            return {
-              conversationKey: Math.floor(emptyConversationKey),
-              sessionVersion: emptyEntry?.sessionVersion,
-            };
-          }
-        } catch (err) {
-          ztoolkit.log("LLM: standalone failed to list paper drafts", err);
-        }
-        const summary = await conversationRepository.createCatalogEntry({
+        const result = await resolveFreshConversationDraft({
           system: currentConversationSystem,
           kind: "paper",
           libraryID: paperLibraryID,
           paperItemID: paperId,
+          currentConversationKey: activeConversationKey,
+          excludeConversationKey,
         });
-        const createdKey = Number(summary?.conversationKey || 0);
         return {
-          conversationKey:
-            Math.floor(createdKey) === excludeConversationKey ? 0 : createdKey,
-          sessionVersion: summary?.sessionVersion,
+          conversationKey: result.conversationKey,
+          sessionVersion: result.sessionVersion,
         };
       };
 
@@ -3564,12 +3435,14 @@ export function openStandaloneChat(options?: {
           ? activeItem
           : null;
         if (activeNoteItem) {
-          const resolvedNextSystem = resolveNoteConversationSystemSwitch({
+          const resolvedNextSystem = resolveNoteFocusSystemSwitch({
             nextSystem,
             codexAvailable: isCodexAppServerModeEnabled(),
+            claudeAvailable: getClaudeCodeModeEnabled(),
           });
           if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
+          setConversationSystemPref(resolvedNextSystem);
           currentConversationSystem = resolvedNextSystem;
           activeConversationKey = getConversationKey(activeNoteItem);
           mountChatPanel(activeNoteItem);
@@ -4081,7 +3954,8 @@ export function openStandaloneChat(options?: {
         });
       };
 
-      // Initial mount — preserve the source panel mode/item when available
+      // Initial mount preserves the current paper/library conversation. The
+      // only automatic blank draft is created once during Zotero startup.
       ztoolkit.log(
         "LLM: standalone mounting initial item",
         "mode=" + standaloneMode,
@@ -4089,8 +3963,6 @@ export function openStandaloneChat(options?: {
         "convKey=" + getConversationKey(initialMountedItem),
       );
       mountChatPanel(initialMountedItem, currentRawContextItem);
-
-      // Load sidebar initially
       ztoolkit.log(
         "LLM: standalone renderSidebar start",
         "mode=" + standaloneMode,

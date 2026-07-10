@@ -7,6 +7,9 @@ import {
   registerLLMStyles,
   registerNoteEditingSelectionTracking,
   registerReaderSelectionTracking,
+  unregisterAllNoteEditingSelectionTracking,
+  unregisterNoteEditingSelectionTracking,
+  unregisterReaderSelectionTracking,
   openStandaloneChat,
 } from "./modules/contextPanel";
 import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
@@ -351,6 +354,7 @@ function registerPrefsPane() {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  unregisterNoteEditingSelectionTracking(win);
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
   addon.data.standaloneWindow?.close();
@@ -364,6 +368,8 @@ function onShutdown(): void {
     paperSearchInvalidateTimer = null;
   }
   ztoolkit.unregisterAll();
+  unregisterReaderSelectionTracking();
+  unregisterAllNoteEditingSelectionTracking();
   addon.data.dialog?.window?.close();
   addon.data.standaloneWindow?.close();
   try {

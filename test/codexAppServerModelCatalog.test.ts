@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import {
   buildCodexRuntimeModelEntries,
+  getCodexAppServerReasoningChoices,
   loadCodexAppServerModelCatalog,
+  reconcileCodexAppServerReasoningMode,
+  resolveCodexAppServerReasoningSelection,
 } from "../src/codexAppServer/modelCatalog";
 
 describe("Codex app-server model catalog", function () {
@@ -170,6 +173,129 @@ describe("Codex app-server model catalog", function () {
           displayModelLabel: "GPT-5.5 Fast",
         },
       ],
+    );
+  });
+
+  it("uses the selected catalog model's advertised reasoning efforts", function () {
+    const choices = getCodexAppServerReasoningChoices({
+      models: [
+        {
+          id: "gpt-5.6-sol",
+          model: "gpt-5.6-sol",
+          displayName: "GPT-5.6-Sol",
+          description: "",
+          hidden: false,
+          supportedReasoningEfforts: [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+            "ULTRA",
+          ],
+          defaultReasoningEffort: "low",
+        },
+      ],
+      selectedModel: "GPT-5.6-SOL",
+    });
+
+    assert.deepEqual(choices, [
+      { value: "auto", label: "Auto" },
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" },
+      { value: "xhigh", label: "XHigh" },
+      { value: "max", label: "Max" },
+      { value: "ultra", label: "Ultra" },
+    ]);
+  });
+
+  it("falls back to legacy reasoning efforts when the model is not cataloged", function () {
+    assert.deepEqual(
+      getCodexAppServerReasoningChoices({
+        models: [],
+        selectedModel: "gpt-custom",
+      }),
+      [
+        { value: "auto", label: "Auto" },
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+        { value: "xhigh", label: "XHigh" },
+      ],
+    );
+  });
+
+  it("preserves future wire values and reconciles stale selections", function () {
+    const solChoices = getCodexAppServerReasoningChoices({
+      models: [
+        {
+          id: "future",
+          model: "future",
+          displayName: "Future",
+          description: "",
+          hidden: false,
+          supportedReasoningEfforts: ["very-high", "ultra"],
+        },
+      ],
+      selectedModel: "future",
+    });
+    const lunaChoices = getCodexAppServerReasoningChoices({
+      models: [
+        {
+          id: "luna",
+          model: "luna",
+          displayName: "Luna",
+          description: "",
+          hidden: false,
+          supportedReasoningEfforts: ["max"],
+        },
+      ],
+      selectedModel: "luna",
+    });
+
+    assert.deepEqual(solChoices[1], {
+      value: "very-high",
+      label: "Very High",
+    });
+    assert.equal(
+      reconcileCodexAppServerReasoningMode("ULTRA", solChoices),
+      "ultra",
+    );
+    assert.equal(
+      reconcileCodexAppServerReasoningMode("ultra", lunaChoices),
+      "auto",
+    );
+    assert.equal(reconcileCodexAppServerReasoningMode("", solChoices), "auto");
+  });
+
+  it("preserves the selected reasoning effort until a catalog loads successfully", function () {
+    const fallbackChoices = getCodexAppServerReasoningChoices({
+      models: [],
+      selectedModel: "future",
+    });
+
+    const unavailable = resolveCodexAppServerReasoningSelection({
+      mode: "ultra",
+      choices: fallbackChoices,
+      catalogReady: false,
+    });
+    assert.equal(unavailable.mode, "ultra");
+    assert.include(
+      unavailable.choices.map((choice) => choice.value),
+      "ultra",
+    );
+
+    const ready = resolveCodexAppServerReasoningSelection({
+      mode: "ultra",
+      choices: fallbackChoices,
+      catalogReady: true,
+    });
+    assert.equal(ready.mode, "auto");
+    assert.notInclude(
+      ready.choices.map((choice) => choice.value),
+      "ultra",
     );
   });
 });

@@ -47,6 +47,7 @@ import {
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import { getEffectiveCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
+import { buildCodexAppServerReasoningConfig } from "../../codexAppServer/reasoning";
 import {
   buildCodexNativeApprovalPendingAction,
   buildCodexNativeApprovalResponseFromResolution,
@@ -449,14 +450,21 @@ async function validateConversationScopeForItem(params: {
     params.conversationKey,
     params.conversationSystem,
   );
-  if (!scope) return true;
+  if (!scope) return !resolveActiveNoteSession(params.item);
   const validation = await getConversationScopeValidationDetails(scope);
   if (!validation.valid) {
+    const targetLabel =
+      scope.kind === "global" ? "library" : `paper ${scope.paperItemID || ""}`;
+    const registeredLabel = validation.registered
+      ? validation.registered.kind === "global"
+        ? "library"
+        : `paper ${validation.registered.paperItemID || ""}`
+      : "";
     const registered = validation.registered
-      ? `; registered as ${validation.registered.system}/${validation.registered.kind} library ${validation.registered.libraryID} paper ${validation.registered.paperItemID || ""} id ${validation.registered.conversationID}`
+      ? `; registered as ${validation.registered.system}/${validation.registered.kind} library ${validation.registered.libraryID} ${registeredLabel} id ${validation.registered.conversationID}`
       : "";
     ztoolkit.log(
-      `LLM: Refused to use mismatched ${scope.system}/${scope.kind} conversation ${scope.conversationKey} for library ${scope.libraryID} paper ${scope.paperItemID || ""} (${validation.reason})${registered}`,
+      `LLM: Refused to use mismatched ${scope.system}/${scope.kind} conversation ${scope.conversationKey} for library ${scope.libraryID} ${targetLabel} (${validation.reason})${registered}`,
     );
   }
   return validation.valid;
@@ -2664,10 +2672,7 @@ function resolveEffectiveConversationSystem(params: {
   const itemSystem = resolveConversationSystemForItem(params.item);
   if (itemSystem) return itemSystem;
   if (isCodexAppServerConversationRequest(params)) return "codex";
-  if (
-    params.modelProviderLabel === "Claude Code" &&
-    !resolveActiveNoteSession(params.item)
-  ) {
+  if (params.modelProviderLabel === "Claude Code") {
     return "claude_code";
   }
   return "upstream";
@@ -2695,13 +2700,7 @@ function resolveEffectiveRequestConfig(params: {
       (params.model || getCodexRuntimeModelPref()).trim() || "gpt-5.4";
     const reasoningMode = getCodexReasoningModePref();
     const reasoning =
-      params.reasoning ||
-      (reasoningMode === "auto"
-        ? undefined
-        : {
-            provider: "openai" as const,
-            level: reasoningMode,
-          });
+      params.reasoning || buildCodexAppServerReasoningConfig(reasoningMode);
     return {
       model,
       apiBase: (params.apiBase ?? "").trim(),
@@ -2830,11 +2829,11 @@ function resolveCodexNativeConversationScope(params: {
   );
   const kind = displayKind === "paper" ? "paper" : "global";
   const paperItemID =
-    kind === "paper"
+    displayKind === "paper"
       ? Math.floor(Number(baseItem?.id || params.item.id || 0)) || undefined
       : undefined;
   const paperContext =
-    kind === "paper"
+    displayKind === "paper"
       ? resolveAutoLoadedPaperContextForItem(
           params.item,
           params.contextSource,
@@ -2855,7 +2854,7 @@ function resolveCodexNativeConversationScope(params: {
     libraryID,
     kind,
     paperItemID,
-    activeItemId: paperItemID,
+    activeItemId: activeNoteSession?.noteId || paperItemID,
     activeContextItemId: paperContext?.contextItemId,
     activeNoteId: activeNoteSession?.noteId,
     activeNoteKind: activeNoteSession?.noteKind,
@@ -2895,6 +2894,7 @@ function buildCodexNativeSkillContext(params: {
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
+  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
@@ -2915,6 +2915,9 @@ function buildCodexNativeSkillContext(params: {
       : undefined,
     selectedTextPaperContexts: params.selectedTextPaperContexts?.some(Boolean)
       ? params.selectedTextPaperContexts
+      : undefined,
+    selectedTextNoteContexts: params.selectedTextNoteContexts?.some(Boolean)
+      ? params.selectedTextNoteContexts
       : undefined,
     selectedPaperContexts: params.paperContexts?.length
       ? params.paperContexts
@@ -3421,6 +3424,12 @@ async function finalizeAssistantMessageQuoteCitations(
     citationPaperContexts?: PaperContextRef[];
   } = {},
 ): Promise<void> {
+  const isNoteEditingTurn = Boolean(
+    options.runtimeRequest?.activeNoteContext ||
+    options.runtimeRequest?.selectedTextSources?.includes("note-edit") ||
+    options.pairedUserMessage?.selectedTextSources?.includes("note-edit") ||
+    options.pairedUserMessage?.selectedTextNoteContexts?.some(Boolean),
+  );
   const sourceTexts = assistantMarkdownNeedsQuoteSourceSearch(
     assistantMessage.text || "",
   )
@@ -3451,6 +3460,7 @@ async function finalizeAssistantMessageQuoteCitations(
     sourceIndex,
     requireVerifiedQuoteCitations: true,
     requireBodyEvidenceQuotes,
+    fenceUnverifiedBlockquotes: isNoteEditingTurn,
   });
   assistantMessage.text = finalized.markdown;
   assistantMessage.quoteCitations = finalized.quoteCitations.length
@@ -6123,6 +6133,8 @@ export async function retryLatestAssistantResponse(
               selectedTextSources: retryPair.userMessage.selectedTextSources,
               selectedTextPaperContexts:
                 retryPair.userMessage.selectedTextPaperContexts,
+              selectedTextNoteContexts:
+                retryPair.userMessage.selectedTextNoteContexts,
               paperContexts: contextPlan.paperContexts,
               fullTextPaperContexts: contextPlan.fullTextPaperContexts,
               pinnedPaperContexts: retryPair.userMessage.pinnedPaperContexts,
@@ -6675,6 +6687,7 @@ export type BuildAgentRuntimeRequestParams = {
   selectedTexts: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
+  selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
@@ -6990,15 +7003,21 @@ async function buildAgentRuntimeRequest(
     fullTextPaperContexts: enrichedFullTextPapers,
     selectedCollectionContexts: params.selectedCollectionContexts,
   });
+  const activeNoteSession = resolveActiveNoteSession(params.item);
+  const conversationKind =
+    activeNoteSession?.conversationKind ||
+    resolveDisplayConversationKind(params.item) ||
+    undefined;
   return {
     conversationKey: params.conversationKey,
     mode: "agent",
     userText: params.userText,
-    conversationKind: resolveDisplayConversationKind(params.item) || undefined,
-    activeItemId: params.item.id,
+    conversationKind,
+    activeItemId: activeNoteSession?.noteId || params.item.id,
     selectedTexts: params.selectedTexts,
     selectedTextSources: params.selectedTextSources,
     selectedTextPaperContexts: params.selectedTextPaperContexts,
+    selectedTextNoteContexts: params.selectedTextNoteContexts,
     selectedPaperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
     citationPaperContexts: normalizePaperContexts(params.citationPaperContexts),
@@ -8227,6 +8246,7 @@ export async function sendQuestion(
               selectedTexts: selectedTextsForMessage,
               selectedTextSources: selectedTextSourcesForMessage,
               selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+              selectedTextNoteContexts: selectedTextNoteContextsForMessage,
               paperContexts: contextPlan.paperContexts,
               fullTextPaperContexts: contextPlan.fullTextPaperContexts,
               pinnedPaperContexts: userMessage.pinnedPaperContexts,
@@ -8376,7 +8396,10 @@ export async function sendQuestion(
     refreshChatSafely();
     await persistAssistantOnce();
     if (resolveConversationSystemForItem(item) === "claude_code") {
-      const conversationKind = resolveDisplayConversationKind(item);
+      const activeNoteSession = resolveActiveNoteSession(item);
+      const conversationKind =
+        activeNoteSession?.conversationKind ||
+        resolveDisplayConversationKind(item);
       const baseItem = resolveConversationBaseItem(item);
       await captureClaudeSessionInfo(
         conversationKey,

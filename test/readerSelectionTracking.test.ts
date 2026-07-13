@@ -1,5 +1,7 @@
 import { assert } from "chai";
 import {
+  createReaderSelectionTrackingLifecycle,
+  ensureMarkedReaderSelectionTrackingListener,
   READER_TEXT_SELECTION_POPUP_EVENT,
   registerReaderSelectionTrackingListener,
   unregisterReaderSelectionTrackingListener,
@@ -83,5 +85,52 @@ describe("reader selection tracking registration", function () {
 
     assert.equal(countSelectionListeners(reader), 0);
     assert.isUndefined(reader.__llmSelectionTracking);
+  });
+
+  it("repairs a listener that disappears while its marker remains", function () {
+    const reader = makeReader();
+    const handler = () => undefined;
+    registerReaderSelectionTrackingListener(reader, PLUGIN_ID, handler);
+    reader._registeredListeners = [];
+
+    assert.isTrue(ensureMarkedReaderSelectionTrackingListener(reader));
+    assert.equal(countSelectionListeners(reader), 1);
+    assert.strictEqual(reader._registeredListeners[0].handler, handler);
+  });
+
+  it("keeps repairing the listener until the lifecycle is disposed", function () {
+    const reader = makeReader();
+    const handler = () => undefined;
+    const intervalCallbacks = new Map<number, () => void>();
+    const clearedIntervals: number[] = [];
+    const lifecycle = createReaderSelectionTrackingLifecycle({
+      readerAPI: reader,
+      pluginID: PLUGIN_ID,
+      handler,
+      intervalDelayMs: 25,
+      timerHost: {
+        setInterval(callback, delay) {
+          assert.equal(delay, 25);
+          intervalCallbacks.set(1, callback);
+          return 1;
+        },
+        clearInterval(timerId) {
+          clearedIntervals.push(timerId);
+          intervalCallbacks.delete(timerId);
+        },
+      },
+    });
+
+    assert.equal(countSelectionListeners(reader), 1);
+    reader._registeredListeners = [];
+    intervalCallbacks.get(1)?.();
+    assert.equal(countSelectionListeners(reader), 1);
+
+    lifecycle.dispose();
+    lifecycle.dispose();
+    assert.deepEqual(clearedIntervals, [1]);
+    assert.equal(countSelectionListeners(reader), 0);
+    assert.isUndefined(reader.__llmSelectionTracking);
+    assert.isFalse(lifecycle.ensureRegistered());
   });
 });

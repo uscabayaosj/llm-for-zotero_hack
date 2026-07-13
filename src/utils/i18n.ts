@@ -93,6 +93,7 @@ const zhCN: Record<string, string> = {
     "随便问... 输入 / 查看操作，@ 添加论文",
   "Open a PDF first": "请先打开一个 PDF",
   "Include selected reader text": "包含选中的阅读器文本",
+  "Select text in the reader first": "请先在阅读器中选择文本",
   "Select figure screenshot": "选择图片截图",
   "Context actions": "上下文操作",
   Reasoning: "推理",

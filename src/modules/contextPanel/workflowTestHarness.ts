@@ -15,6 +15,7 @@ import type {
   WorkflowTestFixture,
   WorkflowTestNoteFixture,
   WorkflowTestPanel,
+  WorkflowTestReaderSelectionTrackingDiagnostics,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestStandaloneDiagnostics,
 } from "./workflowTestTypes";
@@ -47,6 +48,12 @@ import {
 import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
 import { appendMessage } from "../../utils/chatStore";
 import { FreshStartupConversationSession } from "./freshStartupConversation";
+import {
+  ensureMarkedReaderSelectionTrackingListener,
+  READER_TEXT_SELECTION_POPUP_EVENT,
+  type ReaderSelectionTrackingReader,
+} from "./readerSelectionTracking";
+import { config } from "./constants";
 
 type PanelRecord = {
   id: string;
@@ -830,6 +837,61 @@ async function getDiagnostics(
   };
 }
 
+function countWorkflowReaderSelectionListeners(
+  readerAPI: ReaderSelectionTrackingReader<unknown>,
+): number {
+  return (readerAPI._registeredListeners || []).filter(
+    (listener) =>
+      listener.pluginID === config.addonID &&
+      listener.type === READER_TEXT_SELECTION_POPUP_EVENT,
+  ).length;
+}
+
+async function exerciseReaderSelectionTrackingRecovery(): Promise<WorkflowTestReaderSelectionTrackingDiagnostics> {
+  assertWorkflowTestEnabled();
+  const readerAPI = Zotero.Reader as ReaderSelectionTrackingReader<unknown>;
+  if (!Array.isArray(readerAPI._registeredListeners)) {
+    throw new Error("Zotero reader listener registry is unavailable");
+  }
+
+  const before = countWorkflowReaderSelectionListeners(readerAPI);
+  readerAPI._registeredListeners = readerAPI._registeredListeners.filter(
+    (listener) =>
+      listener.pluginID !== config.addonID ||
+      listener.type !== READER_TEXT_SELECTION_POPUP_EVENT,
+  );
+  const afterDrop = countWorkflowReaderSelectionListeners(readerAPI);
+  const startedAt = Date.now();
+  while (
+    countWorkflowReaderSelectionListeners(readerAPI) === 0 &&
+    Date.now() - startedAt < 2000
+  ) {
+    await Zotero.Promise.delay(25);
+  }
+  const afterHealthCheck = countWorkflowReaderSelectionListeners(readerAPI);
+  const markerPresent = Boolean(readerAPI.__llmSelectionTracking);
+  const markerLive = Boolean(
+    readerAPI.__llmSelectionTracking &&
+    (readerAPI._registeredListeners || []).some(
+      (listener) =>
+        listener.handler === readerAPI.__llmSelectionTracking?.handler,
+    ),
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  if (!afterHealthCheck) {
+    ensureMarkedReaderSelectionTrackingListener(readerAPI);
+  }
+  return {
+    before,
+    afterDrop,
+    afterHealthCheck,
+    markerPresent,
+    markerLive,
+    elapsedMs,
+  };
+}
+
 async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
   workflowFreshStartupConversation.begin();
@@ -906,6 +968,7 @@ export function installWorkflowTestHarness(targetAddon: {
     closeStandalone,
     getLastSend: () => lastSend,
     getDiagnostics,
+    exerciseReaderSelectionTrackingRecovery,
     cleanupFixture,
   };
 }

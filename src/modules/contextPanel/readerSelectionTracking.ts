@@ -1,6 +1,8 @@
 export const READER_TEXT_SELECTION_POPUP_EVENT =
   "renderTextSelectionPopup" as const;
 
+export const READER_SELECTION_TRACKING_HEALTH_INTERVAL_MS = 15_000;
+
 export type ReaderSelectionTrackingRecord<THandler> = {
   pluginID: string;
   type: typeof READER_TEXT_SELECTION_POPUP_EVENT;
@@ -21,6 +23,16 @@ export type ReaderSelectionTrackingReader<THandler> = {
     handler: THandler,
     pluginID?: string,
   ) => void;
+};
+
+export type ReaderSelectionTrackingTimerHost = {
+  setInterval(callback: () => void, delay: number): number;
+  clearInterval(timerId: number): void;
+};
+
+export type ReaderSelectionTrackingLifecycle = {
+  ensureRegistered: () => boolean;
+  dispose: () => void;
 };
 
 function getReaderListenerRecords<THandler>(
@@ -104,6 +116,18 @@ export function registerReaderSelectionTrackingListener<THandler>(
   return true;
 }
 
+export function ensureMarkedReaderSelectionTrackingListener<THandler>(
+  readerAPI: ReaderSelectionTrackingReader<THandler>,
+): boolean {
+  const tracking = readerAPI.__llmSelectionTracking;
+  if (!tracking) return false;
+  return registerReaderSelectionTrackingListener(
+    readerAPI,
+    tracking.pluginID,
+    tracking.handler,
+  );
+}
+
 export function unregisterReaderSelectionTrackingListener<THandler>(
   readerAPI: ReaderSelectionTrackingReader<THandler>,
   pluginID: string,
@@ -119,4 +143,53 @@ export function unregisterReaderSelectionTrackingListener<THandler>(
     delete readerAPI.__llmSelectionTracking;
   }
   return removedListeners || hadMarker;
+}
+
+export function createReaderSelectionTrackingLifecycle<THandler>(params: {
+  readerAPI: ReaderSelectionTrackingReader<THandler>;
+  pluginID: string;
+  handler: THandler;
+  timerHost: ReaderSelectionTrackingTimerHost;
+  intervalDelayMs?: number;
+  onError?: (error: unknown) => void;
+}): ReaderSelectionTrackingLifecycle {
+  const intervalDelayMs =
+    params.intervalDelayMs ?? READER_SELECTION_TRACKING_HEALTH_INTERVAL_MS;
+  let disposed = false;
+
+  const ensureRegistered = (): boolean => {
+    if (disposed) return false;
+    try {
+      return registerReaderSelectionTrackingListener(
+        params.readerAPI,
+        params.pluginID,
+        params.handler,
+      );
+    } catch (error) {
+      params.onError?.(error);
+      return false;
+    }
+  };
+
+  ensureRegistered();
+  const intervalId = params.timerHost.setInterval(
+    ensureRegistered,
+    intervalDelayMs,
+  );
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    params.timerHost.clearInterval(intervalId);
+    try {
+      unregisterReaderSelectionTrackingListener(
+        params.readerAPI,
+        params.pluginID,
+      );
+    } catch (error) {
+      params.onError?.(error);
+    }
+  };
+
+  return { ensureRegistered, dispose };
 }

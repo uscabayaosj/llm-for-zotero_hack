@@ -77,8 +77,9 @@ import {
   getSelectionFromDocument,
 } from "./readerSelection";
 import {
-  registerReaderSelectionTrackingListener,
+  createReaderSelectionTrackingLifecycle,
   unregisterReaderSelectionTrackingListener,
+  type ReaderSelectionTrackingLifecycle,
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
@@ -543,6 +544,10 @@ type ReaderTextSelectionPopupHandler =
   _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">;
 
 let readerSelectionTrackingHandler: ReaderTextSelectionPopupHandler | null =
+  null;
+let readerSelectionTrackingLifecycle: ReaderSelectionTrackingLifecycle | null =
+  null;
+let readerSelectionTrackingReaderAPI: ReaderSelectionTrackingReader<ReaderTextSelectionPopupHandler> | null =
   null;
 
 function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
@@ -1122,20 +1127,39 @@ export function registerReaderSelectionTracking() {
   if (!readerAPI || typeof readerAPI.registerEventListener !== "function") {
     return;
   }
-  registerReaderSelectionTrackingListener(
+  if (
+    readerSelectionTrackingLifecycle &&
+    readerSelectionTrackingReaderAPI === readerAPI
+  ) {
+    readerSelectionTrackingLifecycle.ensureRegistered();
+    return;
+  }
+
+  readerSelectionTrackingLifecycle?.dispose();
+  readerSelectionTrackingReaderAPI = readerAPI;
+  readerSelectionTrackingLifecycle = createReaderSelectionTrackingLifecycle({
     readerAPI,
-    config.addonID,
-    getReaderSelectionTrackingHandler(),
-  );
+    pluginID: config.addonID,
+    handler: getReaderSelectionTrackingHandler(),
+    timerHost: globalThis,
+    intervalDelayMs: __env__ === "test" ? 50 : undefined,
+    onError: (error) => {
+      ztoolkit.log("LLM: reader selection tracking health check failed", error);
+    },
+  });
 }
 
 export function unregisterReaderSelectionTracking() {
   const readerAPI = Zotero.Reader as
     | ReaderSelectionTrackingReader<ReaderTextSelectionPopupHandler>
     | undefined;
-  if (readerAPI) {
+  if (readerSelectionTrackingLifecycle) {
+    readerSelectionTrackingLifecycle.dispose();
+  } else if (readerAPI) {
     unregisterReaderSelectionTrackingListener(readerAPI, config.addonID);
   }
+  readerSelectionTrackingLifecycle = null;
+  readerSelectionTrackingReaderAPI = null;
   readerSelectionTrackingHandler = null;
 }
 

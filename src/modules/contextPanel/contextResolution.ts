@@ -47,6 +47,10 @@ import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "./readerSelection";
+import {
+  ensureMarkedReaderSelectionTrackingListener,
+  type ReaderSelectionTrackingReader,
+} from "./readerSelectionTracking";
 import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
 import {
   buildPinnedSelectedTextKey,
@@ -795,6 +799,13 @@ export function getActiveReaderSelectionText(
   panelDoc: Document,
   currentItem?: Zotero.Item | null,
 ): string {
+  try {
+    ensureMarkedReaderSelectionTrackingListener(
+      Zotero.Reader as ReaderSelectionTrackingReader<unknown>,
+    );
+  } catch {
+    // Selection recovery below still works while lifecycle repair retries.
+  }
   const reader = getActiveReaderForSelectedTab();
   const fromReader = getFirstSelectionFromReader(reader, normalizeSelectedText);
   if (fromReader) return fromReader;

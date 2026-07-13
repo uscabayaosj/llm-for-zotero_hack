@@ -170,6 +170,7 @@ export function attachComposeCaptureController(
       }
       if (!selectedText) {
         deps.log("LLM addText: no text selected");
+        setStatus(t("Select text in the reader first"), "warning");
         return;
       }
 

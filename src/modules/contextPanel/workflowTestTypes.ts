@@ -79,6 +79,15 @@ export type WorkflowTestStandaloneDiagnostics = {
   lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
 };
 
+export type WorkflowTestReaderSelectionTrackingDiagnostics = {
+  before: number;
+  afterDrop: number;
+  afterHealthCheck: number;
+  markerPresent: boolean;
+  markerLive: boolean;
+  elapsedMs: number;
+};
+
 export type WorkflowTestApi = {
   reset: () => Promise<void>;
   createPaperWithPdfFixture: (input: {
@@ -137,6 +146,7 @@ export type WorkflowTestApi = {
   closeStandalone: () => Promise<void>;
   getLastSend: () => SendQuestionOptions | null;
   getDiagnostics: (panelId?: string) => Promise<WorkflowTestDiagnostics>;
+  exerciseReaderSelectionTrackingRecovery: () => Promise<WorkflowTestReaderSelectionTrackingDiagnostics>;
   cleanupFixture: (
     fixture:
       | WorkflowTestFixture

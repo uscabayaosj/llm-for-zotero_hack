@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  buildFindControllerFullCoverageQueries,
   buildFindControllerHighlightQueries,
   buildFindControllerQuoteQueries,
   buildRawPrefixQueries,
@@ -135,6 +136,45 @@ describe("quoteTextSearch", function () {
       ),
       result.join("\n"),
     );
+  });
+
+  it("builds only canonical full-coverage queries for selected text", function () {
+    const selection =
+      "The selected passage preserves a systems–level explanation across PDF line breaks, punctuation, and normalized whitespace.";
+    const normalizedSelection = normalizeLocatorText(selection);
+    const result = buildFindControllerFullCoverageQueries(selection);
+
+    assert.isNotEmpty(result);
+    assert.equal(result[0], selection);
+    assert.isTrue(
+      result.every(
+        (query) => normalizeLocatorText(query) === normalizedSelection,
+      ),
+      result.join("\n"),
+    );
+  });
+
+  it("normalizes line breaks and soft hyphens without reducing full coverage", function () {
+    const selection =
+      "Complete selec\u00adtion text remains canonically equivalent\nwhen the PDF text layer changes whitespace.";
+    const result = buildFindControllerFullCoverageQueries(selection);
+
+    assert.isNotEmpty(result);
+    assert.isTrue(
+      result.every(
+        (query) =>
+          normalizeLocatorText(query) === normalizeLocatorText(selection),
+      ),
+      result.join("\n"),
+    );
+    assert.isTrue(result.some((query) => !query.includes("\n")));
+  });
+
+  it("skips unsafe oversized full-coverage queries", function () {
+    const selection = `${"complete selected text ".repeat(80)}ending`;
+
+    assert.isAbove(selection.length, 1200);
+    assert.deepEqual(buildFindControllerFullCoverageQueries(selection), []);
   });
 
   it("preserves non-ASCII locator text during normalization", function () {

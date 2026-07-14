@@ -813,6 +813,27 @@ export function buildFindControllerHighlightQueries(
   return queries.slice(0, maxQueries);
 }
 
+export function buildFindControllerFullCoverageQueries(
+  text: string,
+  options?: {
+    maxQueries?: number;
+    maxFullQueryLength?: number;
+  },
+): string[] {
+  const maxFullQueryLength = Math.max(80, options?.maxFullQueryLength ?? 1200);
+  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
+  if (clean.length < 12 || clean.length > maxFullQueryLength) return [];
+
+  const normalizedFullText = normalizeLocatorText(clean);
+  if (!normalizedFullText) return [];
+
+  return buildFindControllerHighlightQueries(clean, {
+    maxQueries: options?.maxQueries,
+    maxFullQueryLength,
+    maxChunkLength: maxFullQueryLength,
+  }).filter((query) => normalizeLocatorText(query) === normalizedFullText);
+}
+
 export function buildFindControllerQuoteQueries(
   text: string,
   options?: { maxQueries?: number },

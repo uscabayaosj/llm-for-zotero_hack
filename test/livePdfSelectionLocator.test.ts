@@ -1,5 +1,9 @@
 import { assert } from "chai";
 import {
+  buildFindControllerFullCoverageQueries,
+  buildFindControllerQuoteQueries,
+} from "../src/modules/contextPanel/quoteTextSearch";
+import {
   clearPageTextCache,
   lookupCachedQuoteLocationForAttachment,
   locateQuoteInPageTexts,
@@ -13,6 +17,7 @@ import {
   getPageLabelForIndex,
   locateQuoteByRawPrefixInPages,
   scrollToExactQuoteInReader,
+  scrollToSelectedTextInReader,
   warmPageTextCacheForAttachment,
   warmQuoteLocationCacheForAttachment,
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
@@ -986,6 +991,195 @@ describe("scrollToExactQuoteInReader", function () {
     assert.equal(result.matchedPageIndex, 1);
     assert.isString(result.queryUsed);
     assert.isAtLeast(result.queries.length, 1);
+  });
+
+  it("preserves the citation locator query order and result contract", async function () {
+    const quote = [
+      "Representational drift remained stable across repeated measurements in the target region.",
+      "The complete source passage continues with enough detail to require the established prefix, middle, and window query policy.",
+      "This final sentence keeps the characterization fixture above the full-query threshold used by citation navigation.",
+    ].join(" ");
+    const expectedQueries = buildFindControllerQuoteQueries(quote);
+    assert.isAbove(quote.length, 220);
+    assert.isAtLeast(expectedQueries.length, 3);
+    const successfulQuery = expectedQueries[2];
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [successfulQuery]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, quote, {
+      expectedPageIndex: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.expectedPageIndex, 1);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.queryUsed, successfulQuery);
+    assert.deepEqual(dispatchedQueries, expectedQueries.slice(0, 3));
+    assert.deepEqual(
+      result.queries.map((attempt) => attempt.query),
+      expectedQueries.slice(0, 3),
+    );
+    assert.include(result.reason, "target page 2");
+  });
+
+  it("searches the complete selected text before legacy partial queries", async function () {
+    const selection = [
+      "Hippocampal place cells, first discovered in freely behaving rats, are the foundation of the cognitive map theory.",
+      "According to this theory, a cognitive map provides a framework within which experiences of sensations, objects and events are organized and interrelated.",
+      "This gives an individual the ability to flexibly navigate spaces and structure memories.",
+    ].join(" ");
+    const fullQueries = buildFindControllerFullCoverageQueries(selection);
+    const legacyQueries = buildFindControllerQuoteQueries(selection);
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [fullQueries[0]]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToSelectedTextInReader(reader, selection, {
+      expectedPageIndex: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.queryUsed, fullQueries[0]);
+    assert.equal(result.highlightCoverage, 1);
+    assert.deepEqual(dispatchedQueries, [fullQueries[0]]);
+    assert.notInclude(dispatchedQueries, legacyQueries[0]);
+    assert.include(result.debugSummary.join("\n"), "full-coverage");
+  });
+
+  it("falls back to the unchanged legacy partial-query order", async function () {
+    const selection = [
+      "The complete selected passage begins with a long explanation that the PDF text layer cannot match as one continuous query.",
+      "Its middle contains enough distinctive terminology to preserve the established search behavior.",
+      "The final clause remains part of the selection even though only a partial locator can be found.",
+    ].join(" ");
+    const fullQueries = buildFindControllerFullCoverageQueries(selection);
+    const legacyQueries = buildFindControllerQuoteQueries(selection);
+    const successfulLegacyQuery = legacyQueries[1];
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [successfulLegacyQuery]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToSelectedTextInReader(reader, selection, {
+      expectedPageIndex: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.queryUsed, successfulLegacyQuery);
+    assert.isUndefined(result.highlightCoverage);
+    assert.deepEqual(dispatchedQueries, [
+      ...fullQueries,
+      ...legacyQueries.slice(0, 2),
+    ]);
+    assert.include(result.debugSummary.join("\n"), "legacy partial-query");
+  });
+
+  it("continues to partial search after an ambiguous full-text phase", async function () {
+    const selection = [
+      "A complete selected passage can occur more than once when a paper repeats a definition in separate sections.",
+      "The existing partial policy must still run after that full-text ambiguity instead of treating it as a terminal failure.",
+      "A later locator query can then resolve the intended reader position.",
+    ].join(" ");
+    const fullQueries = buildFindControllerFullCoverageQueries(selection);
+    const legacyQueries = buildFindControllerQuoteQueries(selection);
+    const dispatchedQueries: string[] = [];
+    const pageMatchesByQuery: Record<string, unknown[]> = {
+      [fullQueries[0]]: [[0], [], [0]],
+      [legacyQueries[0]]: [[], [0], []],
+    };
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery,
+    });
+
+    const result = await scrollToSelectedTextInReader(reader, selection, {
+      expectedPageIndex: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.queryUsed, legacyQueries[0]);
+    assert.include(dispatchedQueries, fullQueries[0]);
+    assert.include(dispatchedQueries, legacyQueries[0]);
+  });
+
+  it("warms the page cache once while full and partial phases share one search session", async function () {
+    clearPageTextCache();
+    const selection = [
+      "The complete selected passage is absent from extracted page text because the source crosses a PDF text-layer boundary.",
+      "A distinctive partial locator remains present on the recorded page and should continue through the legacy fallback.",
+      "The shared engine must not warm the same reader cache twice.",
+    ].join(" ");
+    const fullQueries = buildFindControllerFullCoverageQueries(selection);
+    const legacyQueries = buildFindControllerQuoteQueries(selection);
+    let cacheWarmCount = 0;
+    const pageOne = "Unrelated introductory page.";
+    const pageTwo = `Only this locator is available: ${legacyQueries[0]}`;
+    const pageThree = "Unrelated closing page.";
+    const restore = installPdfWorkerStub(async () => {
+      cacheWarmCount += 1;
+      return {
+        text: pageOne + pageTwo + pageThree,
+        pageChars: [pageOne.length, pageTwo.length, pageThree.length],
+      };
+    });
+    const dispatchedQueries: string[] = [];
+    const pageMatchesByQuery = Object.fromEntries(
+      legacyQueries.map((query) => [query, [[], [0], []]]),
+    );
+    const reader: any = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery,
+    });
+    reader._item = { id: 911 };
+    reader.itemID = 911;
+
+    try {
+      const result = await scrollToSelectedTextInReader(reader, selection, {
+        expectedPageIndex: 1,
+      });
+
+      assert.isTrue(result.matched);
+      assert.equal(cacheWarmCount, 1);
+      assert.isNotEmpty(dispatchedQueries);
+      assert.notInclude(fullQueries, dispatchedQueries[0]);
+      assert.include(legacyQueries, dispatchedQueries[0]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("skips the full phase for oversized selections and starts with legacy fallback", async function () {
+    const selection = `${"Complete oversized selected passage text ".repeat(40)}ending`;
+    const fullQueries = buildFindControllerFullCoverageQueries(selection);
+    const legacyQueries = buildFindControllerQuoteQueries(selection);
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [legacyQueries[0]]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToSelectedTextInReader(reader, selection, {
+      expectedPageIndex: 1,
+    });
+
+    assert.deepEqual(fullQueries, []);
+    assert.isTrue(result.matched);
+    assert.equal(result.queryUsed, legacyQueries[0]);
+    assert.equal(dispatchedQueries[0], legacyQueries[0]);
   });
 
   it("trusts FindController when it matches a different page than the text-search hint", async function () {

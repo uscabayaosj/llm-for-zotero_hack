@@ -3,6 +3,7 @@ import { sanitizeText } from "./textUtils";
 import { clearCitationPageCache } from "./citationNavigationCache";
 import {
   buildRawPrefixQueries,
+  buildFindControllerFullCoverageQueries,
   buildFindControllerHighlightQueries,
   buildFindControllerQuoteQueries,
   extractSearchTokens,
@@ -3126,6 +3127,273 @@ export async function locateQuoteInLivePdfReader(
   }
 }
 
+type FindControllerJumpQueryPhase = {
+  kind: "full-coverage" | "legacy-locator";
+  queries: string[];
+};
+
+type FindControllerJumpEngineResult =
+  | {
+      status: "matched";
+      expectedPageIndex: number | null;
+      phase: FindControllerJumpQueryPhase;
+      query: string;
+      searchResult: FindControllerSearchResult;
+      matchedPageIndex: number;
+      attempts: ExactQuoteJumpQueryAttempt[];
+      debugSummary: string[];
+    }
+  | {
+      status: "failed";
+      result: ExactQuoteJumpResult;
+    };
+
+async function runFindControllerJumpQueryPhases(
+  reader: any,
+  phases: FindControllerJumpQueryPhase[],
+  options?: {
+    expectedPageIndex?: number | null;
+    emptyQueriesReason?: string;
+  },
+): Promise<FindControllerJumpEngineResult> {
+  const ready = await waitForFindControllerReady(reader);
+  const app = ready?.app ?? getPdfViewerApplication(reader);
+  const eventBus = ready?.eventBus;
+  const findController = ready?.findController;
+  const expectedPageIndex =
+    options &&
+    Object.prototype.hasOwnProperty.call(options, "expectedPageIndex")
+      ? Number.isFinite(options.expectedPageIndex) &&
+        Number(options.expectedPageIndex) >= 0
+        ? Math.floor(Number(options.expectedPageIndex))
+        : null
+      : getExpectedPageIndex(reader, app);
+  if (!eventBus || !findController) {
+    return {
+      status: "failed",
+      result: {
+        matched: false,
+        reason: "PDF.js FindController is unavailable in the current reader.",
+        expectedPageIndex,
+        queries: [],
+        debugSummary: [],
+      },
+    };
+  }
+
+  if (!phases.some((phase) => phase.queries.length)) {
+    return {
+      status: "failed",
+      result: {
+        matched: false,
+        reason:
+          options?.emptyQueriesReason ||
+          "The quote is too short to build a FindController query.",
+        expectedPageIndex,
+        queries: [],
+        debugSummary: [],
+      },
+    };
+  }
+
+  const pagesCount = getPagesCount(app);
+  if (pagesCount < 1) {
+    return {
+      status: "failed",
+      result: {
+        matched: false,
+        reason: "The reader did not report any searchable PDF pages.",
+        expectedPageIndex,
+        queries: [],
+        debugSummary: [],
+      },
+    };
+  }
+
+  // FindController searches all pages and navigates to the match by itself.
+  // No pre-navigation needed — the expectedPageIndex from the text search
+  // may be wrong (short prefix false-match), so navigating there first would
+  // cause an unnecessary jump to the wrong page.
+
+  const attempts: ExactQuoteJumpQueryAttempt[] = [];
+  const debugSummary: string[] = [];
+  let lastAmbiguousAttempt: ExactQuoteJumpQueryAttempt | null = null;
+  let lastUnlocatedMatchAttempt: ExactQuoteJumpQueryAttempt | null = null;
+  let lastCachedFailure: {
+    attempts: ExactQuoteJumpQueryAttempt[];
+    ambiguousAttempt: ExactQuoteJumpQueryAttempt | null;
+  } | null = null;
+  const cached = await warmPageTextCache(reader).catch((_err) => {
+    void _err;
+    return null;
+  });
+  for (const phase of phases) {
+    if (!phase.queries.length) continue;
+
+    const cachedQueryFilter = filterFindControllerQueriesByCachedPageText(
+      phase.queries,
+      cached,
+    );
+    debugSummary.push(...cachedQueryFilter.debugSummary);
+    if (
+      cachedQueryFilter.checked &&
+      cachedQueryFilter.negativeEvidenceReliable &&
+      !cachedQueryFilter.queries.length
+    ) {
+      lastCachedFailure = {
+        attempts: cachedQueryFilter.attempts,
+        ambiguousAttempt:
+          cachedQueryFilter.attempts.find(
+            (attempt) => attempt.totalMatches > 1,
+          ) || null,
+      };
+      lastAmbiguousAttempt = null;
+      lastUnlocatedMatchAttempt = null;
+      continue;
+    }
+
+    lastCachedFailure = null;
+    let phaseAmbiguousAttempt: ExactQuoteJumpQueryAttempt | null = null;
+    let phaseUnlocatedMatchAttempt: ExactQuoteJumpQueryAttempt | null = null;
+    const queriesToSearch = cachedQueryFilter.checked
+      ? cachedQueryFilter.queries
+      : phase.queries;
+
+    for (const query of queriesToSearch) {
+      const searchResult = await searchFindControllerForQuery(reader, query);
+      if (!searchResult) {
+        return {
+          status: "failed",
+          result: {
+            matched: false,
+            reason:
+              "FindController search could not run in the current reader.",
+            expectedPageIndex,
+            queries: attempts,
+            debugSummary,
+          },
+        };
+      }
+      const attempt: ExactQuoteJumpQueryAttempt = {
+        query,
+        matchedPageIndexes: searchResult.matchedPageIndexes,
+        totalMatches: searchResult.totalMatches,
+      };
+      attempts.push(attempt);
+      debugSummary.push(
+        `Paragraph query "${formatQuerySnippet(query)}" -> ${formatPageList(searchResult.matchedPageIndexes)}`,
+      );
+      if (
+        searchResult.totalMatches <= 0 ||
+        !searchResult.matchedPageIndexes.length
+      ) {
+        if (
+          searchResult.totalMatches > 0 &&
+          !searchResult.matchedPageIndexes.length
+        ) {
+          phaseUnlocatedMatchAttempt ||= attempt;
+        }
+        continue;
+      }
+      const resolvedPageIndex =
+        getFindControllerResolvedPageIndex(searchResult);
+      if (resolvedPageIndex === null) {
+        phaseAmbiguousAttempt ||= attempt;
+        continue;
+      }
+      return {
+        status: "matched",
+        expectedPageIndex,
+        phase,
+        query,
+        searchResult,
+        matchedPageIndex: resolvedPageIndex,
+        attempts,
+        debugSummary,
+      };
+    }
+
+    lastAmbiguousAttempt = phaseAmbiguousAttempt;
+    lastUnlocatedMatchAttempt = phaseUnlocatedMatchAttempt;
+  }
+
+  if (lastCachedFailure) {
+    return {
+      status: "failed",
+      result: {
+        matched: false,
+        reason: lastCachedFailure.ambiguousAttempt
+          ? buildAmbiguousCachedPageTextReason(
+              lastCachedFailure.ambiguousAttempt,
+            )
+          : "Cached page text did not find a unique paragraph query for the quote.",
+        expectedPageIndex,
+        queries: lastCachedFailure.attempts,
+        debugSummary,
+      },
+    };
+  }
+  if (lastAmbiguousAttempt) {
+    return {
+      status: "failed",
+      result: {
+        matched: false,
+        reason: buildAmbiguousFindControllerReason(lastAmbiguousAttempt),
+        expectedPageIndex,
+        queries: attempts,
+        debugSummary,
+      },
+    };
+  }
+  if (lastUnlocatedMatchAttempt) {
+    return {
+      status: "failed",
+      result: {
+        matched: false,
+        reason: `FindController reported ${lastUnlocatedMatchAttempt.totalMatches} quote matches but did not expose one reliable matched page.`,
+        expectedPageIndex,
+        queries: attempts,
+        debugSummary,
+      },
+    };
+  }
+  return {
+    status: "failed",
+    result: {
+      matched: false,
+      reason: "FindController found no match for the available quote queries.",
+      expectedPageIndex,
+      queries: attempts,
+      debugSummary,
+    },
+  };
+}
+
+function buildDirectFindControllerJumpResult(
+  execution: Extract<FindControllerJumpEngineResult, { status: "matched" }>,
+  highlightTextCandidates?: string[],
+): ExactQuoteJumpResult {
+  const actualPage = execution.matchedPageIndex;
+  return {
+    matched: true,
+    matchedPageIndex: actualPage,
+    reason: didUseSelectedFindControllerPage(execution.searchResult, actualPage)
+      ? `FindController selected a highlighted quote match (page ${actualPage + 1}).`
+      : execution.expectedPageIndex !== null &&
+          actualPage === execution.expectedPageIndex
+        ? `FindController matched the quote on target page ${execution.expectedPageIndex + 1}.`
+        : `FindController matched the quote (page ${actualPage + 1}).`,
+    expectedPageIndex: execution.expectedPageIndex,
+    queryUsed: execution.query,
+    highlightCoverage: computeFindControllerHighlightCoverage(
+      execution.query,
+      highlightTextCandidates,
+    ),
+    queries: execution.attempts,
+    debugSummary: execution.debugSummary,
+  };
+}
+
 /**
  * After navigating to the correct page, trigger PDF.js's built-in find
  * controller to scroll to the exact paragraph/text position of the quote
@@ -3142,193 +3410,102 @@ export async function scrollToExactQuoteInReader(
     highlightTextCandidates?: string[];
   },
 ): Promise<ExactQuoteJumpResult> {
-  const ready = await waitForFindControllerReady(reader);
-  const app = ready?.app ?? getPdfViewerApplication(reader);
-  const eventBus = ready?.eventBus;
-  const findController = ready?.findController;
-  const expectedPageIndex =
+  const engineOptions: {
+    expectedPageIndex?: number | null;
+    emptyQueriesReason: string;
+  } = {
+    emptyQueriesReason:
+      "The quote is too short to build a FindController query.",
+  };
+  if (
     options &&
     Object.prototype.hasOwnProperty.call(options, "expectedPageIndex")
-      ? Number.isFinite(options.expectedPageIndex) &&
-        Number(options.expectedPageIndex) >= 0
-        ? Math.floor(Number(options.expectedPageIndex))
-        : null
-      : getExpectedPageIndex(reader, app);
-  if (!eventBus || !findController) {
-    return {
-      matched: false,
-      reason: "PDF.js FindController is unavailable in the current reader.",
-      expectedPageIndex,
-      queries: [],
-      debugSummary: [],
-    };
-  }
-
-  const queries = buildFindControllerQuoteQueries(quoteText);
-  if (!queries.length) {
-    return {
-      matched: false,
-      reason: "The quote is too short to build a FindController query.",
-      expectedPageIndex,
-      queries: [],
-      debugSummary: [],
-    };
-  }
-
-  const pagesCount = getPagesCount(app);
-  if (pagesCount < 1) {
-    return {
-      matched: false,
-      reason: "The reader did not report any searchable PDF pages.",
-      expectedPageIndex,
-      queries: [],
-      debugSummary: [],
-    };
-  }
-
-  // FindController searches all pages and navigates to the match by itself.
-  // No pre-navigation needed — the expectedPageIndex from the text search
-  // may be wrong (short prefix false-match), so navigating there first would
-  // cause an unnecessary jump to the wrong page.
-
-  const attempts: ExactQuoteJumpQueryAttempt[] = [];
-  const debugSummary: string[] = [];
-  let ambiguousAttempt: ExactQuoteJumpQueryAttempt | null = null;
-  let unlocatedMatchAttempt: ExactQuoteJumpQueryAttempt | null = null;
-  const cached = await warmPageTextCache(reader).catch((_err) => {
-    void _err;
-    return null;
-  });
-  const cachedQueryFilter = filterFindControllerQueriesByCachedPageText(
-    queries,
-    cached,
-  );
-  debugSummary.push(...cachedQueryFilter.debugSummary);
-  if (
-    cachedQueryFilter.checked &&
-    cachedQueryFilter.negativeEvidenceReliable &&
-    !cachedQueryFilter.queries.length
   ) {
-    const cachedAmbiguousAttempt = cachedQueryFilter.attempts.find(
-      (attempt) => attempt.totalMatches > 1,
-    );
-    return {
-      matched: false,
-      reason: cachedAmbiguousAttempt
-        ? buildAmbiguousCachedPageTextReason(cachedAmbiguousAttempt)
-        : "Cached page text did not find a unique paragraph query for the quote.",
-      expectedPageIndex,
-      queries: cachedQueryFilter.attempts,
-      debugSummary,
-    };
+    engineOptions.expectedPageIndex = options.expectedPageIndex;
   }
-  const queriesToSearch = cachedQueryFilter.checked
-    ? cachedQueryFilter.queries
-    : queries;
+  const execution = await runFindControllerJumpQueryPhases(
+    reader,
+    [
+      {
+        kind: "legacy-locator",
+        queries: buildFindControllerQuoteQueries(quoteText),
+      },
+    ],
+    engineOptions,
+  );
+  if (execution.status === "failed") return execution.result;
 
-  for (const query of queriesToSearch) {
-    const searchResult = await searchFindControllerForQuery(reader, query);
-    if (!searchResult) {
-      return {
-        matched: false,
-        reason: "FindController search could not run in the current reader.",
-        expectedPageIndex,
-        queries: attempts,
-        debugSummary,
-      };
-    }
-    const attempt: ExactQuoteJumpQueryAttempt = {
-      query,
-      matchedPageIndexes: searchResult.matchedPageIndexes,
-      totalMatches: searchResult.totalMatches,
-    };
-    attempts.push(attempt);
-    debugSummary.push(
-      `Paragraph query "${formatQuerySnippet(query)}" -> ${formatPageList(searchResult.matchedPageIndexes)}`,
-    );
-    if (
-      searchResult.totalMatches <= 0 ||
-      !searchResult.matchedPageIndexes.length
-    ) {
-      if (
-        searchResult.totalMatches > 0 &&
-        !searchResult.matchedPageIndexes.length
-      ) {
-        unlocatedMatchAttempt ||= attempt;
-      }
-      continue;
-    }
-    const resolvedPageIndex = getFindControllerResolvedPageIndex(searchResult);
-    if (resolvedPageIndex === null) {
-      ambiguousAttempt ||= attempt;
-      continue;
-    }
-    // FindController found the quote — trust it.  The expectedPageIndex from
-    // the text search is only a hint (short prefixes can match the wrong page,
-    // e.g. abstract vs. body).  FindController's match is authoritative.
-    const actualPage = resolvedPageIndex;
-    const highlightUpgrade = await tryUpgradeFindControllerHighlight({
-      reader,
-      matchedPageIndex: actualPage,
-      locatorQuery: query,
-      highlightTextCandidates: options?.highlightTextCandidates,
-      attempts,
-      debugSummary,
-    });
-    if (highlightUpgrade) {
-      return {
-        matched: true,
-        matchedPageIndex: highlightUpgrade.matchedPageIndex,
-        reason: highlightUpgrade.reason,
-        expectedPageIndex,
-        queryUsed: highlightUpgrade.query,
-        highlightCoverage: highlightUpgrade.highlightCoverage,
-        queries: attempts,
-        debugSummary,
-      };
-    }
-
+  // FindController found the quote — trust it.  The expectedPageIndex from
+  // the text search is only a hint (short prefixes can match the wrong page,
+  // e.g. abstract vs. body).  FindController's match is authoritative.
+  const highlightUpgrade = await tryUpgradeFindControllerHighlight({
+    reader,
+    matchedPageIndex: execution.matchedPageIndex,
+    locatorQuery: execution.query,
+    highlightTextCandidates: options?.highlightTextCandidates,
+    attempts: execution.attempts,
+    debugSummary: execution.debugSummary,
+  });
+  if (highlightUpgrade) {
     return {
       matched: true,
-      matchedPageIndex: actualPage,
-      reason: didUseSelectedFindControllerPage(searchResult, actualPage)
-        ? `FindController selected a highlighted quote match (page ${actualPage + 1}).`
-        : expectedPageIndex !== null && actualPage === expectedPageIndex
-          ? `FindController matched the quote on target page ${expectedPageIndex + 1}.`
-          : `FindController matched the quote (page ${actualPage + 1}).`,
-      expectedPageIndex,
-      queryUsed: query,
-      highlightCoverage: computeFindControllerHighlightCoverage(
-        query,
-        options?.highlightTextCandidates,
-      ),
-      queries: attempts,
-      debugSummary,
+      matchedPageIndex: highlightUpgrade.matchedPageIndex,
+      reason: highlightUpgrade.reason,
+      expectedPageIndex: execution.expectedPageIndex,
+      queryUsed: highlightUpgrade.query,
+      highlightCoverage: highlightUpgrade.highlightCoverage,
+      queries: execution.attempts,
+      debugSummary: execution.debugSummary,
     };
   }
-  if (ambiguousAttempt) {
-    return {
-      matched: false,
-      reason: buildAmbiguousFindControllerReason(ambiguousAttempt),
-      expectedPageIndex,
-      queries: attempts,
-      debugSummary,
-    };
-  }
-  if (unlocatedMatchAttempt) {
-    return {
-      matched: false,
-      reason: `FindController reported ${unlocatedMatchAttempt.totalMatches} quote matches but did not expose one reliable matched page.`,
-      expectedPageIndex,
-      queries: attempts,
-      debugSummary,
-    };
-  }
-  return {
-    matched: false,
-    reason: "FindController found no match for the available quote queries.",
-    expectedPageIndex,
-    queries: attempts,
-    debugSummary,
+
+  return buildDirectFindControllerJumpResult(
+    execution,
+    options?.highlightTextCandidates,
+  );
+}
+
+export async function scrollToSelectedTextInReader(
+  reader: any,
+  selectedText: string,
+  options?: { expectedPageIndex?: number | null },
+): Promise<ExactQuoteJumpResult> {
+  const engineOptions: {
+    expectedPageIndex?: number | null;
+    emptyQueriesReason: string;
+  } = {
+    emptyQueriesReason:
+      "The selected text is too short to build a FindController query.",
   };
+  if (
+    options &&
+    Object.prototype.hasOwnProperty.call(options, "expectedPageIndex")
+  ) {
+    engineOptions.expectedPageIndex = options.expectedPageIndex;
+  }
+  const execution = await runFindControllerJumpQueryPhases(
+    reader,
+    [
+      {
+        kind: "full-coverage",
+        queries: buildFindControllerFullCoverageQueries(selectedText),
+      },
+      {
+        kind: "legacy-locator",
+        queries: buildFindControllerQuoteQueries(selectedText),
+      },
+    ],
+    engineOptions,
+  );
+  if (execution.status === "failed") return execution.result;
+
+  execution.debugSummary.push(
+    execution.phase.kind === "full-coverage"
+      ? "Selected-text navigation matched the full-coverage query phase."
+      : "Selected-text navigation matched the legacy partial-query phase.",
+  );
+  return buildDirectFindControllerJumpResult(
+    execution,
+    execution.phase.kind === "full-coverage" ? [selectedText] : undefined,
+  );
 }

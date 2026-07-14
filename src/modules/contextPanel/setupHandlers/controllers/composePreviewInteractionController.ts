@@ -15,15 +15,11 @@ import {
   formatSelectedTextContextPageLabel,
 } from "../../contextResolution";
 import {
-  flashPageInLivePdfReader,
-  scrollToExactQuoteInReader,
-} from "../../livePdfSelectionLocator";
-import {
   isManagedBlobPath,
   removeAttachmentFile,
 } from "../../attachmentStorage";
-import { isPdfContextAttachment } from "../../contextAttachmentSupport";
 import { buildPaperKey } from "../../pdfContext";
+import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {
   clearSelectedPaperState,
   isPaperContextFullTextMode,
@@ -115,12 +111,6 @@ type ComposePreviewInteractionControllerDeps = {
   scheduleAttachmentGc: () => void;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   logError: (message: string, error?: unknown) => void;
-};
-
-const asFinitePositiveItemId = (value: unknown): number | null => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
 };
 
 export function attachComposePreviewInteractionController(
@@ -664,74 +654,9 @@ export function attachComposePreviewInteractionController(
     }
   };
 
-  const resolveSelectedContextTargetItemId = (
-    selectedContext: SelectedTextContext,
-  ): number | null => {
-    const explicitContextItemId = asFinitePositiveItemId(
-      selectedContext.contextItemId,
-    );
-    if (explicitContextItemId) return explicitContextItemId;
-
-    const paperContextItemId = asFinitePositiveItemId(
-      selectedContext.paperContext?.contextItemId,
-    );
-    if (paperContextItemId) return paperContextItemId;
-
-    const activeContextItem = getActiveContextAttachmentFromTabs();
-    const activeContextItemId = asFinitePositiveItemId(activeContextItem?.id);
-    if (activeContextItemId) return activeContextItemId;
-
-    const currentItem = getItem();
-    const currentPanelItemId = asFinitePositiveItemId(
-      isPdfContextAttachment(currentItem) ? currentItem?.id : 0,
-    );
-    if (currentPanelItemId) return currentPanelItemId;
-
-    const basePaper = deps.resolveCurrentPaperBaseItem();
-    if (!basePaper) return null;
-    const attachments = basePaper.getAttachments?.() || [];
-    for (const attachmentId of attachments) {
-      const attachment = Zotero.Items.get(attachmentId) || null;
-      if (isPdfContextAttachment(attachment)) {
-        return attachment.id;
-      }
-    }
-    return null;
-  };
-
   const navigateSelectedTextContextToPage = async (
     selectedContext: SelectedTextContext,
   ): Promise<boolean> => {
-    const rawPageIndex = Number(selectedContext.pageIndex);
-    if (!Number.isFinite(rawPageIndex) || rawPageIndex < 0) return false;
-    const pageIndex = Math.floor(rawPageIndex);
-    const pageLabel = selectedContext.pageLabel || `${pageIndex + 1}`;
-    const targetItemId = resolveSelectedContextTargetItemId(selectedContext);
-    if (!targetItemId) return false;
-
-    const location = { pageIndex, pageLabel };
-    const activeReader = getActiveReaderForSelectedTab();
-    const activeReaderItemId = Number(
-      activeReader?._item?.id || activeReader?.itemID || 0,
-    );
-    if (
-      Number.isFinite(activeReaderItemId) &&
-      activeReaderItemId === targetItemId &&
-      typeof activeReader?.navigate === "function"
-    ) {
-      await activeReader.navigate(location);
-      if (selectedContext.text) {
-        try {
-          await scrollToExactQuoteInReader(activeReader, selectedContext.text);
-        } catch {
-          await flashPageInLivePdfReader(activeReader, pageIndex);
-        }
-      } else {
-        await flashPageInLivePdfReader(activeReader, pageIndex);
-      }
-      return true;
-    }
-
     const readerApi = Zotero.Reader as
       | {
           open?: (
@@ -740,45 +665,6 @@ export function attachComposePreviewInteractionController(
           ) => Promise<void | _ZoteroTypes.ReaderInstance>;
         }
       | undefined;
-    if (typeof readerApi?.open === "function") {
-      const openedReader = await readerApi.open(targetItemId, location);
-      const nextReader =
-        openedReader ||
-        ((
-          Zotero.Reader as
-            | {
-                getByTabID?: (
-                  tabID: string | number,
-                ) => _ZoteroTypes.ReaderInstance;
-              }
-            | undefined
-        )?.getByTabID &&
-          (() => {
-            const tabs = (
-              Zotero as unknown as {
-                Tabs?: { selectedID?: string | number | null };
-              }
-            ).Tabs;
-            const selectedTabId = tabs?.selectedID;
-            return selectedTabId !== undefined && selectedTabId !== null
-              ? Zotero.Reader.getByTabID?.(`${selectedTabId}`) || null
-              : null;
-          })()) ||
-        getActiveReaderForSelectedTab();
-      if (nextReader) {
-        if (selectedContext.text) {
-          try {
-            await scrollToExactQuoteInReader(nextReader, selectedContext.text);
-          } catch {
-            await flashPageInLivePdfReader(nextReader, pageIndex);
-          }
-        } else {
-          await flashPageInLivePdfReader(nextReader, pageIndex);
-        }
-      }
-      return true;
-    }
-
     const pane = Zotero.getActiveZoteroPane?.() as
       | {
           viewPDF?: (
@@ -787,24 +673,35 @@ export function attachComposePreviewInteractionController(
           ) => Promise<void>;
         }
       | undefined;
-    if (typeof pane?.viewPDF === "function") {
-      await pane.viewPDF(targetItemId, location);
-      const nextReader = getActiveReaderForSelectedTab();
-      if (nextReader) {
-        if (selectedContext.text) {
-          try {
-            await scrollToExactQuoteInReader(nextReader, selectedContext.text);
-          } catch {
-            await flashPageInLivePdfReader(nextReader, pageIndex);
-          }
-        } else {
-          await flashPageInLivePdfReader(nextReader, pageIndex);
-        }
+    const tabs = (
+      Zotero as unknown as {
+        Tabs?: { selectedID?: string | number | null };
       }
-      return true;
-    }
+    ).Tabs;
+    const readerLookup = Zotero.Reader as
+      | {
+          getByTabID?: (tabID: string | number) => _ZoteroTypes.ReaderInstance;
+        }
+      | undefined;
 
-    return false;
+    return navigateSelectedTextContextToReader(selectedContext, {
+      getActiveContextAttachment: getActiveContextAttachmentFromTabs,
+      getCurrentItem: getItem,
+      resolveCurrentPaperBaseItem: deps.resolveCurrentPaperBaseItem,
+      getItemById: (itemId) => Zotero.Items.get(itemId) || null,
+      getActiveReaderForSelectedTab,
+      getSelectedTabId: () => tabs?.selectedID,
+      getReaderByTabId: (tabId) =>
+        readerLookup?.getByTabID?.(`${tabId}`) || null,
+      openReader:
+        typeof readerApi?.open === "function"
+          ? (itemId, location) => readerApi.open!(itemId, location)
+          : undefined,
+      viewPdf:
+        typeof pane?.viewPDF === "function"
+          ? (itemId, location) => pane.viewPDF!(itemId, location)
+          : undefined,
+    });
   };
 
   if (selectedContextList) {

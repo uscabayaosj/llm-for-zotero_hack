@@ -68,6 +68,11 @@ import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import { isPdfContextAttachment } from "./contextAttachmentSupport";
 import { config } from "./constants";
 import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
+import {
+  extractDocumentReferenceEvidence,
+  parseDocumentReferences,
+  resolveDocumentReferenceMatches,
+} from "../../shared/documentReferences";
 
 const prefKey = (key: string) => `${config.prefsPrefix}.${key}`;
 const getPref = (key: string) => Zotero.Prefs.get(prefKey(key), true);
@@ -945,9 +950,13 @@ function buildChunkMetadataFromManifest(
   fullText: string,
   sections: ManifestSection[],
 ): PdfChunkMeta[] {
+  const sourceFingerprint = buildPdfSourceFingerprint(fullText, "mineru");
   // Build a lookup: for any char position in fullText, which section is it?
-  function findSectionForText(chunkText: string): ManifestSection | undefined {
-    const pos = fullText.indexOf(chunkText.slice(0, 100));
+  function findChunkPosition(chunkText: string): number {
+    return fullText.indexOf(chunkText.slice(0, 100));
+  }
+
+  function findSectionForPosition(pos: number): ManifestSection | undefined {
     if (pos < 0) return undefined;
     for (const section of sections) {
       if (pos >= section.charStart && pos < section.charEnd) return section;
@@ -979,7 +988,12 @@ function buildChunkMetadataFromManifest(
 
   const meta: PdfChunkMeta[] = [];
   for (const [chunkIndex, chunkText] of chunks.entries()) {
-    const section = findSectionForText(chunkText);
+    const sourceStart = findChunkPosition(chunkText);
+    const sourceEnd =
+      sourceStart >= 0
+        ? Math.min(fullText.length, sourceStart + chunkText.length)
+        : -1;
+    const section = findSectionForPosition(sourceStart);
     const sectionLabel = section?.heading;
     const chunkKind = section
       ? sectionHeadingToKind(section.heading)
@@ -994,6 +1008,43 @@ function buildChunkMetadataFromManifest(
       ? trimLeadingSectionHeading(chunkText, sectionLabel)
       : sanitizePdfText(chunkText);
     const cleaned = cleanLeadingEvidenceNoise(textWithoutHeading, chunkKind);
+    const references = extractDocumentReferenceEvidence(chunkText);
+    const manifestRecords = [
+      ...(section?.figures || []).map((record) => ({
+        kind: "figure" as const,
+        record,
+      })),
+      ...(section?.tables || []).map((record) => ({
+        kind: "table" as const,
+        record,
+      })),
+    ];
+    for (const { kind, record } of manifestRecords) {
+      const parsed = parseDocumentReferences(
+        record.baseLabel || record.label,
+      )[0];
+      if (!parsed || parsed.kind !== kind) continue;
+      const captionProbe = normalizeEvidenceText(record.caption)
+        .slice(0, 80)
+        .toLocaleLowerCase();
+      const pathProbe = record.path.trim();
+      if (
+        (captionProbe &&
+          normalizedText.toLocaleLowerCase().includes(captionProbe)) ||
+        (pathProbe && chunkText.includes(pathProbe))
+      ) {
+        references.push({
+          kind,
+          id: parsed.id,
+          ...(parsed.panel ? { panel: parsed.panel } : {}),
+          confidence: "high",
+          provenance: ["mineru-manifest", "source-range"],
+          ...(record.page !== undefined
+            ? { pageStart: record.page, pageEnd: record.page }
+            : {}),
+        });
+      }
+    }
 
     meta.push({
       chunkIndex,
@@ -1003,6 +1054,15 @@ function buildChunkMetadataFromManifest(
       chunkKind,
       anchorText: buildEvidenceAnchorFromText(cleaned.text) || undefined,
       leadingNoiseRemoved: cleaned.removedLeadingNoise || undefined,
+      sourceType: "mineru",
+      sourceFingerprint,
+      ...(sourceStart >= 0
+        ? { sourceStart, sourceEnd: Math.max(sourceStart, sourceEnd) }
+        : {}),
+      ...(section?.page !== undefined
+        ? { pageStart: section.page, pageEnd: section.page }
+        : {}),
+      references: references.length ? references : undefined,
     });
   }
   return meta;
@@ -1077,6 +1137,19 @@ const TABLE_CAPTION_PATTERN =
 
 function normalizeEvidenceText(value: string): string {
   return sanitizePdfText(value).replace(/\s+/g, " ").trim();
+}
+
+function buildPdfSourceFingerprint(
+  sourceText: string,
+  sourceType?: PdfContext["sourceType"],
+): string {
+  let hash = 2166136261;
+  const value = `${sourceType || "unknown"}\0${sourceText}`;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function sanitizePdfText(value: string): string {
@@ -1338,7 +1411,12 @@ export function buildChunkMetadata(
   sourceType?: PdfContext["sourceType"],
 ): PdfChunkMeta[] {
   const chunkMeta: PdfChunkMeta[] = [];
+  const sourceFingerprint = buildPdfSourceFingerprint(
+    chunks.join("\n\n"),
+    sourceType,
+  );
   let activeSection: SectionHeadingMatch | undefined;
+  let sourceCursor = 0;
   for (const [chunkIndex, chunkText] of chunks.entries()) {
     const explicitSection =
       sourceType === "mineru"
@@ -1359,6 +1437,10 @@ export function buildChunkMetadata(
       ? trimLeadingSectionHeading(chunkText, explicitSection.label)
       : sanitizePdfText(chunkText);
     const cleaned = cleanLeadingEvidenceNoise(textWithoutHeading, chunkKind);
+    const sourceStart = sourceCursor;
+    const sourceEnd = sourceStart + chunkText.length;
+    sourceCursor = sourceEnd + 2;
+    const references = extractDocumentReferenceEvidence(chunkText);
     chunkMeta.push({
       chunkIndex,
       text: chunkText,
@@ -1367,6 +1449,11 @@ export function buildChunkMetadata(
       chunkKind,
       anchorText: buildEvidenceAnchorFromText(cleaned.text) || undefined,
       leadingNoiseRemoved: cleaned.removedLeadingNoise || undefined,
+      sourceType,
+      sourceFingerprint,
+      sourceStart,
+      sourceEnd,
+      references: references.length ? references : undefined,
     });
   }
   return chunkMeta;
@@ -2085,6 +2172,22 @@ export async function buildPaperRetrievalCandidates(
   const queryPlan = options?.queryPlan;
   const terms = queryPlanTerms(question, queryPlan);
   const semanticQuery = queryPlan?.semanticQuery || question;
+  const referenceMatches = resolveDocumentReferenceMatches(
+    queryPlan?.references || parseDocumentReferences(question),
+    chunkMeta,
+  );
+  const referenceConfidenceByChunk = new Map(
+    referenceMatches.map((match) => [match.chunkIndex, match.confidence]),
+  );
+  const highConfidenceNeighborIndexes = new Set<number>();
+  for (const match of referenceMatches) {
+    if (match.confidence !== "high") continue;
+    if (match.chunkIndex > 0)
+      highConfidenceNeighborIndexes.add(match.chunkIndex - 1);
+    if (match.chunkIndex + 1 < chunks.length) {
+      highConfidenceNeighborIndexes.add(match.chunkIndex + 1);
+    }
+  }
   const bm25Scores = chunkStats.map((chunk) =>
     scoreChunkBM25(chunk, terms, docFreq, chunks.length, avgChunkLength || 1),
   );
@@ -2174,11 +2277,22 @@ export async function buildPaperRetrievalCandidates(
       matchedQueryVariants: matchedQueryVariants.length
         ? matchedQueryVariants
         : undefined,
+      referenceConfidence: referenceConfidenceByChunk.get(chunk.index),
     };
+    const referenceBoost =
+      candidate.referenceConfidence === "high"
+        ? 10
+        : candidate.referenceConfidence === "medium"
+          ? 0.75
+          : highConfidenceNeighborIndexes.has(chunk.index)
+            ? 0.35
+            : 0;
     const evidenceScore =
       retrievalMode === "evidence"
-        ? hybridScore + scoreEvidenceHeuristics({ candidate, question })
-        : hybridScore;
+        ? hybridScore +
+          scoreEvidenceHeuristics({ candidate, question }) +
+          referenceBoost
+        : hybridScore + referenceBoost;
     candidate.evidenceScore = evidenceScore;
     return {
       candidate,
@@ -2192,6 +2306,33 @@ export async function buildPaperRetrievalCandidates(
   });
 
   const selected = scored.slice(0, topK);
+  const requiredReferenceEntries = scored.filter(
+    (entry) =>
+      entry.candidate.referenceConfidence === "high" ||
+      highConfidenceNeighborIndexes.has(entry.candidate.chunkIndex),
+  );
+  const requiredReferenceIndexes = new Set(
+    requiredReferenceEntries.map((entry) => entry.candidate.chunkIndex),
+  );
+  for (const referenceEntry of requiredReferenceEntries) {
+    if (selected.includes(referenceEntry)) continue;
+    if (selected.length < topK) {
+      selected.push(referenceEntry);
+    } else {
+      const replaceIndex = selected.findLastIndex(
+        (entry) => !requiredReferenceIndexes.has(entry.candidate.chunkIndex),
+      );
+      if (replaceIndex >= 0) {
+        selected[replaceIndex] = referenceEntry;
+      } else {
+        selected.push(referenceEntry);
+      }
+    }
+  }
+  selected.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.candidate.chunkIndex - b.candidate.chunkIndex;
+  });
   if (
     retrievalMode === "evidence" &&
     selected.length &&
@@ -2209,7 +2350,10 @@ export async function buildPaperRetrievalCandidates(
       ),
     );
     if (bodyEntry && !selected.includes(bodyEntry)) {
-      selected[selected.length - 1] = bodyEntry;
+      const replaceIndex = selected.findLastIndex(
+        (entry) => !requiredReferenceIndexes.has(entry.candidate.chunkIndex),
+      );
+      if (replaceIndex >= 0) selected[replaceIndex] = bodyEntry;
       selected.sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         return a.candidate.chunkIndex - b.candidate.chunkIndex;

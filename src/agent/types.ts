@@ -609,6 +609,7 @@ export type AgentToolContext = {
   modelName: string;
   modelProviderLabel?: string;
   resourceSignature?: string;
+  signal?: AbortSignal;
 };
 
 export type AgentToolInputValidation<T> =

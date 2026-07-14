@@ -16,6 +16,7 @@ import {
   buildPaperKey,
 } from "../src/modules/contextPanel/pdfContext";
 import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
+import { buildRetrievalQueryPlan } from "../src/modules/contextPanel/retrievalQueryPlan";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type {
   ChunkStat,
@@ -377,6 +378,57 @@ describe("multiContextPlanner", function () {
     assert.equal(plan.selectedChunkCount, 0);
     assert.include(plan.contextText, "Full Paper Contexts:");
     assert.notInclude(plan.contextText, "Retrieved Evidence:");
+  });
+
+  it("uses exhaustive bounded reading for an oversized prompt-driven full-text request", async function () {
+    const paper = registerMockPaper({
+      itemId: 120,
+      contextItemId: 121,
+      title: "Prompt Full Read",
+      pdfContext: buildPdfContext(
+        "Prompt Full Read",
+        Array.from(
+          { length: 7 },
+          (_, index) =>
+            `Section ${index + 1}\n${`evidence-${index} `.repeat(900)}`,
+        ),
+      ),
+    });
+    const seen = new Set<number>();
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "paper",
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
+      question: "请先通读整篇论文，再回答。",
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: { inputTokenCap: 2048, maxTokens: 256 },
+      queryPlan: buildRetrievalQueryPlan({
+        query: "请先通读整篇论文，再回答。",
+        readIntent: "full-once",
+      }),
+      exhaustiveBatchAnalyzer: async (batch) => {
+        for (const chunk of batch.chunks) seen.add(chunk.chunkIndex);
+        return {
+          digest: `Read chunks ${batch.chunks.map((chunk) => chunk.chunkIndex).join(",")}`,
+          relevantChunkIds: batch.chunks.map((chunk) => chunk.chunkIndex),
+        };
+      },
+    });
+
+    assert.equal(plan.strategy, "paper-exhaustive-full");
+    assert.isTrue(plan.fullReadReceipt?.complete);
+    assert.equal(plan.fullReadReceipt?.processedChunks, 7);
+    assert.deepEqual(
+      [...seen].sort((a, b) => a - b),
+      [0, 1, 2, 3, 4, 5, 6],
+    );
+    assert.include(plan.contextText, "Full-text reading receipt:");
   });
 
   it("uses focused retrieval on paper-mode follow-up turns even when full text would fit", async function () {

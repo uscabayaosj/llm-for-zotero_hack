@@ -218,6 +218,18 @@ export type PdfChunkKind =
   | "body"
   | "unknown";
 
+export type DocumentReferenceConfidence = "high" | "medium" | "low";
+
+export type DocumentReferenceEvidence = {
+  kind: "figure" | "table";
+  id: string;
+  panel?: string;
+  confidence: DocumentReferenceConfidence;
+  provenance: string[];
+  pageStart?: number;
+  pageEnd?: number;
+};
+
 export type PdfChunkMeta = {
   chunkIndex: number;
   text: string;
@@ -226,6 +238,13 @@ export type PdfChunkMeta = {
   chunkKind: PdfChunkKind;
   anchorText?: string;
   leadingNoiseRemoved?: boolean;
+  sourceType?: PdfContext["sourceType"];
+  sourceStart?: number;
+  sourceEnd?: number;
+  sourceFingerprint?: string;
+  pageStart?: number;
+  pageEnd?: number;
+  references?: DocumentReferenceEvidence[];
 };
 
 export type ContextAssemblyMode = "full" | "retrieval";
@@ -233,6 +252,7 @@ export type ContextAssemblyStrategy =
   | "paper-first-full"
   | "paper-cache-full"
   | "paper-manual-full"
+  | "paper-exhaustive-full"
   | "paper-explicit-retrieval"
   | "paper-followup-retrieval"
   | "general-full"
@@ -269,6 +289,7 @@ export type PaperContextCandidate = {
   evidenceScore: number;
   matchedQueryVariant?: string;
   matchedQueryVariants?: string[];
+  referenceConfidence?: DocumentReferenceConfidence;
 };
 
 export type MultiContextPlan = {
@@ -285,6 +306,8 @@ export type MultiContextPlan = {
   assistantInstruction?: string;
   readStrategy?: LibraryChatReadStrategyDiagnostics;
   coverageReceipt?: LibraryChatCoverageReceipt;
+  fullReadReceipt?: import("../../shared/exhaustiveDocumentReader").FullReadCoverageReceipt;
+  modelImages?: string[];
 };
 
 export type GlobalPortalItem = {

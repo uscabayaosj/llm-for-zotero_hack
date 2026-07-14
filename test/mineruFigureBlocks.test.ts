@@ -180,6 +180,30 @@ describe("mineruFigureBlocks", function () {
     ]);
   });
 
+  it("resolves a Chinese query reference against an English MinerU figure label", function () {
+    const blocks = build(
+      [
+        "# Results",
+        "![Figure 1](images/fig1.jpg)",
+        "",
+        "Figure 1. Main result.",
+      ].join("\n"),
+      [
+        { type: "text", text_level: 1, text: "Results", page_idx: 0 },
+        {
+          type: "image",
+          img_path: "images/fig1.jpg",
+          image_caption: ["Figure 1. Main result."],
+          page_idx: 1,
+        },
+      ],
+    );
+
+    const result = resolveMineruFigureBlocksForQuery("请详细解释图1", blocks);
+    assert.lengthOf(result.blocks, 1);
+    assert.include(result.blocks[0].labelHints, "Figure 1");
+  });
+
   it("marks captionless page-spanning blocks as low confidence", function () {
     const blocks = build(
       ["# Results", "![](images/a.jpg)", "", "![](images/b.jpg)"].join("\n"),

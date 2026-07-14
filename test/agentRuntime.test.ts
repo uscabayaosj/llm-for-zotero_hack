@@ -1389,6 +1389,123 @@ describe("AgentRuntime", function () {
     }
   });
 
+  it("requires paper_read full before completing an explicit Agent full-text request", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry();
+      const reads: unknown[] = [];
+      registry.register({
+        spec: {
+          name: "paper_read",
+          description: "read paper",
+          inputSchema: { type: "object" },
+          mutability: "read",
+          requiresConfirmation: false,
+        },
+        validate: (args: unknown) => ({ ok: true, value: args }),
+        execute: async (input) => {
+          reads.push(input);
+          return {
+            mode: "full",
+            status: "complete",
+            coverageReceipt: {
+              complete: true,
+              processedChunks: 8,
+              totalChunks: 8,
+            },
+          };
+        },
+      });
+
+      let stepIndex = 0;
+      let sawCorrection = false;
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: true,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            stepIndex += 1;
+            if (stepIndex === 1) {
+              return {
+                kind: "final",
+                text: "Here is a summary.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Here is a summary.",
+                },
+              };
+            }
+            sawCorrection = params.messages.some(
+              (message) =>
+                message.role === "user" &&
+                typeof message.content === "string" &&
+                message.content.includes("exhaustive full-text reading"),
+            );
+            if (stepIndex === 2) {
+              return {
+                kind: "tool_calls",
+                calls: [
+                  {
+                    id: "call-full-read",
+                    name: "paper_read",
+                    arguments: { mode: "full" },
+                  },
+                ],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call-full-read",
+                      name: "paper_read",
+                      arguments: { mode: "full" },
+                    },
+                  ],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Grounded full-text answer.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Grounded full-text answer.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 9,
+          mode: "agent",
+          conversationKind: "paper",
+          activeItemId: 42,
+          userText: "请先通读整篇论文，再回答问题。",
+          model: "gpt-5.4",
+          apiBase: "",
+          apiKey: "test",
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      if (outcome.kind !== "completed") return;
+      assert.equal(outcome.text, "Grounded full-text answer.");
+      assert.isTrue(sawCorrection);
+      assert.deepEqual(reads, [{ mode: "full" }]);
+    } finally {
+      restoreDb();
+    }
+  });
+
   it("does not force file writes after a standalone Zotero note request is satisfied", async function () {
     const restoreDb = installMockDb();
     try {

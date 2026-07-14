@@ -1772,6 +1772,154 @@ describe("semantic tool surface", function () {
     );
   });
 
+  it("paper_read full processes every extractable chunk and returns coverage", async function () {
+    const paperContext = {
+      itemId: 51,
+      contextItemId: 52,
+      title: "Agent Full Read Paper",
+    };
+    const chunks = Array.from(
+      { length: 6 },
+      (_, index) => `Section ${index + 1}\nAgent evidence ${index}.`,
+    );
+    const seen = new Set<number>();
+    const tool = createPaperReadTool(
+      {
+        ensurePaperContext: async () => ({
+          title: paperContext.title,
+          chunks,
+          chunkMeta: chunks.map((text, chunkIndex) => ({
+            chunkIndex,
+            text,
+            normalizedText: text,
+            chunkKind: "body",
+          })),
+          chunkStats: [],
+          docFreq: {},
+          avgChunkLength: 0,
+          fullLength: chunks.join("\n\n").length,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        resolvePaperContextTarget: () => paperContext,
+        listPaperContexts: () => [paperContext],
+      } as never,
+      undefined,
+      async (batch) => {
+        for (const chunk of batch.chunks) seen.add(chunk.chunkIndex);
+        return {
+          digest: `Read ${batch.chunks.map((chunk) => chunk.chunkIndex).join(",")}`,
+          relevantChunkIds: batch.chunks.map((chunk) => chunk.chunkIndex),
+        };
+      },
+    );
+    const validated = tool.validate({
+      mode: "full",
+      target: { itemId: 51, contextItemId: 52 },
+      query: "Read the complete text.",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      mode: string;
+      status: string;
+      coverageReceipt: {
+        complete: boolean;
+        processedChunks: number;
+        totalChunks: number;
+      };
+    };
+
+    assert.equal(output.mode, "full");
+    assert.equal(output.status, "complete");
+    assert.isTrue(output.coverageReceipt.complete);
+    assert.equal(output.coverageReceipt.processedChunks, 6);
+    assert.equal(output.coverageReceipt.totalChunks, 6);
+    assert.deepEqual(
+      [...seen].sort((a, b) => a - b),
+      [0, 1, 2, 3, 4, 5],
+    );
+  });
+
+  it("paper_read full targets the active paper unless all selected papers are explicit", async function () {
+    const firstPaper = {
+      itemId: 61,
+      contextItemId: 62,
+      title: "First Selected Paper",
+    };
+    const activePaper = {
+      itemId: 71,
+      contextItemId: 72,
+      title: "Active Selected Paper",
+    };
+    const prepared: string[] = [];
+    const tool = createPaperReadTool(
+      {
+        ensurePaperContext: async (paperContext: typeof firstPaper) => {
+          prepared.push(paperContext.title);
+          const text = `Complete text for ${paperContext.title}`;
+          return {
+            title: paperContext.title,
+            chunks: [text],
+            chunkMeta: [
+              {
+                chunkIndex: 0,
+                text,
+                normalizedText: text,
+                chunkKind: "body",
+              },
+            ],
+            chunkStats: [],
+            docFreq: {},
+            avgChunkLength: 0,
+            fullLength: text.length,
+          };
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [firstPaper, activePaper],
+      } as never,
+      undefined,
+      async (batch) => ({
+        digest: `Read ${batch.paperTitle}`,
+        relevantChunkIds: [0],
+      }),
+    );
+    const validated = tool.validate({ mode: "full" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "paper",
+        activeItemId: activePaper.itemId,
+        selectedPaperContexts: [firstPaper, activePaper],
+        userText: "Read the complete paper before answering.",
+      },
+    });
+    assert.deepEqual(prepared, [activePaper.title]);
+
+    prepared.length = 0;
+    const allSelectedOutput = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "paper",
+        activeItemId: activePaper.itemId,
+        selectedPaperContexts: [firstPaper, activePaper],
+        userText: "Read the full text of all selected papers.",
+      },
+    })) as { coverageReceipt: { paperCount: number } };
+    assert.deepEqual(prepared, [firstPaper.title, activePaper.title]);
+    assert.equal(allSelectedOutput.coverageReceipt.paperCount, 2);
+  });
+
   it("paper_read targeted honors explicit pages even when a query is present", async function () {
     const paperContext = {
       itemId: 11,

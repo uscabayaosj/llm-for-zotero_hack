@@ -162,6 +162,43 @@ describe("workflow: selected item context send", function () {
     });
   });
 
+  it("preserves a Chinese figure request at the normal-chat send boundary", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Issue 310 Workflow Paper",
+      pdfTitle: "Issue 310 Workflow PDF",
+    });
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+
+    const normalSend = await api.ask(panel.panelId, "帮我详细解释图1的内容");
+    assert.equal(normalSend.question, "帮我详细解释图1的内容");
+    assert.equal(
+      normalSend.contextSource?.paperContext?.contextItemId,
+      fixture.pdfAttachmentId,
+      await diagnosticsMessage(api, panel.panelId),
+    );
+  });
+
+  it("preserves a Chinese full-read request at the Agent send boundary", async function () {
+    await withPrefs(CLAUDE_MODE_PREFS, async () => {
+      fixture = await api.createPaperWithPdfFixture({
+        title: "Issue 310 Agent Workflow Paper",
+        pdfTitle: "Issue 310 Agent Workflow PDF",
+      });
+      const panel = await api.renderPanelForItem(fixture.parentItemId);
+      const agentSend = await api.ask(
+        panel.panelId,
+        "请先通读整篇论文，再回答问题。",
+      );
+      assert.equal(agentSend.runtimeMode, "agent");
+      assert.equal(agentSend.question, "请先通读整篇论文，再回答问题。");
+      assert.equal(
+        agentSend.contextSource?.paperContext?.contextItemId,
+        fixture?.pdfAttachmentId,
+        await diagnosticsMessage(api, panel.panelId),
+      );
+    });
+  });
+
   it("renders quote anchors as original-language quote cards in Chinese answers", async function () {
     fixture = await api.createPaperWithPdfFixture({
       title: "Original Language Quote Workflow Paper",
@@ -169,8 +206,7 @@ describe("workflow: selected item context send", function () {
     });
 
     const panel = await api.renderPanelForItem(fixture.parentItemId);
-    const quoteText =
-      "Memory engrams are highly dynamic during consolidation.";
+    const quoteText = "Memory engrams are highly dynamic during consolidation.";
     const result = await api.renderAssistantForPanel(panel.panelId, {
       text: `中文回答：\n\n[[quote:Q_workflow_original_language]]\n\n这句话说明上面的原文证据。`,
       quoteCitations: [

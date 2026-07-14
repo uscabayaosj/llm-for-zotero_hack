@@ -66,6 +66,12 @@ import {
   compareEvidenceCandidatesForQuestion,
   isBodyEvidenceSection,
 } from "../../shared/libraryChatEvidencePolicy";
+import {
+  readDocumentsExhaustively,
+  type ExhaustiveBatchAnalyzer,
+  type FullReadCoverageReceipt,
+} from "../../shared/exhaustiveDocumentReader";
+import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -1529,6 +1535,8 @@ export async function resolveMultiContextPlan(params: {
   providerProtocol?: import("../../utils/providerProtocol").ProviderProtocol;
   systemPrompt?: string;
   signal?: AbortSignal;
+  queryPlan?: RetrievalQueryPlan;
+  exhaustiveBatchAnalyzer?: ExhaustiveBatchAnalyzer;
 }): Promise<MultiContextPlan> {
   const fullTextPaperContexts = limitFullTextPaperContexts(
     normalizePaperContextEntries(params.fullTextPaperContexts || []),
@@ -1563,19 +1571,28 @@ export async function resolveMultiContextPlan(params: {
   };
   const hasCollectionContext = Boolean(params.collectionContexts?.length);
   const hasTagContext = Boolean(params.tagContexts?.length);
-  const queryPlan = await resolveRetrievalQueryPlan({
-    query: params.question,
-    hasRetrievalContext:
-      Boolean(papers.length || hasCollectionContext || hasTagContext) &&
-      (!firstPaperTurn || hasCollectionContext || hasTagContext),
-    model: params.model,
-    apiBase: params.apiBase,
-    apiKey: params.apiKey,
-    authMode: params.authMode as ChatParams["authMode"],
-    providerProtocol: params.providerProtocol,
-    reasoning: params.reasoning,
-    signal: params.signal,
-  });
+  const queryPlan =
+    params.queryPlan ||
+    (await resolveRetrievalQueryPlan({
+      query: params.question,
+      hasRetrievalContext: Boolean(
+        papers.length || hasCollectionContext || hasTagContext,
+      ),
+      model: params.model,
+      apiBase: params.apiBase,
+      apiKey: params.apiKey,
+      authMode: params.authMode as ChatParams["authMode"],
+      providerProtocol: params.providerProtocol,
+      reasoning: params.reasoning,
+      signal: params.signal,
+      sourceSamples: papers
+        .map((paper) =>
+          [paper.paperContext.title, paper.pdfContext?.chunks[0] || ""]
+            .filter(Boolean)
+            .join("\n"),
+        )
+        .filter(Boolean),
+    }));
   const queryPlanForQuestion = (question: string): RetrievalQueryPlan =>
     question === params.question
       ? queryPlan
@@ -1584,6 +1601,23 @@ export async function resolveMultiContextPlan(params: {
           queryVariants: queryPlan.variants,
           notes: queryPlan.notes,
         });
+  const figureInputs = await resolveNormalChatFigureInputs({
+    query: params.question,
+    papers: papers.map((paper) => paper.paperContext),
+    model: params.model,
+    apiBase: params.apiBase,
+    apiKey: params.apiKey,
+    authMode: params.authMode as ChatParams["authMode"],
+    providerProtocol: params.providerProtocol,
+    reasoning: params.reasoning,
+    advanced: params.advanced,
+  });
+  if (figureInputs.warnings.length && typeof ztoolkit !== "undefined") {
+    ztoolkit.log(
+      "LLM: Normal-chat figure extraction warnings",
+      figureInputs.warnings,
+    );
+  }
   const collectionScope = await resolveCollectionScopePapers({
     collectionContexts: params.collectionContexts,
     tagContexts: params.tagContexts,
@@ -1626,18 +1660,26 @@ export async function resolveMultiContextPlan(params: {
     ]);
   const finalizePlan = (plan: MultiContextPlan): MultiContextPlan => ({
     ...plan,
+    assistantInstruction:
+      [plan.assistantInstruction, figureInputs.assistantInstruction]
+        .filter(Boolean)
+        .join("\n\n") || undefined,
+    modelImages: figureInputs.images.length ? figureInputs.images : undefined,
     quoteCitations: mergeQuoteCitations(plan.quoteCitations),
-    contextCache: planContextCacheReuse({
-      model: params.model,
-      apiBase: params.apiBase,
-      authMode: params.authMode,
-      protocol: params.providerProtocol,
-      mode: plan.mode,
-      strategy: plan.strategy,
-      contextText: plan.contextText,
-      paperContexts: params.paperContexts,
-      fullTextPaperContexts,
-    }),
+    contextCache:
+      plan.strategy === "paper-exhaustive-full"
+        ? undefined
+        : planContextCacheReuse({
+            model: params.model,
+            apiBase: params.apiBase,
+            authMode: params.authMode,
+            protocol: params.providerProtocol,
+            mode: plan.mode,
+            strategy: plan.strategy,
+            contextText: plan.contextText,
+            paperContexts: params.paperContexts,
+            fullTextPaperContexts,
+          }),
   });
   const retrievedDiagnostics = (
     retrieved?: RetrievedAssembly | null,
@@ -1648,6 +1690,34 @@ export async function resolveMultiContextPlan(params: {
           coverageReceipt: retrieved.coverageReceipt,
         }
       : {};
+  const buildDirectFullReadReceipt = (
+    targetPapers: PlannerPaperEntry[],
+  ): FullReadCoverageReceipt => {
+    const totalChunks = targetPapers.reduce(
+      (sum, paper) => sum + (paper.pdfContext?.chunks.length || 0),
+      0,
+    );
+    const completePaperCount = targetPapers.filter((paper) =>
+      Boolean(paper.pdfContext?.chunks.length),
+    ).length;
+    const complete =
+      targetPapers.length > 0 && completePaperCount === targetPapers.length;
+    return {
+      text: [
+        "Full-text reading receipt:",
+        `- Status: ${complete ? "complete" : "partial"}`,
+        `- Papers complete: ${completePaperCount}/${targetPapers.length}`,
+        `- Source coverage: ${totalChunks}/${totalChunks} chunks`,
+        `- Missing ranges: ${complete ? "none" : "unreadable paper text"}`,
+      ].join("\n"),
+      complete,
+      processedChunks: totalChunks,
+      totalChunks,
+      missingChunkRanges: complete ? [] : ["unreadable paper text"],
+      paperCount: targetPapers.length,
+      completePaperCount,
+    };
+  };
 
   if (!papers.length && !collectionPapers.length) {
     const contextText = prependCollectionScope("");
@@ -1694,6 +1764,110 @@ export async function resolveMultiContextPlan(params: {
   const unpinned = papers.filter((paper) => paper.pinKind === "none");
   const activePaper =
     papers.find((paper) => paper.isActive) || papers[0] || null;
+  if (queryPlan.readIntent === "full-once" && papers.length) {
+    const allSelectedRequested =
+      /\b(?:all|every)\s+(?:selected\s+)?papers?\b/i.test(params.question) ||
+      /(?:所有|全部)(?:已选|选中)?(?:论文|文章)/u.test(params.question);
+    const selectedPaperKeys = new Set(
+      normalizePaperContextEntries(params.paperContexts || []).map((paper) =>
+        buildPaperKey(paper),
+      ),
+    );
+    const selectablePapers = selectedPaperKeys.size
+      ? papers.filter((paper) => selectedPaperKeys.has(paper.paperKey))
+      : papers;
+    const normalizedQuestion = params.question
+      .toLocaleLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+    const explicitTitleMatches = selectablePapers.filter((paper) => {
+      const title = paper.paperContext.title
+        .toLocaleLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
+      return title.length >= 4 && normalizedQuestion.includes(title);
+    });
+    const targetPapers = allSelectedRequested
+      ? selectablePapers
+      : explicitTitleMatches.length
+        ? explicitTitleMatches
+        : activePaper
+          ? [activePaper]
+          : papers;
+    const full = assembleFullMultiPaperContext({ papers: targetPapers });
+    const directFullReceipt = buildDirectFullReadReceipt(targetPapers);
+    const directFullTokenEstimate =
+      full.estimatedTokens + estimateTextTokens(directFullReceipt.text) + 128;
+    if (
+      selectContextAssemblyMode({
+        fullContextText: full.contextText,
+        fullContextTokens: directFullTokenEstimate,
+        contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
+      }) === "full"
+    ) {
+      const contextText = prependCollectionScope(full.contextText);
+      return finalizePlan({
+        mode: "full",
+        strategy: "paper-exhaustive-full",
+        contextText,
+        contextBudget: adjustedContextBudget,
+        usedContextTokens: estimateTextTokens(contextText),
+        selectedPaperCount: targetPapers.length,
+        selectedChunkCount: targetPapers.reduce(
+          (sum, paper) => sum + (paper.pdfContext?.chunks.length || 0),
+          0,
+        ),
+        citationPaperContexts: mergePlannerCitationPaperContexts(targetPapers),
+        quoteCitations: [],
+        fullReadReceipt: directFullReceipt,
+      });
+    }
+
+    const exhaustive = await readDocumentsExhaustively({
+      papers: targetPapers.map((paper) => ({
+        paperContext: paper.paperContext,
+        pdfContext: paper.pdfContext,
+      })),
+      question: params.question,
+      batchTokenBudget: Math.max(
+        512,
+        Math.floor(adjustedContextBudget.contextBudgetTokens * 0.55),
+      ),
+      finalTokenBudget: Math.max(
+        256,
+        adjustedContextBudget.contextBudgetTokens,
+      ),
+      analyzeBatch: params.exhaustiveBatchAnalyzer,
+      llm:
+        params.apiBase || params.apiKey
+          ? {
+              model: params.model,
+              apiBase: params.apiBase,
+              apiKey: params.apiKey,
+              authMode: params.authMode as ChatParams["authMode"],
+              providerProtocol: params.providerProtocol,
+              reasoning: params.reasoning,
+            }
+          : undefined,
+      signal: params.signal,
+    });
+    const contextText = prependCollectionScope(exhaustive.contextText);
+    return finalizePlan({
+      mode: "full",
+      strategy: "paper-exhaustive-full",
+      contextText,
+      contextBudget: adjustedContextBudget,
+      usedContextTokens: estimateTextTokens(contextText),
+      selectedPaperCount: targetPapers.length,
+      selectedChunkCount: exhaustive.receipt.processedChunks,
+      citationPaperContexts: mergePlannerCitationPaperContexts(targetPapers),
+      quoteCitations: [],
+      fullReadReceipt: exhaustive.receipt,
+      assistantInstruction: exhaustive.receipt.complete
+        ? "The complete extractable text was processed in bounded batches before this synthesis."
+        : "Full-text processing was incomplete. State the missing coverage from the reading receipt and do not claim the whole text was read.",
+    });
+  }
   if (params.conversationMode === "paper" && activePaper) {
     // Collect other explicitly selected papers (@-referenced) beyond the
     // active paper so they are not silently dropped.

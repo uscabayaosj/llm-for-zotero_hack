@@ -21,6 +21,11 @@ export function buildContextPlanSystemMessages(params: {
       ].join(" "),
     );
   }
+  if (params.strategy === "paper-exhaustive-full") {
+    messages.push(
+      "This turn explicitly requested a full-text read. Use the full-text reading receipt as the authority for coverage and never claim complete coverage when the receipt is partial.",
+    );
+  }
 
   const assistantInstruction = (params.assistantInstruction || "").trim();
   if (assistantInstruction) {
@@ -42,7 +47,8 @@ export function buildContextPlanSystemMessages(params: {
   if (
     (params.strategy === "paper-first-full" ||
       params.strategy === "paper-cache-full" ||
-      params.strategy === "paper-manual-full") &&
+      params.strategy === "paper-manual-full" ||
+      params.strategy === "paper-exhaustive-full") &&
     effects &&
     (effects.documentContextTrimmed || effects.documentContextDropped)
   ) {

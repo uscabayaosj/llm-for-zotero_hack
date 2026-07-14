@@ -354,6 +354,33 @@ describe("pdfContext multi-context helpers", function () {
     assert.include(candidates[0].matchedQueryVariants || [], "calcium imaging");
   });
 
+  it("uses a Chinese figure reference as soft structural evidence without dropping semantic retrieval", async function () {
+    const paper: PaperContextRef = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "Paper A",
+    };
+    const context = buildPdfContext([
+      "Figure 3. A different experiment and its outcome.",
+      "Figure 1. The complete cross-language retrieval architecture.",
+      "Methods. Semantic retrieval remains available for malformed captions.",
+    ]);
+    const queryPlan = buildRetrievalQueryPlan({
+      query: "帮我详细解释图1的内容",
+      queryVariants: ["explain Figure 1 in detail"],
+    });
+    const candidates = await buildPaperRetrievalCandidates(
+      paper,
+      context,
+      "帮我详细解释图1的内容",
+      undefined,
+      { topK: 1, queryPlan, disableEmbeddings: true },
+    );
+
+    assert.equal(candidates[0].chunkIndex, 1);
+    assert.equal(candidates[0].referenceConfidence, "medium");
+  });
+
   it("falls back to Zotero full-text cache when PDFWorker returns no text", async function () {
     const io = setupMemoryIO();
     const cachePath = "/tmp/zotero/storage/ABCD1234/.zotero-ft-cache";

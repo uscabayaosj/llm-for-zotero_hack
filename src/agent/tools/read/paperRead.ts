@@ -37,8 +37,20 @@ import {
 } from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
 import { createViewPdfPagesTool } from "./viewPdfPages";
+import {
+  readDocumentsExhaustively,
+  type ExhaustiveBatchAnalyzer,
+  type FullReadCoverageReceipt,
+  type FullReadPaperResult,
+} from "../../../shared/exhaustiveDocumentReader";
 
-type PaperReadMode = "overview" | "targeted" | "figures" | "visual" | "capture";
+type PaperReadMode =
+  | "overview"
+  | "targeted"
+  | "full"
+  | "figures"
+  | "visual"
+  | "capture";
 
 type PaperReadInput = {
   mode: PaperReadMode;
@@ -66,6 +78,15 @@ export type PaperReadFigureExtractionResult = {
   warnings?: string[];
 };
 
+export type PaperReadFullResult = {
+  mode: "full";
+  status: "complete" | "partial" | "unreadable";
+  papers: FullReadPaperResult[];
+  coverageReceipt: FullReadCoverageReceipt;
+  synthesisContext: string;
+  warnings: string[];
+};
+
 export type PaperReadFigureExtractionService = {
   extractFigures: (params: {
     input: PaperReadInput;
@@ -76,12 +97,14 @@ export type PaperReadFigureExtractionService = {
 
 const MAX_OVERVIEW_TARGETS = 5;
 const MAX_TARGETED_TARGETS = 10;
+const MAX_FULL_TARGETS = Number.MAX_SAFE_INTEGER;
 const MAX_OVERVIEW_QUOTES_PER_RESULT = 3;
 const MIN_OVERVIEW_QUOTE_CHARS = 40;
 const MAX_OVERVIEW_QUOTE_CHARS = 360;
 
 function normalizeMode(value: unknown): PaperReadMode {
   return value === "targeted" ||
+    value === "full" ||
     value === "figures" ||
     value === "visual" ||
     value === "capture" ||
@@ -104,6 +127,93 @@ function normalizeStringArray(value: unknown): string[] | undefined {
 
 function normalizePages(value: unknown): number[] | undefined {
   return parsePageSelectionValue(value)?.pageIndexes;
+}
+
+function dedupePaperContexts(
+  paperContexts: NonNullable<PdfTarget["paperContext"]>[],
+): NonNullable<PdfTarget["paperContext"]>[] {
+  const seen = new Set<string>();
+  return paperContexts.filter((paperContext) => {
+    const key = `${paperContext.itemId}:${paperContext.contextItemId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeTitleForMatching(value: string | undefined): string {
+  return `${value || ""}`.toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function requestsAllSelectedPapers(value: string): boolean {
+  return (
+    /\b(?:all|every)\s+(?:of\s+the\s+)?selected\s+papers?\b/i.test(value) ||
+    /(?:所有|全部)(?:已选|选中)(?:论文|文章)/u.test(value)
+  );
+}
+
+function resolveFullReadTargets(params: {
+  input: PaperReadInput;
+  context: AgentToolContext;
+  zoteroGateway: ZoteroGateway;
+}): NonNullable<PdfTarget["paperContext"]>[] {
+  if (params.input.target || params.input.targets?.length) {
+    return resolveDefaultTargets(
+      params.input.target,
+      params.input.targets,
+      params.context,
+      params.zoteroGateway,
+      MAX_FULL_TARGETS,
+    );
+  }
+  const requestText = [
+    params.context.request.userText || "",
+    params.input.query || "",
+  ]
+    .join(" ")
+    .trim();
+  if (requestsAllSelectedPapers(requestText)) {
+    return dedupePaperContexts(
+      params.context.request.selectedPaperContexts?.length
+        ? params.context.request.selectedPaperContexts
+        : params.zoteroGateway.listPaperContexts(params.context.request),
+    );
+  }
+
+  const available = dedupePaperContexts(
+    params.zoteroGateway.listPaperContexts(params.context.request),
+  );
+  const normalizedRequest = normalizeTitleForMatching(requestText);
+  const titleMatches = available.filter((paperContext) => {
+    const title = normalizeTitleForMatching(paperContext.title);
+    return title.length >= 4 && normalizedRequest.includes(title);
+  });
+  if (titleMatches.length) {
+    const titleCounts = new Map<string, number>();
+    for (const paperContext of titleMatches) {
+      const title = normalizeTitleForMatching(paperContext.title);
+      titleCounts.set(title, (titleCounts.get(title) || 0) + 1);
+    }
+    const ambiguousTitles = Array.from(titleCounts.entries())
+      .filter(([, count]) => count > 1)
+      .map(([title]) => title);
+    if (ambiguousTitles.length) {
+      throw new Error(
+        `Ambiguous full-read title match: ${ambiguousTitles.join("; ")}. Pass explicit paper targets.`,
+      );
+    }
+    return titleMatches;
+  }
+
+  const activeItemId = Math.floor(
+    Number(params.context.request.activeItemId || 0),
+  );
+  const activePaper = available.find(
+    (paperContext) =>
+      paperContext.itemId === activeItemId ||
+      paperContext.contextItemId === activeItemId,
+  );
+  return activePaper ? [activePaper] : available.slice(0, 1);
 }
 
 function readTextFile(filePath: string): Promise<string> {
@@ -739,22 +849,30 @@ export function createPaperReadTool(
   pdfPageService: PdfPageService,
   zoteroGateway: ZoteroGateway,
   figureExtractionService?: PaperReadFigureExtractionService,
+  fullReadAnalyzer?: ExhaustiveBatchAnalyzer,
 ): AgentToolDefinition<PaperReadInput, unknown> {
   const visualTool = createViewPdfPagesTool(pdfPageService, zoteroGateway);
   return {
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for main-message summaries, mode:'targeted' for textual evidence/sections/pages, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for bounded summaries, mode:'targeted' for relevance-ranked textual evidence, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           mode: {
             type: "string",
-            enum: ["overview", "targeted", "figures", "visual", "capture"],
+            enum: [
+              "overview",
+              "targeted",
+              "full",
+              "figures",
+              "visual",
+              "capture",
+            ],
             description:
-              "overview = summary/main message; targeted = text evidence by query/sections/pages; figures = precise extracted figures from Zotero library PDFs; visual = rendered PDF pages/layout; capture = current reader page.",
+              "overview = bounded summary/main message; targeted = relevance-ranked text evidence; full = exhaustive processing of every extractable text chunk for an explicit full-read request; figures = precise extracted figures; visual = rendered pages/layout; capture = current reader page.",
           },
           target: {
             type: "object",
@@ -818,6 +936,7 @@ export function createPaperReadTool(
             return "Extracting precise figures from the paper";
           if (mode === "capture") return "Capturing current paper page";
           if (mode === "targeted") return "Reading targeted paper content";
+          if (mode === "full") return "Reading the complete paper text";
           return "Reading paper overview";
         },
         onPending: "Waiting for your approval before sending document content",
@@ -842,6 +961,12 @@ export function createPaperReadTool(
                 : `Read ${passageCount} ${passageLabel}`;
             }
             return "Read paper content";
+          }
+          if (mode === "full") {
+            const receipt = c?.coverageReceipt as
+              | { processedChunks?: number; totalChunks?: number }
+              | undefined;
+            return `Read ${receipt?.processedChunks || 0}/${receipt?.totalChunks || 0} full-text chunks`;
           }
           if (mode === "overview" && results?.length) {
             const sourcePhrase = formatSourcePhrase(
@@ -882,7 +1007,11 @@ export function createPaperReadTool(
         target: normalizeTarget(args.target),
         targets: normalizeTargets(
           args.targets,
-          mode === "overview" ? MAX_OVERVIEW_TARGETS : MAX_TARGETED_TARGETS,
+          mode === "overview"
+            ? MAX_OVERVIEW_TARGETS
+            : mode === "full"
+              ? MAX_FULL_TARGETS
+              : MAX_TARGETED_TARGETS,
         ),
         query: normalizeString(args.query),
         queryVariants: normalizeStringArray(args.queryVariants),
@@ -947,13 +1076,18 @@ export function createPaperReadTool(
         }
         return visualTool.execute(input.visualInput as never, context);
       }
-      const targets = resolveDefaultTargets(
-        input.target,
-        input.targets,
-        context,
-        zoteroGateway,
-        input.mode === "overview" ? MAX_OVERVIEW_TARGETS : MAX_TARGETED_TARGETS,
-      );
+      const targets =
+        input.mode === "full"
+          ? resolveFullReadTargets({ input, context, zoteroGateway })
+          : resolveDefaultTargets(
+              input.target,
+              input.targets,
+              context,
+              zoteroGateway,
+              input.mode === "overview"
+                ? MAX_OVERVIEW_TARGETS
+                : MAX_TARGETED_TARGETS,
+            );
       if (!targets.length) {
         throw new Error(describeNoDefaultPaperTarget(context.request));
       }
@@ -986,6 +1120,45 @@ export function createPaperReadTool(
         });
         const { artifacts, ...content } = figureResult;
         return artifacts?.length ? { content, artifacts } : content;
+      }
+      if (input.mode === "full") {
+        const paperInputs = [];
+        for (const paperContext of targets) {
+          paperInputs.push({
+            paperContext,
+            pdfContext: await pdfService.ensurePaperContext(paperContext),
+          });
+        }
+        const inputTokenCap = Math.max(
+          2048,
+          Math.floor(Number(context.request.advanced?.inputTokenCap || 12000)),
+        );
+        const result = await readDocumentsExhaustively({
+          papers: paperInputs,
+          question:
+            input.query || context.request.userText || "Read the full text.",
+          batchTokenBudget: Math.max(1024, Math.floor(inputTokenCap * 0.5)),
+          finalTokenBudget: Math.max(1024, Math.floor(inputTokenCap * 0.45)),
+          analyzeBatch: fullReadAnalyzer,
+          signal: context.signal,
+          llm: {
+            model: context.request.model,
+            apiBase: context.request.apiBase,
+            apiKey: context.request.apiKey,
+            authMode: context.request.authMode,
+            providerProtocol: context.request.providerProtocol,
+            reasoning: context.request.reasoning,
+          },
+        });
+        const output: PaperReadFullResult = {
+          mode: "full",
+          status: result.status,
+          papers: result.papers,
+          coverageReceipt: result.receipt,
+          synthesisContext: result.contextText,
+          warnings: result.warnings,
+        };
+        return output;
       }
       if (input.mode === "overview") {
         const maxChars = input.maxChars || 6000;

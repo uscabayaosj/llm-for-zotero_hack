@@ -1,0 +1,173 @@
+import { assert } from "chai";
+import {
+  readDocumentsExhaustively,
+  type ExhaustiveBatchInput,
+} from "../src/shared/exhaustiveDocumentReader";
+import type {
+  PaperContextRef,
+  PdfContext,
+} from "../src/modules/contextPanel/types";
+import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
+
+function buildPaper(): {
+  paperContext: PaperContextRef;
+  pdfContext: PdfContext;
+} {
+  const chunks = Array.from(
+    { length: 9 },
+    (_, index) => `Section ${index + 1}\nEvidence from chunk ${index}.`,
+  );
+  return {
+    paperContext: {
+      itemId: 10,
+      contextItemId: 11,
+      title: "Coverage Paper",
+    },
+    pdfContext: {
+      title: "Coverage Paper",
+      chunks,
+      chunkMeta: buildChunkMetadata(chunks),
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: 0,
+      fullLength: chunks.join("\n\n").length,
+    },
+  };
+}
+
+describe("exhaustiveDocumentReader", function () {
+  it("processes every source chunk and returns a complete coverage receipt", async function () {
+    const seen = new Set<number>();
+    const result = await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read the full text and explain the result.",
+      batchTokenBudget: 24,
+      finalTokenBudget: 1200,
+      analyzeBatch: async (batch: ExhaustiveBatchInput) => {
+        for (const chunk of batch.chunks) seen.add(chunk.chunkIndex);
+        return {
+          digest: `Covered ${batch.chunks.map((chunk) => chunk.chunkIndex).join(",")}`,
+          relevantChunkIds: batch.chunks.map((chunk) => chunk.chunkIndex),
+        };
+      },
+    });
+
+    assert.deepEqual(
+      [...seen].sort((a, b) => a - b),
+      [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    );
+    assert.equal(result.status, "complete");
+    assert.equal(result.receipt.processedChunks, 9);
+    assert.equal(result.receipt.totalChunks, 9);
+    assert.isTrue(result.receipt.complete);
+    assert.include(result.receipt.text, "9/9 chunks");
+  });
+
+  it("reports failed batches instead of claiming full coverage", async function () {
+    let calls = 0;
+    const result = await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read everything.",
+      batchTokenBudget: 24,
+      finalTokenBudget: 1200,
+      retryCount: 0,
+      analyzeBatch: async (batch) => {
+        calls += 1;
+        if (calls === 2) throw new Error("synthetic failure");
+        return {
+          digest: `Covered ${batch.batchIndex}`,
+          relevantChunkIds: [],
+        };
+      },
+    });
+
+    assert.equal(result.status, "partial");
+    assert.isFalse(result.receipt.complete);
+    assert.isBelow(result.receipt.processedChunks, result.receipt.totalChunks);
+    assert.isNotEmpty(result.receipt.missingChunkRanges);
+  });
+
+  it("retries failed batches and rejects model-invented chunk IDs", async function () {
+    const attempts = new Map<number, number>();
+    const result = await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read everything.",
+      batchTokenBudget: 24,
+      finalTokenBudget: 1200,
+      retryCount: 1,
+      analyzeBatch: async (batch) => {
+        const attempt = (attempts.get(batch.batchIndex) || 0) + 1;
+        attempts.set(batch.batchIndex, attempt);
+        if (batch.batchIndex === 0 && attempt === 1) {
+          throw new Error("transient failure");
+        }
+        return {
+          digest: `Covered ${batch.batchIndex}`,
+          relevantChunkIds: [batch.chunks[0].chunkIndex, 99999],
+        };
+      },
+    });
+
+    assert.equal(result.status, "complete");
+    assert.equal(attempts.get(0), 2);
+    assert.notInclude(
+      result.papers[0].exactEvidence.map((chunk) => chunk.chunkIndex),
+      99999,
+    );
+  });
+
+  it("reports unreadable papers independently in a multi-paper receipt", async function () {
+    const readable = buildPaper();
+    const unreadable = {
+      paperContext: {
+        itemId: 20,
+        contextItemId: 21,
+        title: "Unreadable Paper",
+      },
+    };
+    const result = await readDocumentsExhaustively({
+      papers: [readable, unreadable],
+      question: "Read all selected papers.",
+      batchTokenBudget: 24,
+      finalTokenBudget: 1200,
+      analyzeBatch: async (batch) => ({
+        digest: `Covered ${batch.batchIndex}`,
+        relevantChunkIds: [],
+      }),
+    });
+
+    assert.equal(result.status, "partial");
+    assert.deepEqual(
+      result.papers.map((paper) => paper.status),
+      ["complete", "unreadable"],
+    );
+    assert.equal(result.receipt.completePaperCount, 1);
+    assert.equal(result.receipt.paperCount, 2);
+  });
+
+  it("stops immediately when exhaustive reading is cancelled", async function () {
+    const controller = new AbortController();
+    let calls = 0;
+    let error: unknown;
+    try {
+      await readDocumentsExhaustively({
+        papers: [buildPaper()],
+        question: "Read everything.",
+        batchTokenBudget: 24,
+        finalTokenBudget: 1200,
+        signal: controller.signal,
+        analyzeBatch: async () => {
+          calls += 1;
+          controller.abort();
+          throw new Error("cancelled");
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    assert.equal(calls, 1);
+    assert.instanceOf(error, Error);
+    assert.equal((error as Error).message, "cancelled");
+  });
+});

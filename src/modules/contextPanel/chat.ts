@@ -113,6 +113,7 @@ import type {
   GeneratedChatImage,
   QuoteCitation,
 } from "../../shared/types";
+import type { FullReadCoverageReceipt } from "../../shared/exhaustiveDocumentReader";
 import type {
   LibraryChatCoverageReceipt,
   LibraryChatReadStrategyDiagnostics,
@@ -2951,6 +2952,8 @@ type ContextPlanForRequest = {
   recentPaperContexts: PaperContextRef[];
   readStrategy?: LibraryChatReadStrategyDiagnostics;
   coverageReceipt?: LibraryChatCoverageReceipt;
+  fullReadReceipt?: FullReadCoverageReceipt;
+  modelImages?: string[];
 };
 
 type PreparedContextPlanChatRequest = {
@@ -2967,7 +2970,9 @@ async function prepareFinalContextPlanChatRequest(params: {
   const previewSystemMessages = buildContextPlanSystemMessages({
     strategy: params.contextPlan.strategy,
     assistantInstruction: params.contextPlan.assistantInstruction,
-    coverageReceiptText: params.contextPlan.coverageReceipt?.text,
+    coverageReceiptText:
+      params.contextPlan.fullReadReceipt?.text ||
+      params.contextPlan.coverageReceipt?.text,
   });
   const preview = prepareChatRequest({
     ...params.requestParams,
@@ -2976,7 +2981,9 @@ async function prepareFinalContextPlanChatRequest(params: {
   const systemMessages = buildContextPlanSystemMessages({
     strategy: params.contextPlan.strategy,
     assistantInstruction: params.contextPlan.assistantInstruction,
-    coverageReceiptText: params.contextPlan.coverageReceipt?.text,
+    coverageReceiptText:
+      params.contextPlan.fullReadReceipt?.text ||
+      params.contextPlan.coverageReceipt?.text,
     inputCapEffects: preview.inputCap.effects,
   });
   const finalPrepared = prepareChatRequest({
@@ -2993,6 +3000,7 @@ async function prepareFinalContextPlanChatRequest(params: {
       inputCapEffects: preview.inputCap.effects,
       readStrategy: params.contextPlan.readStrategy,
       coverageReceipt: params.contextPlan.coverageReceipt,
+      fullReadReceipt: params.contextPlan.fullReadReceipt,
     });
   }
   return {
@@ -3143,11 +3151,17 @@ async function buildContextPlanForRequest(params: {
           : plan.contextCache.statusLabel
         : plan.strategy === "paper-first-full"
           ? "Using full paper text (first turn)"
-          : plan.strategy === "paper-followup-retrieval"
-            ? `Retrieval${semanticTag} (${plan.selectedChunkCount} chunks)`
-            : plan.mode === "full"
-              ? `Using full context (${plan.selectedPaperCount} papers)`
-              : `Retrieval${semanticTag} (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
+          : plan.strategy === "paper-exhaustive-full"
+            ? plan.fullReadReceipt?.complete
+              ? `Read full text (${plan.fullReadReceipt.processedChunks} chunks)`
+              : `Full-text read partial (${plan.fullReadReceipt?.processedChunks || 0}/${
+                  plan.fullReadReceipt?.totalChunks || 0
+                } chunks)`
+            : plan.strategy === "paper-followup-retrieval"
+              ? `Retrieval${semanticTag} (${plan.selectedChunkCount} chunks)`
+              : plan.mode === "full"
+                ? `Using full context (${plan.selectedPaperCount} papers)`
+                : `Retrieval${semanticTag} (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
     params.setStatusSafely(modeStatus, "sending");
   }
   ztoolkit.log("LLM: Multi-context plan", {
@@ -3195,6 +3209,8 @@ async function buildContextPlanForRequest(params: {
     recentPaperContexts: params.recentPaperContexts,
     readStrategy: plan.readStrategy,
     coverageReceipt: plan.coverageReceipt,
+    fullReadReceipt: plan.fullReadReceipt,
+    modelImages: plan.modelImages,
   };
 }
 
@@ -6021,7 +6037,7 @@ export async function retryLatestAssistantResponse(
 
     // Models resolved as image-disabled reject image_url content, so drop all images.
     const allImages = supportsImageInputs(effectiveRequestConfig)
-      ? [...(retryScreenshotImages || [])]
+      ? [...(retryScreenshotImages || []), ...(contextPlan.modelImages || [])]
       : [];
     const requestParams = {
       prompt: question,
@@ -8140,7 +8156,7 @@ export async function sendQuestion(
 
     // Models resolved as image-disabled reject image_url content, so drop all images.
     const allSendImages = supportsImageInputs(effectiveRequestConfig)
-      ? [...(images || [])]
+      ? [...(images || []), ...(contextPlan.modelImages || [])]
       : [];
     const requestParams = {
       prompt: question,

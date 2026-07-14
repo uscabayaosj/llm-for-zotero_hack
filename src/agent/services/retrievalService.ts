@@ -101,6 +101,16 @@ export class RetrievalService {
     const topK = Number.isFinite(params.topK)
       ? Math.max(1, Math.floor(params.topK as number))
       : 6;
+    const pdfContexts = new Map<
+      number,
+      Awaited<ReturnType<PdfService["ensurePaperContext"]>>
+    >();
+    for (const paperContext of papers) {
+      pdfContexts.set(
+        paperContext.contextItemId,
+        await this.pdfService.ensurePaperContext(paperContext),
+      );
+    }
     const queryPlan = await resolveRetrievalQueryPlan({
       query: params.question,
       queryVariants: params.queryVariants,
@@ -113,6 +123,12 @@ export class RetrievalService {
       providerProtocol: params.providerProtocol,
       reasoning: params.reasoning,
       signal: params.signal,
+      sourceSamples: papers.map((paperContext) => {
+        const pdfContext = pdfContexts.get(paperContext.contextItemId);
+        return [paperContext.title, pdfContext?.chunks[0] || ""]
+          .filter(Boolean)
+          .join("\n");
+      }),
     });
     const queryCacheKey = buildRetrievalQueryPlanCacheKey(queryPlan);
     let embeddingsAvailable = false;
@@ -142,7 +158,7 @@ export class RetrievalService {
         results.push(...cached);
         continue;
       }
-      const pdfContext = await this.pdfService.ensurePaperContext(paperContext);
+      const pdfContext = pdfContexts.get(paperContext.contextItemId);
       const candidates = await this.candidateBuilder(
         paperContext,
         pdfContext,

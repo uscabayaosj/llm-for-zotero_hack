@@ -723,6 +723,7 @@ export class AgentRuntime {
       currentAnswerText,
       modelName: request.model || "unknown",
       modelProviderLabel: request.modelProviderLabel,
+      signal: params.signal,
     };
     const toolsUsedThisTurn: string[] = [];
     const toolExecutionRecords: Array<{
@@ -923,8 +924,24 @@ export class AgentRuntime {
       intent.isBulkOperation,
     );
     let noteWriteCorrectionUsed = false;
+    let fullReadCorrectionUsed = false;
     const hasSuccessfulFileWrite = () =>
       toolExecutionRecords.some((record) => isSuccessfulFileIoWrite(record));
+    const hasFullReadAttempt = () =>
+      toolExecutionRecords.some(
+        (record) =>
+          record.name === "paper_read" &&
+          record.ok &&
+          record.input &&
+          typeof record.input === "object" &&
+          (record.input as { mode?: unknown }).mode === "full",
+      );
+    const hasPaperReadScope =
+      request.conversationKind === "paper" ||
+      Boolean(request.activeItemId) ||
+      Boolean(request.selectedPaperContexts?.length) ||
+      Boolean(request.fullTextPaperContexts?.length) ||
+      Boolean(request.pinnedPaperContexts?.length);
     const shouldFlushStreamBuffer = (value: string): boolean => {
       if (!value) return false;
       if (value.length >= 8) return true;
@@ -1423,7 +1440,7 @@ export class AgentRuntime {
         toolDefinition?.createResultReviewAction &&
         toolDefinition.resolveResultReview
       ) {
-        let currentResult = toolResult;
+        const currentResult = toolResult;
         const currentInput = input;
         while (true) {
           const reviewAction = await toolDefinition.createResultReviewAction(
@@ -1550,6 +1567,36 @@ export class AgentRuntime {
       }
       const { step, stepStreamedText } = stepResult;
       if (step.kind === "final") {
+        if (
+          intent.requiresFullPaperRead &&
+          hasPaperReadScope &&
+          !hasFullReadAttempt()
+        ) {
+          await rollbackCommittedStreamedText(stepStreamedText);
+          if (!fullReadCorrectionUsed) {
+            fullReadCorrectionUsed = true;
+            const assistantCorrectionMessage: AgentModelMessage =
+              step.assistantMessage ?? {
+                role: "assistant",
+                content: step.text || stepStreamedText,
+              };
+            const userCorrectionMessage: AgentModelMessage = {
+              role: "user",
+              content:
+                "Correction for this turn: the user explicitly requested exhaustive full-text reading. Call `paper_read({ mode:'full' })` for the active or explicitly targeted paper now. Overview and targeted retrieval do not satisfy this request. Preserve the returned coverage receipt, and if it is partial or unreadable, state that limitation instead of claiming the whole text was read.",
+            };
+            messages.push(assistantCorrectionMessage, userCorrectionMessage);
+            newTranscriptMessages.push(
+              assistantCorrectionMessage,
+              userCorrectionMessage,
+            );
+            continue;
+          }
+          return completeRun(
+            "I could not complete the requested full-text read because the model did not call `paper_read({ mode:'full' })` after being corrected.",
+            "failed",
+          );
+        }
         if (
           requiresFileNoteWrite &&
           !hasSuccessfulFileWrite() &&

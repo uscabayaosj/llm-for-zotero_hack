@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   buildRetrievalQueryPlan,
+  detectExplicitFullReadIntent,
   RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT,
   resolveRetrievalQueryPlan,
   shouldAutoGenerateQueryVariants,
@@ -77,5 +78,19 @@ describe("retrievalQueryPlan", function () {
       "how did they measure representational stability?",
     ]);
     assert.include(plan.notes.join("\n"), "No query variants were used");
+  });
+
+  it("recognizes explicit full-reading intent without treating ordinary summaries as full reads", function () {
+    assert.isTrue(
+      detectExplicitFullReadIntent("Read the full text before answering."),
+    );
+    assert.isTrue(
+      detectExplicitFullReadIntent("请先通读整篇论文，再回答问题。"),
+    );
+    assert.isFalse(detectExplicitFullReadIntent("Summarize this paper."));
+    assert.equal(
+      buildRetrievalQueryPlan({ query: "请阅读完整全文" }).readIntent,
+      "full-once",
+    );
   });
 });

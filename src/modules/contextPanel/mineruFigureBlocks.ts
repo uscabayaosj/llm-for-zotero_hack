@@ -1,3 +1,5 @@
+import { parseDocumentReferences } from "../../shared/documentReferences";
+
 export type MineruContentListEntry = {
   type: string;
   text?: string;
@@ -454,7 +456,12 @@ function labelMentionPattern(baseLabel: string): RegExp | null {
 }
 
 function extractQueryRefs(query: string): FigureQueryRef[] {
-  const refs: FigureQueryRef[] = [];
+  const refs: FigureQueryRef[] = parseDocumentReferences(query).map(
+    (reference) => ({
+      baseLabel: `${reference.kind === "table" ? "Table" : "Figure"} ${reference.id}`,
+      ...(reference.panel ? { panelHint: reference.panel } : {}),
+    }),
+  );
   const pattern =
     /\b(Supplementary\s+)?(Fig(?:ure)?s?\.?|Tables?)\s*([sS]?\d+)([a-z])?/gi;
   let match: RegExpExecArray | null;
@@ -478,7 +485,13 @@ function extractQueryRefs(query: string): FigureQueryRef[] {
       tailMatch = tail.slice(consumed).match(tailPattern);
     }
   }
-  return refs;
+  const seen = new Set<string>();
+  return refs.filter((reference) => {
+    const key = `${reference.baseLabel}:${reference.panelHint || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function blockMatchesBaseLabel(

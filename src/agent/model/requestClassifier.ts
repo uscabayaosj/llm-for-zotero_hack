@@ -1,3 +1,4 @@
+import { detectExplicitFullReadIntent } from "../../modules/contextPanel/retrievalQueryPlan";
 import type { AgentRuntimeRequest } from "../types";
 
 /**
@@ -15,14 +16,14 @@ export type RequestIntent = {
   isDemoToolQuery: boolean;
   /** At least one screenshot is attached */
   hasScreenshots: boolean;
+  requiresFullPaperRead: boolean;
 };
 
 export function classifyRequest(request: AgentRuntimeRequest): RequestIntent {
   const text = (request.userText || "").trim().toLowerCase();
 
   const hasScreenshots =
-    Array.isArray(request.screenshots) &&
-    request.screenshots.some(Boolean);
+    Array.isArray(request.screenshots) && request.screenshots.some(Boolean);
 
   const isBulkOperation =
     (/\ball\b|\beverything\b|\bentire\b|\bevery\b/.test(text) ||
@@ -32,12 +33,14 @@ export function classifyRequest(request: AgentRuntimeRequest): RequestIntent {
       text,
     );
 
-  const isDemoToolQuery =
-    /\bself[- ]?contained\b|\bdemo tool\b/i.test(request.userText || "");
+  const isDemoToolQuery = /\bself[- ]?contained\b|\bdemo tool\b/i.test(
+    request.userText || "",
+  );
 
   return {
     isBulkOperation,
     isDemoToolQuery,
     hasScreenshots,
+    requiresFullPaperRead: detectExplicitFullReadIntent(request.userText || ""),
   };
 }

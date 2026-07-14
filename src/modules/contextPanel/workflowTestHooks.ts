@@ -13,6 +13,7 @@ export type WorkflowTestFinalRequestSnapshot = {
   inputCapEffects: InputCapEffects;
   readStrategy?: MultiContextPlan["readStrategy"];
   coverageReceipt?: MultiContextPlan["coverageReceipt"];
+  fullReadReceipt?: MultiContextPlan["fullReadReceipt"];
 };
 
 export type WorkflowTestFinalRequestInterceptor = (

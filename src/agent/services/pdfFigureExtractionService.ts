@@ -23,6 +23,7 @@ import type { PaperReadFigureExtractionResult } from "../tools/read/paperRead";
 import type { PdfTarget } from "../tools/read/pdfToolUtils";
 import type { AgentToolArtifact, AgentToolContext } from "../types";
 import type { PdfPageService } from "./pdfPageService";
+import { parseDocumentReferences } from "../../shared/documentReferences";
 
 const FIGURE_EXTRACTION_RENDER_SCALE = 1.8;
 
@@ -217,6 +218,11 @@ function extractRequestedFigureLabels(query: string): Set<string> {
   const labels = new Set<string>();
   const extendedNumbers = new Set<string>();
   const supplementaryNumbers = new Set<string>();
+
+  for (const reference of parseDocumentReferences(query)) {
+    if (reference.kind !== "figure") continue;
+    addFigureLabelKey(labels, `Figure ${reference.id}`);
+  }
 
   for (const match of query.matchAll(
     /\bExtended\s+Data\s+Fig(?:ure)?\.?\s*(\d+)\b/gi,

@@ -26,7 +26,10 @@ type IOUtilsLike = {
 };
 
 type OSFileLike = {
-  writeAtomic?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<void>;
+  writeAtomic?: (
+    path: string,
+    data: Uint8Array<ArrayBufferLike>,
+  ) => Promise<void>;
   makeDir?: (
     path: string,
     options?: { from?: string; ignoreExisting?: boolean },
@@ -53,7 +56,10 @@ function getOSFile(): OSFileLike | undefined {
 async function ensureDir(path: string): Promise<void> {
   const io = getIOUtils();
   if (io?.makeDirectory) {
-    await io.makeDirectory(path, { createAncestors: true, ignoreExisting: true });
+    await io.makeDirectory(path, {
+      createAncestors: true,
+      ignoreExisting: true,
+    });
     return;
   }
   const osFile = getOSFile();
@@ -84,7 +90,11 @@ async function writeUtf8File(path: string, content: string): Promise<void> {
 }
 
 function getAgentTraceExportDir(): string {
-  return joinLocalPath(getClaudeRuntimeRootDir(), ".debug", AGENT_TRACE_EXPORT_DIR_NAME);
+  return joinLocalPath(
+    getClaudeRuntimeRootDir(),
+    ".debug",
+    AGENT_TRACE_EXPORT_DIR_NAME,
+  );
 }
 
 export function getAgentTraceExportPath(runId: string): string {
@@ -94,8 +104,10 @@ export function getAgentTraceExportPath(runId: string): string {
 
 function formatTraceClockTime(timestamp: number): string {
   const date = new Date(timestamp);
-  const pad2 = (value: number) => String(Math.max(0, Math.floor(value))).padStart(2, "0");
-  const pad3 = (value: number) => String(Math.max(0, Math.floor(value))).padStart(3, "0");
+  const pad2 = (value: number) =>
+    String(Math.max(0, Math.floor(value))).padStart(2, "0");
+  const pad3 = (value: number) =>
+    String(Math.max(0, Math.floor(value))).padStart(3, "0");
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}.${pad3(date.getMilliseconds())}`;
 }
 
@@ -148,7 +160,11 @@ function scheduleAgentRunTraceExport(runId: string, delayMs = 250): void {
     traceExportTimers.delete(normalizedRunId);
     const task = exportAgentRunTrace(normalizedRunId)
       .catch((error) => {
-        ztoolkit.log("LLM: Failed to export agent trace", normalizedRunId, error);
+        ztoolkit.log(
+          "LLM: Failed to export agent trace",
+          normalizedRunId,
+          error,
+        );
       })
       .finally(() => {
         traceExportInFlight.delete(normalizedRunId);
@@ -341,4 +357,3 @@ export async function getAgentRunTrace(runId: string): Promise<{
     events: await listAgentRunEvents(runId),
   };
 }
-

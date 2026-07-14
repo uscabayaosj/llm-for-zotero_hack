@@ -86,8 +86,7 @@ export function getOrCreateKeyedInFlightTask<K>(
 ): Promise<void> {
   const existing = tasks.get(key);
   if (existing) return existing;
-  let task: Promise<void>;
-  task = (async () => createTask())().finally(() => {
+  const task = (async () => createTask())().finally(() => {
     if (tasks.get(key) === task) {
       tasks.delete(key);
     }

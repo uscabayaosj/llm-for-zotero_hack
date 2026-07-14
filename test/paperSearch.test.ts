@@ -167,8 +167,9 @@ describe("paperSearch", function () {
         getName: () => "My Library",
       },
     } as typeof Zotero;
-    (globalThis as typeof globalThis & { ztoolkit: { log: () => void } })
-      .ztoolkit = {
+    (
+      globalThis as typeof globalThis & { ztoolkit: { log: () => void } }
+    ).ztoolkit = {
       log: () => {},
     };
   };
@@ -197,7 +198,10 @@ describe("paperSearch", function () {
         title: "Attention Is All You Need",
         citationKey: "Vaswani2017",
         firstCreator: "Ashish Vaswani",
-        creators: [makeCreator("Ashish", "Vaswani"), makeCreator("Noam", "Shazeer")],
+        creators: [
+          makeCreator("Ashish", "Vaswani"),
+          makeCreator("Noam", "Shazeer"),
+        ],
         date: "2017-06-01",
         publicationTitle: "NeurIPS",
         attachmentIDs: [101],
@@ -215,7 +219,10 @@ describe("paperSearch", function () {
         attachmentIDs: [102],
       }),
     );
-    itemsById.set(102, makeAttachment({ id: 102, title: "Vision Transformer" }));
+    itemsById.set(
+      102,
+      makeAttachment({ id: 102, title: "Vision Transformer" }),
+    );
 
     const results = await searchPaperCandidates(1, "transformer 2017 shazeer");
 
@@ -258,7 +265,10 @@ describe("paperSearch", function () {
         attachmentIDs: [131],
       }),
     );
-    itemsById.set(131, makeAttachment({ id: 131, title: "Working Memory PDF" }));
+    itemsById.set(
+      131,
+      makeAttachment({ id: 131, title: "Working Memory PDF" }),
+    );
 
     const results = await searchPaperCandidates(1, "workingmemory");
 

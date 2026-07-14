@@ -9,6 +9,8 @@ import {
   stripBoundaryEllipsis,
   splitQuoteAtEllipsis,
   buildRawPrefixQueries,
+  getCurrentSelectionPageLocationFromReader,
+  getPageLabelForIndex,
   locateQuoteByRawPrefixInPages,
   scrollToExactQuoteInReader,
   warmPageTextCacheForAttachment,
@@ -616,6 +618,78 @@ describe("resolvePageIndexForLabel", function () {
 
     assert.equal(resolvePageIndexForLabel(reader, "ii"), 1);
     assert.equal(resolvePageIndexForLabel(reader, "2"), 3);
+  });
+});
+
+describe("live reader page labels", function () {
+  function createSelectedPageReader(): any {
+    const pageElement = {
+      nodeType: 1,
+      parentElement: null,
+      getAttribute: (name: string) =>
+        name === "data-page-number" ? "4" : null,
+    };
+    const selection = {
+      anchorNode: pageElement,
+      focusNode: pageElement,
+      getRangeAt: () => ({ commonAncestorContainer: pageElement }),
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => "Selected place-cell passage",
+    };
+    const document = {
+      defaultView: {
+        getSelection: () => selection,
+      },
+      querySelectorAll: () => [pageElement],
+    };
+    return {
+      itemID: 42,
+      _window: {
+        document,
+        PDFViewerApplication: {
+          pdfDocument: { numPages: 21 },
+          pdfViewer: {
+            _pageLabels: ["428", "429", "430", "431", "432"],
+          },
+        },
+      },
+    };
+  }
+
+  it("prefers the printed PDF label over data-page-number", function () {
+    const reader = createSelectedPageReader();
+
+    assert.equal(getPageLabelForIndex(reader, 3), "431");
+  });
+
+  it("captures the printed label with the synchronous selection snapshot", function () {
+    const reader = createSelectedPageReader();
+
+    assert.deepEqual(
+      getCurrentSelectionPageLocationFromReader(
+        reader,
+        "Selected place-cell passage",
+      ),
+      {
+        contextItemId: 42,
+        pageIndex: 3,
+        pageLabel: "431",
+        pagesScanned: 1,
+      },
+    );
+  });
+
+  it("reads a printed label from the PDF.js page accessibility label", function () {
+    const reader = createSelectedPageReader();
+    delete reader._window.PDFViewerApplication.pdfViewer._pageLabels;
+    const pageElement = reader._window.document.querySelectorAll()[0];
+    pageElement.getAttribute = (name: string) => {
+      if (name === "aria-label") return "Page: 431. Index: 4";
+      return name === "data-page-number" ? "4" : null;
+    };
+
+    assert.equal(getPageLabelForIndex(reader, 3), "431");
   });
 });
 

@@ -27,8 +27,6 @@ import { config, PANE_ID } from "./constants";
 import type { Message } from "./types";
 import type { ConversationSystem } from "../../shared/types";
 import {
-  activeConversationModeByLibrary,
-  activeGlobalConversationByLibrary,
   activeContextPanels,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
@@ -57,9 +55,9 @@ import {
   refreshLastKnownSelectedTabId,
   getItemSelectionCacheKeys,
   resolvePanelContextLifecycleState,
-  appendSelectedTextContextForItem,
   applySelectedTextPreview,
   getSelectedTextContextEntries,
+  type SelectedTextPageLocation,
 } from "./contextResolution";
 import {
   clearNoteEditingSelectedText,
@@ -71,7 +69,7 @@ import {
   type NoteEditingSelectionTrackingLifecycle,
 } from "./noteEditing/selectionTrackingLifecycle";
 import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
-import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
+import { getPageLabelForIndex } from "./livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -83,6 +81,11 @@ import {
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
+import { resolveReaderPopupPanelTarget } from "./readerPopupPanelRouting";
+import {
+  includeReaderSelectedText,
+  type IncludeReaderSelectedTextResult,
+} from "./readerTextInclusion";
 import {
   resolveInitialPanelItemState,
   resolveActiveLibraryID,
@@ -102,16 +105,6 @@ import {
   hasPanelContextOwnerChanged,
   shouldRefreshContextSourceWithoutPanelRebuild,
 } from "./panelContextLifecycle";
-import {
-  activeClaudeConversationModeByLibrary,
-  activeClaudeGlobalConversationByLibrary,
-  buildClaudeLibraryStateKey,
-} from "../../claudeCode/state";
-import {
-  activeCodexConversationModeByLibrary,
-  activeCodexGlobalConversationByLibrary,
-  buildCodexLibraryStateKey,
-} from "../../codexAppServer/state";
 import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
@@ -615,368 +608,117 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
 
     if (selectedText || showAddTextInPopup) {
       let popupSentinelEl: HTMLElement | null = null;
-      const addTextToPanel = async () => {
-        const effectiveSelectedText =
-          normalizeSelectedText(selectedText) ||
-          resolveSelectedTextForPopupAction();
-        if (!effectiveSelectedText) {
-          ztoolkit.log("LLM: Add Text popup action skipped (no selection)");
-          return;
-        }
-        try {
-          const panelRecords: Array<{
-            body: Element;
-            root: HTMLDivElement;
-          }> = [];
-          const seenRoots = new Set<Element>();
-          const pushPanelRecord = (
-            body: Element | null | undefined,
-            root: HTMLDivElement | null | undefined,
-          ) => {
-            if (!body || !root || seenRoots.has(root)) return;
-            seenRoots.add(root);
-            panelRecords.push({ body, root });
-          };
-          for (const [panelBody] of activeContextPanels.entries()) {
-            if (!(panelBody as Element).isConnected) {
-              void releaseClaudeRuntimeForBody(panelBody as Element);
-              activeContextPanels.delete(panelBody);
-              activeContextPanelRawItems.delete(panelBody);
-              activeContextPanelStateSync.delete(panelBody);
-              continue;
-            }
-            const root = panelBody.querySelector(
-              "#llm-main",
-            ) as HTMLDivElement | null;
-            pushPanelRecord(panelBody, root);
-          }
-          const docs = new Set<Document>();
-          const pushDoc = (doc?: Document | null) => {
-            if (doc) docs.add(doc);
-          };
-          pushDoc(event.doc);
-          pushDoc(event.doc.defaultView?.top?.document || null);
-          try {
-            pushDoc(Zotero.getMainWindow()?.document || null);
-          } catch (_err) {
-            void _err;
+      const addTextToPanel =
+        async (): Promise<IncludeReaderSelectedTextResult | null> => {
+          const effectiveSelectedText =
+            normalizeSelectedText(selectedText) ||
+            resolveSelectedTextForPopupAction();
+          if (!effectiveSelectedText) {
+            ztoolkit.log("LLM: Add Text popup action skipped (no selection)");
+            return null;
           }
           try {
-            const wins = Zotero.getMainWindows?.() || [];
-            for (const win of wins) {
-              pushDoc(win?.document || null);
+            const docs = new Set<Document>();
+            const pushDoc = (doc?: Document | null) => {
+              if (doc) docs.add(doc);
+            };
+            pushDoc(event.doc);
+            pushDoc(event.doc.defaultView?.top?.document || null);
+            try {
+              pushDoc(Zotero.getMainWindow()?.document || null);
+            } catch (_err) {
+              void _err;
             }
-          } catch (_err) {
-            void _err;
-          }
-
-          if (!panelRecords.length) {
-            for (const doc of docs) {
-              const roots = Array.from(
-                doc.querySelectorAll("#llm-main"),
-              ) as HTMLDivElement[];
-              for (const root of roots) {
-                const panelBody = root.parentElement || root;
-                pushPanelRecord(panelBody, root);
+            try {
+              const wins = Zotero.getMainWindows?.() || [];
+              for (const win of wins) {
+                pushDoc(win?.document || null);
               }
+            } catch (_err) {
+              void _err;
             }
-          }
-          if (!panelRecords.length) return;
+            const readerWithTab = event.reader as unknown as {
+              tabID?: string | number | null;
+              _tabID?: string | number | null;
+            };
+            const popupTopDoc = event.doc.defaultView?.top?.document || null;
+            const target = resolveReaderPopupPanelTarget({
+              preferredDocument: popupTopDoc,
+              documents: docs,
+              tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
+            });
+            if (!target) {
+              ztoolkit.log(
+                "LLM: Add Text popup action skipped (reader panel unavailable)",
+              );
+              return null;
+            }
 
-          const readerLibraryID = Number(item?.libraryID || 0);
-          const normalizedReaderLibraryID =
-            Number.isFinite(readerLibraryID) && readerLibraryID > 0
-              ? Math.floor(readerLibraryID)
-              : 0;
-          const readerPaperContext = resolveReaderPopupPaperContext(
-            item,
-            getActiveContextAttachmentFromTabs(),
-          );
-          const readerPaperItemID =
-            readerPaperContext && Number.isFinite(readerPaperContext.itemId)
-              ? Math.floor(readerPaperContext.itemId)
-              : 0;
-          const getPanelItemId = (root: HTMLDivElement): number | null => {
-            const parsed = Number(root.dataset.itemId || 0);
-            return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-          };
-          const getPanelLibraryId = (root: HTMLDivElement): number | null => {
-            const parsed = Number(root.dataset.libraryId || 0);
-            return Number.isFinite(parsed) && parsed > 0
-              ? Math.floor(parsed)
-              : null;
-          };
-          const getPanelConversationKind = (
-            root: HTMLDivElement,
-          ): "global" | "paper" | null => {
-            const raw = `${root.dataset.conversationKind || ""}`
-              .trim()
-              .toLowerCase();
-            if (raw === "global") return "global";
-            if (raw === "paper") return "paper";
-            return null;
-          };
-          const getPanelBasePaperItemID = (
-            root: HTMLDivElement,
-          ): number | null => {
-            const parsed = Number(root.dataset.basePaperItemId || 0);
-            return Number.isFinite(parsed) && parsed > 0
-              ? Math.floor(parsed)
-              : null;
-          };
-          const getPanelConversationSystem = (
-            root: HTMLDivElement,
-          ): ConversationSystem | null => {
-            const raw = `${root.dataset.conversationSystem || ""}`
-              .trim()
-              .toLowerCase();
-            if (raw === "upstream") return "upstream";
-            if (raw === "claude_code") return "claude_code";
-            if (raw === "codex") return "codex";
-            return null;
-          };
-          const isVisible = (root: HTMLElement) =>
-            root.getClientRects().length > 0;
-          const popupTopDoc = event.doc.defaultView?.top?.document || null;
-          const rootStates = panelRecords
-            .map(({ body, root }) => {
-              const ownerDoc = body.ownerDocument;
-              const panelItemId = getPanelItemId(root);
-              const panelLibraryId = getPanelLibraryId(root);
-              const conversationKind = getPanelConversationKind(root);
-              const conversationSystem = getPanelConversationSystem(root);
-              const conversationKey = panelItemId;
-              const basePaperItemID = getPanelBasePaperItemID(root);
-              const panelModeLock =
-                panelLibraryId && conversationSystem === "claude_code"
-                  ? activeClaudeConversationModeByLibrary.get(
-                      buildClaudeLibraryStateKey(panelLibraryId),
-                    )
-                  : panelLibraryId && conversationSystem === "codex"
-                    ? activeCodexConversationModeByLibrary.get(
-                        buildCodexLibraryStateKey(panelLibraryId),
-                      )
-                    : panelLibraryId && conversationSystem === "upstream"
-                      ? activeConversationModeByLibrary.get(panelLibraryId)
-                      : null;
-              const panelGlobalConversationKey =
-                panelModeLock === "global" && panelLibraryId
-                  ? Math.floor(
-                      Number(
-                        (conversationSystem === "claude_code"
-                          ? activeClaudeGlobalConversationByLibrary.get(
-                              buildClaudeLibraryStateKey(panelLibraryId),
-                            )
-                          : conversationSystem === "codex"
-                            ? activeCodexGlobalConversationByLibrary.get(
-                                buildCodexLibraryStateKey(panelLibraryId),
-                              )
-                            : activeGlobalConversationByLibrary.get(
-                                panelLibraryId,
-                              )) || 0,
-                      ),
-                    )
-                  : 0;
-              const sameConversationMode =
-                panelModeLock === "global"
-                  ? conversationKind === "global"
-                  : panelModeLock === "paper"
-                    ? conversationKind === "paper"
-                    : false;
-              return {
-                body,
-                root,
-                panelItemId,
-                panelLibraryId,
-                conversationKind,
-                conversationSystem,
-                basePaperItemID,
-                conversationKey,
-                visible: isVisible(root),
-                sameDoc: popupTopDoc ? ownerDoc === popupTopDoc : false,
-                sameLibrary:
-                  normalizedReaderLibraryID > 0 &&
-                  panelLibraryId === normalizedReaderLibraryID,
-                matchesReaderPaper:
-                  readerPaperItemID > 0 &&
-                  basePaperItemID !== null &&
-                  basePaperItemID === readerPaperItemID,
-                matchesLockedGlobal:
-                  panelGlobalConversationKey > 0 &&
-                  conversationKey === panelGlobalConversationKey,
-                sameConversationMode,
-                hasActiveFocus: Boolean(
-                  ownerDoc?.activeElement &&
-                  root.contains(ownerDoc.activeElement),
-                ),
-              };
-            })
-            .filter(
-              (state) =>
-                state.panelItemId !== null &&
-                state.conversationKey !== null &&
-                state.conversationKind !== null &&
-                state.conversationSystem !== null,
+            const readerPaperContext = resolveReaderPopupPaperContext(
+              item,
+              getActiveContextAttachmentFromTabs(),
             );
-          if (!rootStates.length) return;
-          const sameLibraryStates =
-            normalizedReaderLibraryID > 0
-              ? rootStates.filter((state) => state.sameLibrary)
-              : [];
-          const rankedStates = sameLibraryStates.length
-            ? sameLibraryStates
-            : rootStates;
-
-          // Deterministic status/focus target ranking:
-          // 1) same doc + visible + focused panel
-          // 2) visible + focused panel
-          // 3) same doc + visible + matching global lock
-          // 4) same doc + visible + matching reader paper
-          // 5) same doc + visible
-          // 6) visible + matching global lock
-          // 7) visible + matching reader paper
-          // 8) visible
-          // 9) same doc
-          // 10) focused panel
-          const scoreState = (state: (typeof rankedStates)[number]) => {
-            if (state.sameDoc && state.visible && state.hasActiveFocus)
-              return 8;
-            if (state.visible && state.hasActiveFocus) return 7;
-            if (state.sameDoc && state.visible && state.matchesLockedGlobal)
-              return 6.5;
-            if (state.sameDoc && state.visible && state.matchesReaderPaper)
-              return 6;
-            if (state.visible && state.sameConversationMode) return 5.5;
-            if (state.sameDoc && state.visible) return 5;
-            if (state.visible && state.matchesLockedGlobal) return 4.5;
-            if (state.visible && state.matchesReaderPaper) return 4;
-            if (state.visible) return 3;
-            if (state.matchesReaderPaper) return 2.5;
-            if (state.sameDoc) return 2;
-            if (state.matchesLockedGlobal) return 1.5;
-            if (state.hasActiveFocus) return 1;
-            return 0;
-          };
-          let bestState = rankedStates[0];
-          let bestScore = scoreState(bestState);
-          for (const state of rankedStates.slice(1)) {
-            const score = scoreState(state);
-            if (score > bestScore) {
-              bestState = state;
-              bestScore = score;
+            const panelBody = target.body;
+            const conversationKey = Math.floor(
+              Number(target.root.dataset.itemId || 0),
+            );
+            if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+              ztoolkit.log(
+                "LLM: Add Text popup action skipped (invalid conversation target)",
+              );
+              return null;
             }
-          }
-
-          const panelBody = bestState.body;
-
-          // Derive conversation key directly from the reader's paper —
-          // no dependency on panel scoring or stale panel data attributes.
-          const isGlobalConversation = bestState.conversationKind === "global";
-          let conversationKey: number;
-          let selectedPaperContext: typeof readerPaperContext | null;
-          if (isGlobalConversation) {
-            // Global mode: use the panel's global conversation key
-            conversationKey = bestState.conversationKey as number;
-            selectedPaperContext = readerPaperContext;
-          } else {
-            // Paper mode: resolve the conversation key from the reader's
-            // paper item via resolveInitialPanelItemState + getConversationKey.
-            // This correctly handles portal keys (multi-conversation papers).
-            const readerItem =
-              readerPaperItemID > 0
-                ? Zotero.Items.get(readerPaperItemID) || null
+            const selectedPaperContext =
+              target.root.dataset.conversationKind === "global"
+                ? readerPaperContext
                 : null;
-            if (readerItem) {
-              const resolved = resolveInitialPanelItemState(readerItem, {
-                conversationSystem: bestState.conversationSystem,
-              });
-              conversationKey = resolved.item
-                ? getConversationKey(resolved.item)
-                : readerPaperItemID;
-            } else {
-              conversationKey = bestState.conversationKey as number;
-            }
-            selectedPaperContext = null;
+            const popupAnnotation = event.params?.annotation as unknown as {
+              pageIndex?: unknown;
+              pageLabel?: unknown;
+              position?: {
+                pageIndex?: unknown;
+                pageLabel?: unknown;
+              } | null;
+            };
+            const rawPopupPageIndex =
+              popupAnnotation?.position?.pageIndex ??
+              popupAnnotation?.pageIndex;
+            const parsedPopupPageIndex = Number(rawPopupPageIndex);
+            const popupPageIndex =
+              Number.isFinite(parsedPopupPageIndex) && parsedPopupPageIndex >= 0
+                ? Math.floor(parsedPopupPageIndex)
+                : null;
+            const rawPopupPageLabel =
+              popupAnnotation?.position?.pageLabel ??
+              popupAnnotation?.pageLabel;
+            const popupPageLabel =
+              typeof rawPopupPageLabel === "string" && rawPopupPageLabel.trim()
+                ? rawPopupPageLabel.trim()
+                : popupPageIndex !== null
+                  ? getPageLabelForIndex(event.reader as any, popupPageIndex)
+                  : undefined;
+            const selectedTextLocation: SelectedTextPageLocation | null =
+              popupPageIndex !== null
+                ? {
+                    contextItemId: itemId,
+                    pageIndex: popupPageIndex,
+                    pageLabel: popupPageLabel,
+                  }
+                : null;
+            return await includeReaderSelectedText({
+              body: panelBody,
+              conversationKey,
+              selectedText: effectiveSelectedText,
+              reader: event.reader as any,
+              paperContext: selectedPaperContext,
+              initialLocation: selectedTextLocation,
+              log: (message, ...args) => ztoolkit.log(message, ...args),
+            });
+          } catch (err) {
+            ztoolkit.log("LLM: Add Text popup action failed", err);
+            return null;
           }
-
-          const selectedTextLocation =
-            await resolveCurrentSelectionPageLocationFromReader(
-              event.reader as any,
-              effectiveSelectedText,
-            );
-          const added = appendSelectedTextContextForItem(
-            conversationKey,
-            effectiveSelectedText,
-            "pdf",
-            selectedPaperContext,
-            selectedTextLocation,
-          );
-
-          // Refresh any panel whose conversation key matches
-          let refreshedPanels = 0;
-          for (const [
-            activeBody,
-            syncPanelState,
-          ] of activeContextPanelStateSync) {
-            if (!(activeBody as Element).isConnected) {
-              activeContextPanels.delete(activeBody);
-              activeContextPanelStateSync.delete(activeBody);
-              continue;
-            }
-            const activeRoot = activeBody.querySelector(
-              "#llm-main",
-            ) as HTMLDivElement | null;
-            const activeConversationKey = activeRoot
-              ? Number(activeRoot.dataset.itemId || 0)
-              : 0;
-            if (
-              !Number.isFinite(activeConversationKey) ||
-              activeConversationKey !== conversationKey
-            ) {
-              continue;
-            }
-            syncPanelState();
-            refreshedPanels += 1;
-          }
-          if (!refreshedPanels) {
-            // Search all registered panel bodies for a matching conversation
-            for (const [activeBody] of activeContextPanels) {
-              if (!(activeBody as Element).isConnected) continue;
-              const activeRoot = (activeBody as Element).querySelector(
-                "#llm-main",
-              ) as HTMLDivElement | null;
-              if (
-                Number(activeRoot?.dataset?.itemId || 0) === conversationKey
-              ) {
-                applySelectedTextPreview(
-                  activeBody as Element,
-                  conversationKey,
-                );
-                refreshedPanels += 1;
-                break;
-              }
-            }
-          }
-          const status = panelBody.querySelector(
-            "#llm-status",
-          ) as HTMLElement | null;
-          if (status) {
-            setStatus(
-              status,
-              added ? "Selected text included" : "Text Context up to 5",
-              added ? "ready" : "error",
-            );
-          }
-          if (added) {
-            const inputEl = panelBody.querySelector(
-              "#llm-input",
-            ) as HTMLTextAreaElement | null;
-            inputEl?.focus({ preventScroll: true });
-          }
-        } catch (err) {
-          ztoolkit.log("LLM: Add Text popup action failed", err);
-        }
-      };
+        };
       const stripPopupRowChrome = (
         row: HTMLElement | null,
         hideRow: boolean = false,
@@ -1031,12 +773,26 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             "cursor:pointer",
           ].join(";");
           let addTextHandled = false;
+          const showAddTextUnavailable = () => {
+            addTextBtn.textContent = "Unable to add text";
+            addTextBtn.title = "The active reader chat panel is unavailable";
+            addTextBtn.disabled = true;
+            addTextBtn.style.cursor = "not-allowed";
+          };
           const handleAddTextAction = (e: Event) => {
             if (addTextHandled) return;
             addTextHandled = true;
             e.preventDefault();
             e.stopPropagation();
-            void addTextToPanel();
+            void addTextToPanel().then((result) => {
+              if (
+                !result ||
+                result.outcome === "no-selection" ||
+                result.outcome === "invalid-target"
+              ) {
+                showAddTextUnavailable();
+              }
+            });
           };
           const isPrimaryButton = (e: Event): boolean => {
             const maybeMouse = e as MouseEvent;

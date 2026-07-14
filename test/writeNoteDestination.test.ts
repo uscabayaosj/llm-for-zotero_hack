@@ -26,7 +26,10 @@ describe("write note destination classifier", function () {
       "file",
     );
     assert.equal(
-      classifyWriteNoteDestination("write this to Research Vault", "Research Vault"),
+      classifyWriteNoteDestination(
+        "write this to Research Vault",
+        "Research Vault",
+      ),
       "file",
     );
   });

@@ -33,7 +33,9 @@ function isDraftSummary(summary: ConversationCatalogEntry): boolean {
   );
 }
 
-function toEntry(summary: ConversationCatalogEntry): CodexConversationHistoryEntry {
+function toEntry(
+  summary: ConversationCatalogEntry,
+): CodexConversationHistoryEntry {
   const isDraft = isDraftSummary(summary);
   return {
     conversationID: summary.conversationID,
@@ -52,9 +54,9 @@ function toEntry(summary: ConversationCatalogEntry): CodexConversationHistoryEnt
 
 export async function loadCodexConversationHistoryScope(params: {
   libraryID: number;
-    kind: "global" | "paper";
-    paperItemID?: number;
-    limit?: number;
+  kind: "global" | "paper";
+  paperItemID?: number;
+  limit?: number;
 }): Promise<CodexConversationHistoryEntry[]> {
   const summaries = await conversationRepository.listCatalogEntries({
     system: "codex",

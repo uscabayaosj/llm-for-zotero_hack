@@ -29,10 +29,7 @@ export async function runAgentActionWithLifecycle(params: {
   llm?: ActionExecutionLlmConfig;
   isPagedLibraryAction?: boolean;
   lifecycle: ActionCommandLifecycle;
-  setStatus: (
-    message: string,
-    level: "ready" | "warning" | "error",
-  ) => void;
+  setStatus: (message: string, level: "ready" | "warning" | "error") => void;
   logError: (message: string, error?: unknown) => void;
 }): Promise<void> {
   const {
@@ -47,8 +44,7 @@ export async function runAgentActionWithLifecycle(params: {
     setStatus,
   } = params;
   setStatus(`Running: ${formatActionLabel(actionName)}...`, "ready");
-  const progressIndicator =
-    lifecycle.createActionProgressIndicator(actionName);
+  const progressIndicator = lifecycle.createActionProgressIndicator(actionName);
   let lastProgressSummary = "";
   try {
     const agentApi = getAgentApi();

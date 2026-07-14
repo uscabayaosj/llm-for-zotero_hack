@@ -133,7 +133,10 @@ export function upsertPaperContext(
   );
   if (duplicate) return unchanged(t("Paper already selected"), "warning");
   if (selectedPapers.length >= MAX_SELECTED_PAPER_CONTEXTS) {
-    return unchanged(`Paper Context up to ${MAX_SELECTED_PAPER_CONTEXTS}`, "error");
+    return unchanged(
+      `Paper Context up to ${MAX_SELECTED_PAPER_CONTEXTS}`,
+      "error",
+    );
   }
   const metadata = resolvePaperContextDisplayMetadata(paper);
   const nextPapers = [
@@ -494,7 +497,10 @@ export function removeReferenceGroupContexts(params: {
   if (removedPapers.length) {
     const nextPapers = existingPapers.filter(
       (paper) =>
-        !(paper.itemId === group.itemId || attachmentIds.has(paper.contextItemId)),
+        !(
+          paper.itemId === group.itemId ||
+          attachmentIds.has(paper.contextItemId)
+        ),
     );
     if (nextPapers.length) selectedPaperContextCache.set(item.id, nextPapers);
     else selectedPaperContextCache.delete(item.id);
@@ -510,7 +516,8 @@ export function removeReferenceGroupContexts(params: {
     (ref) => !attachmentIds.has(ref.contextItemId),
   );
   if (nextOtherRefs.length !== existingOtherRefs.length) {
-    if (nextOtherRefs.length) selectedOtherRefContextCache.set(item.id, nextOtherRefs);
+    if (nextOtherRefs.length)
+      selectedOtherRefContextCache.set(item.id, nextOtherRefs);
     else selectedOtherRefContextCache.delete(item.id);
     removed = true;
   }
@@ -569,7 +576,8 @@ export function normalizeTagContextRef(
     libraryID,
     name: ref.name.trim(),
     normalizedName: ref.normalizedName
-      ? normalizeReferenceSelectorTagIdentityName(ref.normalizedName) || undefined
+      ? normalizeReferenceSelectorTagIdentityName(ref.normalizedName) ||
+        undefined
       : ref.scope
         ? undefined
         : normalizeReferenceSelectorTagIdentityName(ref.name) || undefined,

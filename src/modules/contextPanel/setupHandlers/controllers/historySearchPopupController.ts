@@ -144,9 +144,7 @@ function parseCssColor(value: string): RgbColor | null {
 function relativeLuminance({ r, g, b }: RgbColor): number {
   const toLinear = (channel: number) => {
     const value = channel / 255;
-    return value <= 0.03928
-      ? value / 12.92
-      : ((value + 0.055) / 1.055) ** 2.4;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
   };
   const red = toLinear(r);
   const green = toLinear(g);
@@ -319,20 +317,12 @@ export function createHistorySearchPopupController(
           "div",
           "llm-standalone-search-text",
         );
-        const label = createElement(
-          doc,
-          "span",
-          "llm-standalone-search-label",
-        );
+        const label = createElement(doc, "span", "llm-standalone-search-label");
         label.dataset.labelType = getHistoryEntryLabelType(entry);
         const labelText = resolveLabel(entry);
         label.textContent = labelText;
 
-        const title = createElement(
-          doc,
-          "span",
-          "llm-standalone-search-title",
-        );
+        const title = createElement(doc, "span", "llm-standalone-search-title");
         const displayTitle = entry.title || translate("Untitled chat");
         const searchResult = searchResultsByKey.get(entry.conversationKey);
         if (searchResult?.titleRanges.length) {
@@ -369,7 +359,9 @@ export function createHistorySearchPopupController(
           formatGlobalHistoryTimestamp(entry.lastActivityAt) ||
           entry.timestampText ||
           "";
-        const metaText = timestamp ? `${scopeLabel} \u00B7 ${timestamp}` : scopeLabel;
+        const metaText = timestamp
+          ? `${scopeLabel} \u00B7 ${timestamp}`
+          : scopeLabel;
         const meta = createElement(doc, "div", "llm-standalone-search-meta", {
           textContent: metaText,
         });
@@ -433,7 +425,10 @@ export function createHistorySearchPopupController(
         allEntries.map(async (entry) => {
           if (thisSeq !== searchSeq || !controller.isOpen()) return;
           try {
-            documents.set(entry.conversationKey, await deps.loadDocument(entry));
+            documents.set(
+              entry.conversationKey,
+              await deps.loadDocument(entry),
+            );
           } catch (err) {
             log("LLM: history search popup indexing failed", {
               conversationKey: entry.conversationKey,
@@ -528,7 +523,7 @@ export function createHistorySearchPopupController(
       })
       .catch((err) => {
         log("LLM: history search popup selection failed", err);
-    });
+      });
     return true;
   };
 

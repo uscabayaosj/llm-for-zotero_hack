@@ -1,7 +1,4 @@
-import {
-  resolveNoteParentItem,
-  resolveNoteTitle,
-} from "./portalScope";
+import { resolveNoteParentItem, resolveNoteTitle } from "./portalScope";
 
 export type NoteSnapshot = {
   noteId: number;

@@ -19,7 +19,7 @@ describe("tool argument diagnostics", function () {
       "{ action: write, content: secret generated script body, filePath: /tmp/out.py }",
     );
 
-    assert.include(preview, "content: \"[redacted]\"");
+    assert.include(preview, 'content: "[redacted]"');
     assert.include(preview, "filePath: /tmp/out.py");
     assert.notInclude(preview, "secret generated script body");
   });
@@ -41,9 +41,9 @@ describe("tool argument diagnostics", function () {
       "{ content: secret notes, 'data': 'secret payload', script: console.log(secret) }",
     );
 
-    assert.include(preview, "content: \"[redacted]\"");
+    assert.include(preview, 'content: "[redacted]"');
     assert.include(preview, "'data': \"[redacted]\"");
-    assert.include(preview, "script: \"[redacted]\"");
+    assert.include(preview, 'script: "[redacted]"');
     assert.notInclude(preview, "secret notes");
     assert.notInclude(preview, "secret payload");
     assert.notInclude(preview, "console.log");

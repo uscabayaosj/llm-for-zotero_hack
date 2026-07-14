@@ -1,4 +1,7 @@
-export type PaperScopedActionTargetMode = "single" | "multi" | "single_or_multi";
+export type PaperScopedActionTargetMode =
+  | "single"
+  | "multi"
+  | "single_or_multi";
 export type PaperScopedActionAllowedScope =
   | "current"
   | "selection"

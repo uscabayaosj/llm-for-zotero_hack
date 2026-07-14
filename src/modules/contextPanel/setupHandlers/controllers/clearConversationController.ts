@@ -7,7 +7,10 @@ type ClearConversationControllerDeps = {
   getAbortController?: (conversationKey: number) => AbortController | null;
   setCancelledRequestId?: (conversationKey: number, requestId: number) => void;
   setPendingRequestId?: (conversationKey: number, requestId: number) => void;
-  setAbortController?: (conversationKey: number, value: AbortController | null) => void;
+  setAbortController?: (
+    conversationKey: number,
+    value: AbortController | null,
+  ) => void;
   clearPendingTurnDeletion?: (conversationKey: number) => void;
   validateConversationScope?: (conversationKey: number) => Promise<boolean>;
   clearTransientComposeStateForItem: (itemId: number) => void;
@@ -68,7 +71,8 @@ export function createClearConversationController(
       }
     }
 
-    const pendingRequestId = deps.getPendingRequestId?.(normalizedConversationKey) || 0;
+    const pendingRequestId =
+      deps.getPendingRequestId?.(normalizedConversationKey) || 0;
     if (pendingRequestId > 0) {
       const ctrl = deps.getAbortController?.(normalizedConversationKey);
       if (ctrl) ctrl.abort();
@@ -92,7 +96,10 @@ export function createClearConversationController(
     try {
       await deps.invalidateConversationSession?.(normalizedConversationKey);
     } catch (err) {
-      deps.logError?.("LLM: Failed to invalidate Claude conversation session", err);
+      deps.logError?.(
+        "LLM: Failed to invalidate Claude conversation session",
+        err,
+      );
     }
     try {
       await deps.clearStoredConversation(normalizedConversationKey);

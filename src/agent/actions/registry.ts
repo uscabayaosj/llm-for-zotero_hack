@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import type { PaperScopedActionProfile } from "./paperScope";
 
 export class ActionRegistry {
@@ -16,11 +20,15 @@ export class ActionRegistry {
     return this.actions.get(name);
   }
 
-  getPaperScopedActionProfile(name: string): PaperScopedActionProfile | undefined {
+  getPaperScopedActionProfile(
+    name: string,
+  ): PaperScopedActionProfile | undefined {
     return this.actions.get(name)?.paperScopeProfile;
   }
 
-  listActions(mode?: "paper" | "library"): Array<{ name: string; description: string; inputSchema: object }> {
+  listActions(
+    mode?: "paper" | "library",
+  ): Array<{ name: string; description: string; inputSchema: object }> {
     return Array.from(this.actions.values())
       .filter((a) => !mode || !a.modes || a.modes.includes(mode))
       .map(({ name, description, inputSchema }) => ({

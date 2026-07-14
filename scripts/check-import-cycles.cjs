@@ -23,7 +23,8 @@ function walkSourceFiles(dir, files = []) {
 }
 
 function canonicalCycle(cycle) {
-  const body = cycle[0] === cycle[cycle.length - 1] ? cycle.slice(0, -1) : cycle;
+  const body =
+    cycle[0] === cycle[cycle.length - 1] ? cycle.slice(0, -1) : cycle;
   const rotations = body.map((_, index) =>
     body.slice(index).concat(body.slice(0, index)).join(" -> "),
   );
@@ -31,7 +32,8 @@ function canonicalCycle(cycle) {
 }
 
 function formatCycle(cycle) {
-  const body = cycle[0] === cycle[cycle.length - 1] ? cycle : cycle.concat(cycle[0]);
+  const body =
+    cycle[0] === cycle[cycle.length - 1] ? cycle : cycle.concat(cycle[0]);
   return body.join(" -> ");
 }
 
@@ -50,7 +52,10 @@ function isTypeOnlyExport(statement) {
   if (statement.isTypeOnly) return true;
   const clause = statement.exportClause;
   if (!clause || !ts.isNamedExports(clause)) return false;
-  return clause.elements.length > 0 && clause.elements.every((element) => element.isTypeOnly);
+  return (
+    clause.elements.length > 0 &&
+    clause.elements.every((element) => element.isTypeOnly)
+  );
 }
 
 function resolveRelativeImport(file, specifier, fileSet) {
@@ -83,7 +88,10 @@ function buildGraph({ root, runtimeOnly }) {
     for (const statement of source.statements) {
       let specifier = null;
       let typeOnly = false;
-      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      if (
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
         specifier = statement.moduleSpecifier.text;
         typeOnly = isTypeOnlyImport(statement);
       } else if (
@@ -147,8 +155,12 @@ function compareCycles(found, allowed) {
   const foundKeys = new Set(found.map(canonicalCycle));
   const allowedKeys = new Set(allowed.map(canonicalCycle));
   return {
-    unexpected: found.filter((cycle) => !allowedKeys.has(canonicalCycle(cycle))),
-    staleAllowed: allowed.filter((cycle) => !foundKeys.has(canonicalCycle(cycle))),
+    unexpected: found.filter(
+      (cycle) => !allowedKeys.has(canonicalCycle(cycle)),
+    ),
+    staleAllowed: allowed.filter(
+      (cycle) => !foundKeys.has(canonicalCycle(cycle)),
+    ),
   };
 }
 
@@ -183,7 +195,10 @@ if (require.main === module) {
     result.staleAllowedRuntime.length ||
     result.staleAllowedStatic.length;
   if (failed) {
-    printCycleList("Unexpected runtime import cycles:", result.unexpectedRuntime);
+    printCycleList(
+      "Unexpected runtime import cycles:",
+      result.unexpectedRuntime,
+    );
     printCycleList("Unexpected static import cycles:", result.unexpectedStatic);
     printCycleList("Stale allowed runtime cycles:", result.staleAllowedRuntime);
     printCycleList("Stale allowed static cycles:", result.staleAllowedStatic);

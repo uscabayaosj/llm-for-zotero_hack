@@ -120,7 +120,9 @@ function maybeArxivIdentifier(url: unknown): string | undefined {
   return match?.[1] ? `arxiv:${match[1]}` : undefined;
 }
 
-function buildImportIdentifier(result: Record<string, unknown>): string | undefined {
+function buildImportIdentifier(
+  result: Record<string, unknown>,
+): string | undefined {
   const doi = bareDoi(result.doi);
   if (doi?.startsWith("10.")) return doi;
   return (
@@ -129,14 +131,19 @@ function buildImportIdentifier(result: Record<string, unknown>): string | undefi
   );
 }
 
-function buildPaperSubtitle(result: Record<string, unknown>): string | undefined {
+function buildPaperSubtitle(
+  result: Record<string, unknown>,
+): string | undefined {
   const year =
     typeof result.year === "number"
       ? String(result.year)
       : readString(result.year);
   const authors = Array.isArray(result.authors)
     ? result.authors
-        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .filter(
+          (entry): entry is string =>
+            typeof entry === "string" && entry.trim().length > 0,
+        )
         .slice(0, 3)
     : [];
   const authorLabel =
@@ -147,7 +154,9 @@ function buildPaperSubtitle(result: Record<string, unknown>): string | undefined
   return parts.length ? parts.join(" · ") : undefined;
 }
 
-function buildPaperBadges(result: Record<string, unknown>): string[] | undefined {
+function buildPaperBadges(
+  result: Record<string, unknown>,
+): string[] | undefined {
   const badges: string[] = [];
   if (typeof result.citationCount === "number") {
     badges.push(
@@ -163,14 +172,15 @@ function buildPaperBadges(result: Record<string, unknown>): string[] | undefined
 
 function describeMetadataResult(result: Record<string, unknown>): string {
   const patch = result.patch as Record<string, unknown> | undefined;
-  const title = readString(result.displayTitle) || readString(patch?.title) || "Untitled result";
+  const title =
+    readString(result.displayTitle) ||
+    readString(patch?.title) ||
+    "Untitled result";
   const subtitle = readString(result.displaySubtitle) || "";
   const abstract = readString(patch?.abstractNote) || "";
   const abstractSnippet =
     abstract.length > 220 ? `${abstract.slice(0, 220).trimEnd()}...` : abstract;
-  return [title, subtitle, abstractSnippet]
-    .filter(Boolean)
-    .join("\n");
+  return [title, subtitle, abstractSnippet].filter(Boolean).join("\n");
 }
 
 function getReferencePaperTitle(context: AgentToolContext): string | undefined {
@@ -211,18 +221,27 @@ function scoreMetadataChoice(
   const patch = record.patch as Record<string, unknown> | undefined;
   const candidateDoi = bareDoi(patch?.DOI);
   const targetDoi = bareDoi(args.doi);
-  if (candidateDoi && targetDoi && candidateDoi.toLowerCase() === targetDoi.toLowerCase()) {
+  if (
+    candidateDoi &&
+    targetDoi &&
+    candidateDoi.toLowerCase() === targetDoi.toLowerCase()
+  ) {
     score += 100;
   }
-  const candidateTitle = readString(record.displayTitle) || readString(patch?.title);
-  const targetTitle = args.title || args.query || getReferencePaperTitle(context);
+  const candidateTitle =
+    readString(record.displayTitle) || readString(patch?.title);
+  const targetTitle =
+    args.title || args.query || getReferencePaperTitle(context);
   if (candidateTitle && targetTitle) {
     const candidateKey = normalizeTitleKey(candidateTitle);
     const targetKey = normalizeTitleKey(targetTitle);
     if (candidateKey && targetKey) {
       if (candidateKey === targetKey) {
         score += 60;
-      } else if (candidateKey.includes(targetKey) || targetKey.includes(candidateKey)) {
+      } else if (
+        candidateKey.includes(targetKey) ||
+        targetKey.includes(candidateKey)
+      ) {
         score += 25;
       }
     }
@@ -236,14 +255,19 @@ function scoreMetadataChoice(
   return score;
 }
 
-function describeMetadataChoice(
-  record: Record<string, unknown>,
-): { title: string; subtitle?: string; badge?: string } {
+function describeMetadataChoice(record: Record<string, unknown>): {
+  title: string;
+  subtitle?: string;
+  badge?: string;
+} {
   const patch = record.patch as Record<string, unknown> | undefined;
   const source = readString(record.source) || "Metadata result";
-  const title = readString(record.displayTitle) || readString(patch?.title) || source;
-  const subtitle = readString(record.displaySubtitle) ||
-    [source].filter(Boolean).join(" · ") || undefined;
+  const title =
+    readString(record.displayTitle) || readString(patch?.title) || source;
+  const subtitle =
+    readString(record.displaySubtitle) ||
+    [source].filter(Boolean).join(" · ") ||
+    undefined;
   const doi = bareDoi(patch?.DOI);
   return {
     title,
@@ -267,7 +291,9 @@ function resolveMetadataChoice(
   context: AgentToolContext,
 ): SearchReviewMetadataChoice | null {
   if (selectedRowId) {
-    const direct = prepared.choices.find((choice) => choice.rowId === selectedRowId);
+    const direct = prepared.choices.find(
+      (choice) => choice.rowId === selectedRowId,
+    );
     if (direct) return direct;
   }
   let best: SearchReviewMetadataChoice | null = null;
@@ -292,7 +318,8 @@ function buildMetadataChoiceOptions(
     const detail = [choice.title, choice.subtitle].filter(Boolean).join(" — ");
     return {
       id: choice.rowId,
-      label: choice.rowId === selected?.rowId ? `${detail} (Recommended)` : detail,
+      label:
+        choice.rowId === selected?.rowId ? `${detail} (Recommended)` : detail,
     };
   });
 }
@@ -364,7 +391,9 @@ function prepareSearchReview(
     return null;
   }
   const content = result.content as Record<string, unknown>;
-  const mode = readString(content.mode) as SearchLiteratureOnlineMode | undefined;
+  const mode = readString(content.mode) as
+    | SearchLiteratureOnlineMode
+    | undefined;
   const results = Array.isArray(content.results) ? content.results : [];
   if (!mode || results.length === 0) {
     return null;
@@ -380,7 +409,10 @@ function prepareSearchReview(
       rows.push({
         key: rowId,
         label: readString(record.source) || `Result ${index + 1}`,
-        before: readString((record.patch as Record<string, unknown> | undefined)?.url) ||
+        before:
+          readString(
+            (record.patch as Record<string, unknown> | undefined)?.url,
+          ) ||
           bareDoi((record.patch as Record<string, unknown> | undefined)?.DOI),
         after: describeMetadataResult(record),
         multiline: true,
@@ -399,7 +431,8 @@ function prepareSearchReview(
     const firstRecord = results[0] as Record<string, unknown> | undefined;
     const source = readString(firstRecord?.source)?.toLowerCase();
     const matchConf = readString(firstRecord?.matchConfidence);
-    const highConfidence = source === "zotero translator" || matchConf === "doi";
+    const highConfidence =
+      source === "zotero translator" || matchConf === "doi";
     return {
       kind: "metadata",
       mode,
@@ -440,7 +473,11 @@ function prepareSearchReview(
 function getSearchActionButtons(kind: SearchReviewPrepared["kind"]) {
   if (kind === "metadata") {
     return [
-      { id: "review_changes", label: "Review changes", style: "primary" as const },
+      {
+        id: "review_changes",
+        label: "Review changes",
+        style: "primary" as const,
+      },
       {
         id: "save_note",
         label: "Save metadata as note",
@@ -472,12 +509,13 @@ function getSearchActionButtons(kind: SearchReviewPrepared["kind"]) {
   ];
 }
 
-function normalizeSelectedRowIds(
-  value: unknown,
-): string[] {
+function normalizeSelectedRowIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .filter(
+      (entry): entry is string =>
+        typeof entry === "string" && entry.trim().length > 0,
+    )
     .map((entry) => entry.trim());
 }
 
@@ -512,9 +550,13 @@ function normalizeSearchReviewArgs(args: unknown): SearchReviewArgs {
   const record = args as Record<string, unknown>;
   const paperContext = validateMetadataPaperContext(record.paperContext);
   return {
-    workflow: readString(record.workflow) as SearchLiteratureOnlineWorkflow | undefined,
+    workflow: readString(record.workflow) as
+      | SearchLiteratureOnlineWorkflow
+      | undefined,
     mode: readString(record.mode) as SearchLiteratureOnlineMode | undefined,
-    source: readString(record.source) as SearchLiteratureOnlineSource | undefined,
+    source: readString(record.source) as
+      | SearchLiteratureOnlineSource
+      | undefined,
     limit: readPositiveInt(record.limit),
     libraryID: readPositiveInt(record.libraryID),
     itemId: readPositiveInt(record.itemId),
@@ -538,10 +580,12 @@ function buildMetadataDiffRows(
 ): SearchReviewMetadataRow[] {
   const rows: SearchReviewMetadataRow[] = [];
   // Try to get current item snapshot for before values
-  let currentFields: Partial<Record<string, string>> = {};
+  const currentFields: Partial<Record<string, string>> = {};
   let currentCreatorsDisplay = "";
   const paperContext = args.paperContext || getReferencePaperContext(context);
-  const itemId = args.itemId || paperContext?.itemId ||
+  const itemId =
+    args.itemId ||
+    paperContext?.itemId ||
     readPositiveInt(context.request.activeItemId);
 
   // We'll try to read from the context item if available
@@ -557,7 +601,9 @@ function buildMetadataDiffRows(
       currentCreatorsDisplay = creators
         .map((c) => {
           const rec = c as unknown as Record<string, unknown>;
-          return rec.name ? String(rec.name) : [rec.firstName, rec.lastName].filter(Boolean).join(" ");
+          return rec.name
+            ? String(rec.name)
+            : [rec.firstName, rec.lastName].filter(Boolean).join(" ");
         })
         .filter(Boolean)
         .join("; ");
@@ -597,7 +643,9 @@ function buildMetadataDiffRows(
   return rows;
 }
 
-function validateMetadataPaperContext(value: unknown): PaperContextRef | undefined {
+function validateMetadataPaperContext(
+  value: unknown,
+): PaperContextRef | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? normalizeToolPaperContext(value as Record<string, unknown>) || undefined
     : undefined;
@@ -613,7 +661,12 @@ export function createSearchLiteratureReviewAction(
   if (prepared.kind === "metadata") {
     const noteContent = buildMetadataNoteTemplate(context, prepared.rows);
     const normalizedArgs = normalizeSearchReviewArgs(args);
-    const selectedChoice = resolveMetadataChoice(prepared, undefined, normalizedArgs, context);
+    const selectedChoice = resolveMetadataChoice(
+      prepared,
+      undefined,
+      normalizedArgs,
+      context,
+    );
 
     // High-confidence match (translator result or DOI match): skip source selection
     // and show a single "Review & Apply" card instead of the two-step flow.
@@ -621,7 +674,11 @@ export function createSearchLiteratureReviewAction(
       const metadata = buildMetadataUpdatePatch(selectedChoice.raw);
       if (metadata) {
         // Build before/after diff rows for the fields that would change
-        const diffRows = buildMetadataDiffRows(metadata, context, normalizedArgs);
+        const diffRows = buildMetadataDiffRows(
+          metadata,
+          context,
+          normalizedArgs,
+        );
         return {
           toolName: "literature_search",
           mode: "review",
@@ -631,7 +688,11 @@ export function createSearchLiteratureReviewAction(
           confirmLabel: "Apply changes",
           cancelLabel: "Cancel",
           actions: [
-            { id: "apply_direct", label: "Apply changes", style: "primary" as const },
+            {
+              id: "apply_direct",
+              label: "Apply changes",
+              style: "primary" as const,
+            },
             {
               id: "save_note",
               label: "Save metadata as note",
@@ -680,7 +741,11 @@ export function createSearchLiteratureReviewAction(
           id: "selectedMetadataResult",
           label: "Source to turn into Zotero changes",
           value: selectedChoice?.rowId || prepared.choices[0]?.rowId || "",
-          options: buildMetadataChoiceOptions(prepared, normalizedArgs, context),
+          options: buildMetadataChoiceOptions(
+            prepared,
+            normalizedArgs,
+            context,
+          ),
         },
         ...buildNoteDraftReviewFields(noteContent),
       ],
@@ -715,7 +780,10 @@ export function createSearchLiteratureReviewAction(
           importIdentifier: paper.importIdentifier,
           checked: true,
           year: typeof paper.raw.year === "number" ? paper.raw.year : undefined,
-          citationCount: typeof paper.raw.citationCount === "number" ? paper.raw.citationCount : undefined,
+          citationCount:
+            typeof paper.raw.citationCount === "number"
+              ? paper.raw.citationCount
+              : undefined,
         })),
         minSelectedByAction: [
           { actionId: "import", min: 1 },
@@ -765,9 +833,12 @@ export function resolveSearchLiteratureReview(
 ): AgentToolReviewResolution {
   const prepared = prepareSearchReview(result);
   const normalizedArgs = input;
-  const actionId = resolution.actionId || (resolution.approved ? "continue" : "cancel");
+  const actionId =
+    resolution.actionId || (resolution.approved ? "continue" : "cancel");
   const data =
-    resolution.data && typeof resolution.data === "object" && !Array.isArray(resolution.data)
+    resolution.data &&
+    typeof resolution.data === "object" &&
+    !Array.isArray(resolution.data)
       ? (resolution.data as Record<string, unknown>)
       : {};
 
@@ -781,7 +852,8 @@ export function resolveSearchLiteratureReview(
   if (prepared.kind === "metadata") {
     if (actionId === "save_note") {
       const noteContent = normalizeNoteSourceText(
-        readString(data.noteContent) || buildMetadataNoteTemplate(context, prepared.rows),
+        readString(data.noteContent) ||
+          buildMetadataNoteTemplate(context, prepared.rows),
       );
       return {
         kind: "invoke_tool",
@@ -807,9 +879,17 @@ export function resolveSearchLiteratureReview(
     }
     if (actionId === "apply_direct") {
       // High-confidence path: user already reviewed the diff, apply directly
-      const bestChoice = resolveMetadataChoice(prepared, undefined, normalizedArgs, context);
-      const metadata = bestChoice ? buildMetadataUpdatePatch(bestChoice.raw) : null;
-      const paperContext = normalizedArgs.paperContext || getReferencePaperContext(context);
+      const bestChoice = resolveMetadataChoice(
+        prepared,
+        undefined,
+        normalizedArgs,
+        context,
+      );
+      const metadata = bestChoice
+        ? buildMetadataUpdatePatch(bestChoice.raw)
+        : null;
+      const paperContext =
+        normalizedArgs.paperContext || getReferencePaperContext(context);
       const itemId =
         normalizedArgs.itemId ||
         paperContext?.itemId ||
@@ -817,7 +897,8 @@ export function resolveSearchLiteratureReview(
       if (!metadata || (!paperContext && !itemId)) {
         return {
           kind: "stop",
-          finalText: "Could not prepare metadata changes from the selected result.",
+          finalText:
+            "Could not prepare metadata changes from the selected result.",
         };
       }
       return {
@@ -849,8 +930,11 @@ export function resolveSearchLiteratureReview(
         normalizedArgs,
         context,
       );
-      const metadata = selectedChoice ? buildMetadataUpdatePatch(selectedChoice.raw) : null;
-      const paperContext = normalizedArgs.paperContext || getReferencePaperContext(context);
+      const metadata = selectedChoice
+        ? buildMetadataUpdatePatch(selectedChoice.raw)
+        : null;
+      const paperContext =
+        normalizedArgs.paperContext || getReferencePaperContext(context);
       const itemId =
         normalizedArgs.itemId ||
         paperContext?.itemId ||
@@ -858,7 +942,8 @@ export function resolveSearchLiteratureReview(
       if (!selectedChoice || !metadata || (!paperContext && !itemId)) {
         return {
           kind: "stop",
-          finalText: "Could not prepare metadata changes from the selected result.",
+          finalText:
+            "Could not prepare metadata changes from the selected result.",
         };
       }
       return {
@@ -971,12 +1056,17 @@ export function resolveSearchLiteratureReview(
             getReferencePaperTitle(context) ||
             context.request.userText,
           source:
-            (readString(data.nextSource) as SearchLiteratureOnlineSource | undefined) ||
+            (readString(data.nextSource) as
+              | SearchLiteratureOnlineSource
+              | undefined) ||
             normalizedArgs.source ||
             "openalex",
           limit: Math.min(
             25,
-            Math.max(1, readPositiveInt(data.nextLimit) || normalizedArgs.limit || 10),
+            Math.max(
+              1,
+              readPositiveInt(data.nextLimit) || normalizedArgs.limit || 10,
+            ),
           ),
           libraryID: normalizedArgs.libraryID || context.request.libraryID,
         },

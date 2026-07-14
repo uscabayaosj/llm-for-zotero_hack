@@ -213,7 +213,8 @@ export function setReferenceSelectorCollections(
 
   const registerCollection = (collection: PaperBrowseCollectionCandidate) => {
     state.collectionById.set(collection.collectionId, collection);
-    for (const paper of collection.papers) state.groupByItemId.set(paper.itemId, paper);
+    for (const paper of collection.papers)
+      state.groupByItemId.set(paper.itemId, paper);
     for (const child of collection.childCollections) registerCollection(child);
   };
   for (const collection of collections) registerCollection(collection);
@@ -346,10 +347,7 @@ export function rebuildReferenceSelectorRows(
   state: ReferenceSelectorState,
 ): ReferenceSelectorRow[] {
   const rows: ReferenceSelectorRow[] = [];
-  const appendPaperRow = (
-    group: PaperSearchGroupCandidate,
-    depth: number,
-  ) => {
+  const appendPaperRow = (group: PaperSearchGroupCandidate, depth: number) => {
     rows.push({ kind: "paper", itemId: group.itemId, depth });
     if (group.attachments.length <= 1) return;
     if (!isReferenceSelectorGroupExpanded(state, group.itemId)) return;
@@ -426,7 +424,11 @@ export function findReferenceSelectorParentRowIndex(
 ): number {
   const row = rows[index];
   if (!row || row.depth <= 0) return -1;
-  for (let candidateIndex = index - 1; candidateIndex >= 0; candidateIndex -= 1) {
+  for (
+    let candidateIndex = index - 1;
+    candidateIndex >= 0;
+    candidateIndex -= 1
+  ) {
     const candidateRow = rows[candidateIndex];
     if (candidateRow && candidateRow.depth === row.depth - 1) {
       return candidateIndex;
@@ -487,10 +489,7 @@ function rebuildReferenceSelectorRowsFromVisibleGroups(
   visibleGroups: readonly PaperSearchGroupCandidate[],
 ): ReferenceSelectorRow[] {
   const rows: ReferenceSelectorRow[] = [];
-  const appendPaperRow = (
-    group: PaperSearchGroupCandidate,
-    depth: number,
-  ) => {
+  const appendPaperRow = (group: PaperSearchGroupCandidate, depth: number) => {
     rows.push({ kind: "paper", itemId: group.itemId, depth });
     if (group.attachments.length <= 1) return;
     if (!isReferenceSelectorGroupExpanded(state, group.itemId)) return;
@@ -573,11 +572,17 @@ export function referenceSelectorCollectionMatchesFilter(
   const label = collection.collectionId === 0 ? unfiledLabel : collection.name;
   if (label.toLowerCase().includes(normalizedQuery)) return true;
   return collection.childCollections.some((child) =>
-    referenceSelectorCollectionMatchesFilter(child, normalizedQuery, unfiledLabel),
+    referenceSelectorCollectionMatchesFilter(
+      child,
+      normalizedQuery,
+      unfiledLabel,
+    ),
   );
 }
 
-export function buildReferenceSelectorTagContextKey(ref: TagContextRef): string {
+export function buildReferenceSelectorTagContextKey(
+  ref: TagContextRef,
+): string {
   const libraryID = Math.max(0, Math.floor(Number(ref.libraryID) || 0));
   if (ref.scope) {
     return `${libraryID}:scope:${ref.scope}:${
@@ -587,7 +592,9 @@ export function buildReferenceSelectorTagContextKey(ref: TagContextRef): string 
   return `${libraryID}:tag:${normalizeReferenceSelectorTagIdentityName(ref.normalizedName || ref.name)}`;
 }
 
-export function normalizeReferenceSelectorTagIdentityName(value: unknown): string {
+export function normalizeReferenceSelectorTagIdentityName(
+  value: unknown,
+): string {
   const name = normalizeMineruTagName(value);
   return name ? name.toLowerCase() : "";
 }

@@ -1,4 +1,5 @@
 .vscode
+addon/content/vendor
 build
 logs
 node_modules

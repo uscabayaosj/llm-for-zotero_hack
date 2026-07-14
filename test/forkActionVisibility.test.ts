@@ -80,10 +80,7 @@ describe("fork action visibility", function () {
   it("falls back to storage routing for ordinary default paper items", function () {
     const item = paperItem(42);
 
-    assert.equal(
-      resolveForkActionConversationSystem({ item }),
-      "upstream",
-    );
+    assert.equal(resolveForkActionConversationSystem({ item }), "upstream");
     assert.isTrue(
       shouldShowForkActionForAssistantTurn({
         item,

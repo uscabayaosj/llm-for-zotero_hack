@@ -25,9 +25,7 @@ export type AgentStepParams = {
   onTextDelta?: (delta: string) => void | Promise<void>;
   onReasoning?: (event: ReasoningEvent) => void | Promise<void>;
   onUsage?: (usage: UsageStats) => void | Promise<void>;
-  onToolCall?: (
-    call: AgentToolCall,
-  ) => Promise<AgentAdapterToolCallResult>;
+  onToolCall?: (call: AgentToolCall) => Promise<AgentAdapterToolCallResult>;
 };
 
 export interface AgentModelAdapter {

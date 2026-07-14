@@ -20,22 +20,29 @@ describe("conversation schema migrations", function () {
   });
 
   function installMigrationDb() {
-    const applied = new Map<string, { appliedAt: number; description: string | null }>();
+    const applied = new Map<
+      string,
+      { appliedAt: number; description: string | null }
+    >();
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     globalScope.Zotero = {
       DB: {
         queryAsync: async (sql: string, params?: unknown[]) => {
           queries.push({ sql, params });
-          if (sql.includes(`SELECT id`) && sql.includes(`FROM ${CONVERSATION_SCHEMA_MIGRATIONS_TABLE}`)) {
+          if (
+            sql.includes(`SELECT id`) &&
+            sql.includes(`FROM ${CONVERSATION_SCHEMA_MIGRATIONS_TABLE}`)
+          ) {
             const id = String(params?.[0] || "");
             return applied.has(id) ? [{ id }] : [];
           }
-          if (sql.includes(`INSERT INTO ${CONVERSATION_SCHEMA_MIGRATIONS_TABLE}`)) {
+          if (
+            sql.includes(`INSERT INTO ${CONVERSATION_SCHEMA_MIGRATIONS_TABLE}`)
+          ) {
             const id = String(params?.[0] || "");
             applied.set(id, {
               appliedAt: Number(params?.[1] || 0),
-              description:
-                typeof params?.[2] === "string" ? params[2] : null,
+              description: typeof params?.[2] === "string" ? params[2] : null,
             });
           }
           return [];
@@ -87,7 +94,10 @@ describe("conversation schema migrations", function () {
       applied.get("chat-history-search-v1")?.description,
       "Build chat history search index.",
     );
-    assert.equal(await hasConversationSchemaMigration("chat-history-search-v1"), true);
+    assert.equal(
+      await hasConversationSchemaMigration("chat-history-search-v1"),
+      true,
+    );
   });
 
   it("marks the current conversation-id transition milestone", async function () {

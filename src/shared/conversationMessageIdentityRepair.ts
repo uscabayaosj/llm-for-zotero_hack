@@ -180,13 +180,15 @@ export async function repairRecoverableCatalogMessageConversationIDs(params: {
        AND TRIM(c.conversation_id) <> ''
        ${params.filterSql ? `AND (${params.filterSql})` : ""}`,
     params.filterParams || [],
-  )) as Array<{
-    conversationID?: unknown;
-    conversationKey?: unknown;
-    libraryID?: unknown;
-    kind?: unknown;
-    paperItemID?: unknown;
-  }> | undefined;
+  )) as
+    | Array<{
+        conversationID?: unknown;
+        conversationKey?: unknown;
+        libraryID?: unknown;
+        kind?: unknown;
+        paperItemID?: unknown;
+      }>
+    | undefined;
 
   const summary: ConversationCatalogMessageIdentityRepairSummary = {
     checked: 0,

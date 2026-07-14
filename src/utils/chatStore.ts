@@ -258,7 +258,7 @@ function normalizeSessionVersion(sessionVersion: number): number | null {
 function normalizeConversationTitleSeed(value: string): string {
   if (typeof value !== "string") return "";
   const normalized = value
-    // eslint-disable-next-line no-control-regex -- Conversation titles must drop stored control bytes.
+
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();

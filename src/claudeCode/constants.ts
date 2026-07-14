@@ -91,7 +91,9 @@ export function getClaudeAllocatedConversationKeyRange(
   );
 }
 
-export function buildDefaultClaudeGlobalConversationKey(libraryID: number): number {
+export function buildDefaultClaudeGlobalConversationKey(
+  libraryID: number,
+): number {
   return buildDefaultConversationKey(
     "claude_code",
     "global",
@@ -100,7 +102,9 @@ export function buildDefaultClaudeGlobalConversationKey(libraryID: number): numb
   );
 }
 
-export function buildDefaultClaudePaperConversationKey(paperItemID: number): number {
+export function buildDefaultClaudePaperConversationKey(
+  paperItemID: number,
+): number {
   return buildDefaultConversationKey(
     "claude_code",
     "paper",

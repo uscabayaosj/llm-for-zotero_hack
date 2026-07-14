@@ -137,16 +137,23 @@ describe("reference selector model", function () {
     const second = makeGroup(2);
     const state = createReferenceSelectorState();
 
-    setReferenceSelectorCollections(state, [makeCollection(10, [first, second])]);
+    setReferenceSelectorCollections(state, [
+      makeCollection(10, [first, second]),
+    ]);
     let viewModel = buildReferenceSelectorViewModel(state);
     assert.deepEqual(
-      viewModel.rows.map((row) => row.kind === "paper" ? row.itemId : row.kind),
+      viewModel.rows.map((row) =>
+        row.kind === "paper" ? row.itemId : row.kind,
+      ),
       [2, 1],
     );
 
-    setReferenceSelectorSearchResults(state, [first], [makeCollection(20, [])], [
-      makeTag("Stable"),
-    ]);
+    setReferenceSelectorSearchResults(
+      state,
+      [first],
+      [makeCollection(20, [])],
+      [makeTag("Stable")],
+    );
     viewModel = buildReferenceSelectorViewModel(state);
     assert.deepEqual(
       viewModel.rows.map((row) => row.kind),
@@ -176,7 +183,9 @@ describe("reference selector model", function () {
     let viewModel = buildReferenceSelectorViewModel(state);
     assert.deepEqual(
       viewModel.rows.map((row) =>
-        row.kind === "attachment" ? `${row.kind}:${row.attachmentIndex}` : row.kind,
+        row.kind === "attachment"
+          ? `${row.kind}:${row.attachmentIndex}`
+          : row.kind,
       ),
       ["paper", "attachment:0", "attachment:1"],
     );
@@ -202,7 +211,9 @@ describe("reference selector model", function () {
         state,
         group,
         attachment,
-        selectedPapers: [{ itemId: 1, contextItemId: attachment.contextItemId }],
+        selectedPapers: [
+          { itemId: 1, contextItemId: attachment.contextItemId },
+        ],
       }),
       "explicit",
     );
@@ -211,7 +222,9 @@ describe("reference selector model", function () {
         state,
         group,
         attachment,
-        selectedCollections: [{ collectionId: 10, name: "Collection 10", libraryID: 1 }],
+        selectedCollections: [
+          { collectionId: 10, name: "Collection 10", libraryID: 1 },
+        ],
       }),
       "coveredByCollection",
     );
@@ -504,7 +517,10 @@ describe("context selection actions", function () {
       title: "Overflow",
     });
     assert.isFalse(result.changed);
-    assert.equal(result.statusMessage, `Paper Context up to ${MAX_SELECTED_PAPER_CONTEXTS}`);
+    assert.equal(
+      result.statusMessage,
+      `Paper Context up to ${MAX_SELECTED_PAPER_CONTEXTS}`,
+    );
     assert.equal(result.statusLevel, "error");
   });
 });

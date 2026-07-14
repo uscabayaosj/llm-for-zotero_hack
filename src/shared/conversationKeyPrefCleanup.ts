@@ -114,12 +114,16 @@ export function cleanupRememberedConversationKeyPrefs(): void {
   cleanJsonNumberMapPref("claudeCodePaperConversationMap", (_key, value) =>
     isConversationKeyForKind("claude_code", "paper", value),
   );
-  cleanJsonNumberMapPref("claudeCodeLastAllocatedConversationKeyMap", (key, value) => {
-    const kind = allocatedKindForMapKey(key);
-    return Boolean(
-      kind && isRuntimeAllocatedConversationKeyForKind("claude_code", kind, value),
-    );
-  });
+  cleanJsonNumberMapPref(
+    "claudeCodeLastAllocatedConversationKeyMap",
+    (key, value) => {
+      const kind = allocatedKindForMapKey(key);
+      return Boolean(
+        kind &&
+        isRuntimeAllocatedConversationKeyForKind("claude_code", kind, value),
+      );
+    },
+  );
 
   cleanJsonNumberMapPref("codexAppServerGlobalConversationMap", (_key, value) =>
     isConversationKeyForKind("codex", "global", value),
@@ -141,16 +145,24 @@ export function cleanupRememberedConversationKeyPrefs(): void {
     isUpstreamPaperConversationKeyForPrefs(value),
   );
 
-  cleanScalarConversationKeyPref("claudeCodeLastAllocatedGlobalConversationKey", (value) =>
-    isRuntimeAllocatedConversationKeyForKind("claude_code", "global", value),
+  cleanScalarConversationKeyPref(
+    "claudeCodeLastAllocatedGlobalConversationKey",
+    (value) =>
+      isRuntimeAllocatedConversationKeyForKind("claude_code", "global", value),
   );
-  cleanScalarConversationKeyPref("claudeCodeLastAllocatedPaperConversationKey", (value) =>
-    isRuntimeAllocatedConversationKeyForKind("claude_code", "paper", value),
+  cleanScalarConversationKeyPref(
+    "claudeCodeLastAllocatedPaperConversationKey",
+    (value) =>
+      isRuntimeAllocatedConversationKeyForKind("claude_code", "paper", value),
   );
-  cleanScalarConversationKeyPref("codexAppServerLastAllocatedGlobalConversationKey", (value) =>
-    isRuntimeAllocatedConversationKeyForKind("codex", "global", value),
+  cleanScalarConversationKeyPref(
+    "codexAppServerLastAllocatedGlobalConversationKey",
+    (value) =>
+      isRuntimeAllocatedConversationKeyForKind("codex", "global", value),
   );
-  cleanScalarConversationKeyPref("codexAppServerLastAllocatedPaperConversationKey", (value) =>
-    isRuntimeAllocatedConversationKeyForKind("codex", "paper", value),
+  cleanScalarConversationKeyPref(
+    "codexAppServerLastAllocatedPaperConversationKey",
+    (value) =>
+      isRuntimeAllocatedConversationKeyForKind("codex", "paper", value),
   );
 }

@@ -14,10 +14,13 @@ describe("search_literature_online tool", function () {
     modelName: "gpt-5.4",
   };
 
-  const originalFetch = (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch;
+  const originalFetch = (
+    globalThis as typeof globalThis & { fetch?: typeof fetch }
+  ).fetch;
 
   afterEach(function () {
-    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch = originalFetch;
+    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
+      originalFetch;
   });
 
   it("supports metadata lookups through the unified online tool", async function () {
@@ -37,36 +40,36 @@ describe("search_literature_online tool", function () {
       citationCount: 12,
       externalIds: { DOI: "10.1000/example" },
     };
-    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch = (async (
-      url: string | URL | Request,
-    ) => {
-      const href = String(url);
-      // Title search (used by resolveIdentifier)
-      if (href.includes("api.crossref.org/works?query.bibliographic")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ message: { items: [crossRefItem] } }),
-        } as Response;
-      }
-      // DOI lookup (used by supplement phase)
-      if (href.includes("api.crossref.org/works/10.1000")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ message: crossRefItem }),
-        } as Response;
-      }
-      // Semantic Scholar DOI or title search
-      if (href.includes("api.semanticscholar.org")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => (href.includes("/search") ? { data: [s2Item] } : s2Item),
-        } as Response;
-      }
-      throw new Error(`Unexpected URL: ${href}`);
-    }) as typeof fetch;
+    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
+      (async (url: string | URL | Request) => {
+        const href = String(url);
+        // Title search (used by resolveIdentifier)
+        if (href.includes("api.crossref.org/works?query.bibliographic")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ message: { items: [crossRefItem] } }),
+          } as Response;
+        }
+        // DOI lookup (used by supplement phase)
+        if (href.includes("api.crossref.org/works/10.1000")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ message: crossRefItem }),
+          } as Response;
+        }
+        // Semantic Scholar DOI or title search
+        if (href.includes("api.semanticscholar.org")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () =>
+              href.includes("/search") ? { data: [s2Item] } : s2Item,
+          } as Response;
+        }
+        throw new Error(`Unexpected URL: ${href}`);
+      }) as typeof fetch;
 
     const tool = createSearchLiteratureOnlineTool({
       resolveMetadataItem: () => null,
@@ -88,42 +91,45 @@ describe("search_literature_online tool", function () {
   });
 
   it("resolves metadata lookups from the current Zotero item when only item context is provided", async function () {
-    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch = (async (
-      url: string | URL | Request,
-    ) => {
-      const href = String(url);
-      if (href.includes("api.crossref.org/works/10.1000%2Fexample")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            message: {
-              DOI: "10.1000/example",
-              title: ["Example Title"],
-              author: [{ given: "Alice", family: "Example" }],
-              "container-title": ["Journal"],
-              URL: "https://doi.org/10.1000/example",
-            },
-          }),
-        } as Response;
-      }
-      if (href.includes("api.semanticscholar.org/graph/v1/paper/DOI:10.1000%2Fexample")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            title: "Example Title",
-            authors: [{ name: "Alice Example" }],
-            year: 2024,
-            abstract: "Abstract",
-            venue: "Journal",
-            citationCount: 12,
-            externalIds: { DOI: "10.1000/example" },
-          }),
-        } as Response;
-      }
-      throw new Error(`Unexpected URL: ${href}`);
-    }) as typeof fetch;
+    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
+      (async (url: string | URL | Request) => {
+        const href = String(url);
+        if (href.includes("api.crossref.org/works/10.1000%2Fexample")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              message: {
+                DOI: "10.1000/example",
+                title: ["Example Title"],
+                author: [{ given: "Alice", family: "Example" }],
+                "container-title": ["Journal"],
+                URL: "https://doi.org/10.1000/example",
+              },
+            }),
+          } as Response;
+        }
+        if (
+          href.includes(
+            "api.semanticscholar.org/graph/v1/paper/DOI:10.1000%2Fexample",
+          )
+        ) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              title: "Example Title",
+              authors: [{ name: "Alice Example" }],
+              year: 2024,
+              abstract: "Abstract",
+              venue: "Journal",
+              citationCount: 12,
+              externalIds: { DOI: "10.1000/example" },
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected URL: ${href}`);
+      }) as typeof fetch;
 
     const item = { id: 7 } as any;
     const tool = createSearchLiteratureOnlineTool({
@@ -149,33 +155,30 @@ describe("search_literature_online tool", function () {
   });
 
   it("supports live search mode through the unified online tool", async function () {
-    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch = (async (
-      url: string | URL | Request,
-    ) => {
-      const href = String(url);
-      if (href.includes("api.openalex.org/works?search=")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            results: [
-              {
-                id: "https://openalex.org/W123",
-                display_name: "Related Paper",
-                authorships: [
-                  { author: { display_name: "Bob Example" } },
-                ],
-                publication_year: 2025,
-                cited_by_count: 4,
-                doi: "https://doi.org/10.1000/related",
-                open_access: { oa_url: "https://example.com/paper.pdf" },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      throw new Error(`Unexpected URL: ${href}`);
-    }) as typeof fetch;
+    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
+      (async (url: string | URL | Request) => {
+        const href = String(url);
+        if (href.includes("api.openalex.org/works?search=")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              results: [
+                {
+                  id: "https://openalex.org/W123",
+                  display_name: "Related Paper",
+                  authorships: [{ author: { display_name: "Bob Example" } }],
+                  publication_year: 2025,
+                  cited_by_count: 4,
+                  doi: "https://doi.org/10.1000/related",
+                  open_access: { oa_url: "https://example.com/paper.pdf" },
+                },
+              ],
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected URL: ${href}`);
+      }) as typeof fetch;
 
     const tool = createSearchLiteratureOnlineTool({
       resolveMetadataItem: () => null,
@@ -190,7 +193,8 @@ describe("search_literature_online tool", function () {
     if (!validated.ok) return;
 
     const result = await tool.execute(validated.value, baseContext);
-    const results = (result as { results: Array<Record<string, unknown>> }).results;
+    const results = (result as { results: Array<Record<string, unknown>> })
+      .results;
     assert.equal((result as { workflow: string }).workflow, "answer");
     assert.lengthOf(results, 1);
     assert.equal(results[0].title, "Related Paper");
@@ -209,33 +213,30 @@ describe("search_literature_online tool", function () {
   });
 
   it("opens the literature review card only for review workflow", async function () {
-    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch = (async (
-      url: string | URL | Request,
-    ) => {
-      const href = String(url);
-      if (href.includes("api.openalex.org/works?search=")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            results: [
-              {
-                id: "https://openalex.org/W456",
-                display_name: "Reviewable Paper",
-                authorships: [
-                  { author: { display_name: "Riley Example" } },
-                ],
-                publication_year: 2024,
-                cited_by_count: 8,
-                doi: "https://doi.org/10.1000/reviewable",
-                open_access: { oa_url: "https://example.com/reviewable.pdf" },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      throw new Error(`Unexpected URL: ${href}`);
-    }) as typeof fetch;
+    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
+      (async (url: string | URL | Request) => {
+        const href = String(url);
+        if (href.includes("api.openalex.org/works?search=")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              results: [
+                {
+                  id: "https://openalex.org/W456",
+                  display_name: "Reviewable Paper",
+                  authorships: [{ author: { display_name: "Riley Example" } }],
+                  publication_year: 2024,
+                  cited_by_count: 8,
+                  doi: "https://doi.org/10.1000/reviewable",
+                  open_access: { oa_url: "https://example.com/reviewable.pdf" },
+                },
+              ],
+            }),
+          } as Response;
+        }
+        throw new Error(`Unexpected URL: ${href}`);
+      }) as typeof fetch;
 
     const tool = createSearchLiteratureOnlineTool({
       resolveMetadataItem: () => null,
@@ -278,13 +279,7 @@ describe("search_literature_online tool", function () {
         userText: "can you find related papers from internet to me",
       }) || false,
     );
-    assert.include(
-      tool.guidance?.instruction || "",
-      "workflow:'answer'",
-    );
-    assert.include(
-      tool.guidance?.instruction || "",
-      "workflow:'review'",
-    );
+    assert.include(tool.guidance?.instruction || "", "workflow:'answer'");
+    assert.include(tool.guidance?.instruction || "", "workflow:'review'");
   });
 });

@@ -149,7 +149,10 @@ function objectContainsServerUrl(value: unknown, serverUrl: string): boolean {
   );
 }
 
-function resolveConnected(mcpStatus: unknown, serverName: string): boolean | null {
+function resolveConnected(
+  mcpStatus: unknown,
+  serverName: string,
+): boolean | null {
   if (!mcpStatus) return null;
   if (!objectContainsServerName(mcpStatus, serverName)) return false;
   const serialized = JSON.stringify(mcpStatus).toLowerCase();
@@ -172,16 +175,21 @@ function getFetch(): typeof fetch {
   return fetchFn.bind(globalThis);
 }
 
-function getConfigHeaders(configValue: Record<string, unknown>): Record<string, string> {
+function getConfigHeaders(
+  configValue: Record<string, unknown>,
+): Record<string, string> {
   const rawHeaders = configValue.http_headers;
-  if (!rawHeaders || typeof rawHeaders !== "object" || Array.isArray(rawHeaders)) {
+  if (
+    !rawHeaders ||
+    typeof rawHeaders !== "object" ||
+    Array.isArray(rawHeaders)
+  ) {
     return {};
   }
   return Object.fromEntries(
-    Object.entries(rawHeaders as Record<string, unknown>).map(([key, value]) => [
-      key,
-      String(value || ""),
-    ]),
+    Object.entries(rawHeaders as Record<string, unknown>).map(
+      ([key, value]) => [key, String(value || "")],
+    ),
   );
 }
 
@@ -200,7 +208,9 @@ function buildPreflightConfigSignature(
   const headers = getConfigHeaders(configValue);
   const stableHeaders = Object.fromEntries(
     Object.entries(headers)
-      .filter(([key]) => key.toLowerCase() !== ZOTERO_MCP_SCOPE_HEADER.toLowerCase())
+      .filter(
+        ([key]) => key.toLowerCase() !== ZOTERO_MCP_SCOPE_HEADER.toLowerCase(),
+      )
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => [key, hashString(value)]),
   );
@@ -322,16 +332,20 @@ function parseMcpJsonResponse(params: {
     error?: { message?: unknown };
   };
   if (parsed.error) {
-    throw new Error(String(parsed.error.message || JSON.stringify(parsed.error)));
+    throw new Error(
+      String(parsed.error.message || JSON.stringify(parsed.error)),
+    );
   }
   return parsed.result;
 }
 
-export async function preflightCodexZoteroMcpServer(params: {
-  serverName?: string;
-  scopeToken?: string;
-  required?: boolean;
-} = {}): Promise<CodexNativeMcpSetupStatus> {
+export async function preflightCodexZoteroMcpServer(
+  params: {
+    serverName?: string;
+    scopeToken?: string;
+    required?: boolean;
+  } = {},
+): Promise<CodexNativeMcpSetupStatus> {
   const serverName = params.serverName || ZOTERO_MCP_SERVER_NAME;
   const cacheConfigValue = buildZoteroMcpConfigValue({
     required: params.required,

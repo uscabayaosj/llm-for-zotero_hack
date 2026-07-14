@@ -118,8 +118,7 @@ describe("conversation registry", function () {
 
   it("allows implicit validation for same-scope legacy conversation ids", async function () {
     const conversationKey = 2_000_000_003;
-    const legacyConversationID =
-      "llm-chat:v1:profile-dev:upstream:2000000000";
+    const legacyConversationID = "llm-chat:v1:profile-dev:upstream:2000000000";
     const canonicalConversationID = buildConversationID({
       conversationKey,
       system: "upstream",
@@ -201,7 +200,9 @@ describe("conversation registry", function () {
           ) {
             return [row];
           }
-          if (sql.includes("INSERT INTO llm_for_zotero_conversation_registry")) {
+          if (
+            sql.includes("INSERT INTO llm_for_zotero_conversation_registry")
+          ) {
             if (sql.includes("valid = 1")) row.valid = 1;
             if (sql.includes("invalid_reason = NULL")) {
               row.invalidReason = "";
@@ -251,7 +252,9 @@ describe("conversation registry", function () {
             const row = rows.get(Number(queryParams[0]));
             return row ? [row] : [];
           }
-          if (sql.includes("INSERT INTO llm_for_zotero_conversation_registry")) {
+          if (
+            sql.includes("INSERT INTO llm_for_zotero_conversation_registry")
+          ) {
             const [
               conversationID,
               legacyConversationKey,

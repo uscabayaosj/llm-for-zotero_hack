@@ -20,8 +20,7 @@ export type ConversationForkLink = {
   createdAt: number;
 };
 
-const CONVERSATION_FORK_LINKS_TABLE =
-  "llm_for_zotero_conversation_fork_links";
+const CONVERSATION_FORK_LINKS_TABLE = "llm_for_zotero_conversation_fork_links";
 const CONVERSATION_FORK_LINKS_SOURCE_INDEX =
   "llm_for_zotero_conversation_fork_links_source_idx";
 
@@ -48,10 +47,14 @@ function normalizeString(value: unknown): string | undefined {
 }
 
 function normalizeLink(value: ConversationForkLink): ConversationForkLink {
-  const targetConversationKey = normalizePositiveInt(value.targetConversationKey);
+  const targetConversationKey = normalizePositiveInt(
+    value.targetConversationKey,
+  );
   const targetSystem = normalizeSystem(value.targetSystem);
   const targetKind = normalizeKind(value.targetKind);
-  const sourceConversationKey = normalizePositiveInt(value.sourceConversationKey);
+  const sourceConversationKey = normalizePositiveInt(
+    value.sourceConversationKey,
+  );
   const sourceSystem = normalizeSystem(value.sourceSystem);
   const sourceKind = normalizeKind(value.sourceKind);
   const sourceLibraryID = normalizePositiveInt(value.sourceLibraryID);
@@ -137,8 +140,7 @@ function rowToForkLink(row: Record<string, unknown> | undefined | null) {
     sourceSystem,
     sourceKind,
     sourceLibraryID,
-    sourcePaperItemID:
-      normalizePositiveInt(row.sourcePaperItemID) || undefined,
+    sourcePaperItemID: normalizePositiveInt(row.sourcePaperItemID) || undefined,
     sourceAssistantTimestamp,
     targetAnchorAssistantTimestamp,
     createdAt,

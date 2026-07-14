@@ -72,7 +72,10 @@ function normalizePositiveInt(value: unknown): number | null {
 
 function normalizeText(value: unknown, maxLength = 256): string {
   if (typeof value !== "string") return "";
-  return value.replace(/[\u0000-\u001F\u007F]/g, " ").trim().slice(0, maxLength);
+  return value
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
@@ -87,7 +90,9 @@ function normalizeKind(value: unknown): RegistryConversationKind | null {
 
 function normalizeTimestamp(value: unknown): number {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : Date.now();
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : Date.now();
 }
 
 function normalizeConversationID(value: unknown): string {
@@ -109,8 +114,11 @@ export function buildProfileSignature(profileDir: string): string {
 
 export function getCurrentProfileSignature(): string {
   const profileDir = normalizeText(
-    (globalThis as typeof globalThis & { Zotero?: { Profile?: { dir?: unknown } } })
-      .Zotero?.Profile?.dir,
+    (
+      globalThis as typeof globalThis & {
+        Zotero?: { Profile?: { dir?: unknown } };
+      }
+    ).Zotero?.Profile?.dir,
     1024,
   );
   return profileDir ? buildProfileSignature(profileDir) : "profile-default";
@@ -127,9 +135,7 @@ export function buildConversationID(params: {
   const conversationKey = normalizePositiveInt(params.conversationKey) || 0;
   const libraryID = normalizePositiveInt(params.libraryID) || 0;
   const paperItemID =
-    params.kind === "paper"
-      ? normalizePositiveInt(params.paperItemID) || 0
-      : 0;
+    params.kind === "paper" ? normalizePositiveInt(params.paperItemID) || 0 : 0;
   const profileSignature =
     normalizeText(params.profileSignature, 128) || getCurrentProfileSignature();
   return [
@@ -143,9 +149,13 @@ export function buildConversationID(params: {
   ].join(":");
 }
 
-function normalizeScope(
-  params: ConversationRegistryScope,
-): (ConversationRegistryRow & { createdAt: number; updatedAt: number; title: string | null }) | null {
+function normalizeScope(params: ConversationRegistryScope):
+  | (ConversationRegistryRow & {
+      createdAt: number;
+      updatedAt: number;
+      title: string | null;
+    })
+  | null {
   const conversationKey = normalizePositiveInt(params.conversationKey);
   const libraryID = normalizePositiveInt(params.libraryID);
   const system = normalizeSystem(params.system);
@@ -171,7 +181,8 @@ function normalizeScope(
     system,
     kind,
     profileSignature:
-      normalizeText(params.profileSignature, 128) || getCurrentProfileSignature(),
+      normalizeText(params.profileSignature, 128) ||
+      getCurrentProfileSignature(),
     libraryID,
     paperItemID,
     valid: true,
@@ -195,28 +206,36 @@ function sameRegistryScope(
 }
 
 function logRegistryWarning(message: string): void {
-  const debug = (globalThis as typeof globalThis & {
-    Zotero?: { debug?: (message: string) => void };
-  }).Zotero?.debug;
+  const debug = (
+    globalThis as typeof globalThis & {
+      Zotero?: { debug?: (message: string) => void };
+    }
+  ).Zotero?.debug;
   debug?.(`LLM: ${message}`);
 }
 
-function getZoteroDb():
-  | { queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown> }
-  | null {
+function getZoteroDb(): {
+  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
+} | null {
   return (
-    (globalThis as typeof globalThis & {
-      Zotero?: { DB?: { queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown> } };
-    }).Zotero?.DB || null
+    (
+      globalThis as typeof globalThis & {
+        Zotero?: {
+          DB?: {
+            queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
+          };
+        };
+      }
+    ).Zotero?.DB || null
   );
 }
 
 async function getTableColumns(tableName: string): Promise<Set<string>> {
   const db = getZoteroDb();
   if (!db?.queryAsync) return new Set();
-  const rows = (await db.queryAsync(
-    `PRAGMA table_info(${tableName})`,
-  )) as Array<{ name?: unknown }> | undefined;
+  const rows = (await db.queryAsync(`PRAGMA table_info(${tableName})`)) as
+    | Array<{ name?: unknown }>
+    | undefined;
   return new Set(
     (rows || [])
       .map((row) => (typeof row.name === "string" ? row.name : ""))
@@ -245,10 +264,15 @@ async function createConversationRegistryTable(): Promise<void> {
   );
 }
 
-async function migrateLegacyRegistrySchema(columns: Set<string>): Promise<void> {
+async function migrateLegacyRegistrySchema(
+  columns: Set<string>,
+): Promise<void> {
   const db = getZoteroDb();
   if (!db?.queryAsync) return;
-  if (!columns.has("conversation_key") || columns.has("legacy_conversation_key")) {
+  if (
+    !columns.has("conversation_key") ||
+    columns.has("legacy_conversation_key")
+  ) {
     return;
   }
   const legacyTable = `${CONVERSATION_REGISTRY_TABLE}_legacy_keyed`;
@@ -613,15 +637,15 @@ export function canMigrateLegacyAmbiguousPaperRegistryScope(
   const paperItemID = normalizePositiveInt(scope.paperItemID);
   return Boolean(
     registered &&
-      !registered.valid &&
-      isLegacyAmbiguousPaperContextInvalidReason(registered.invalidReason) &&
-      scope.kind === "paper" &&
-      libraryID &&
-      paperItemID &&
-      registered.system === scope.system &&
-      registered.kind === "paper" &&
-      registered.libraryID === libraryID &&
-      (registered.paperItemID || 0) === paperItemID,
+    !registered.valid &&
+    isLegacyAmbiguousPaperContextInvalidReason(registered.invalidReason) &&
+    scope.kind === "paper" &&
+    libraryID &&
+    paperItemID &&
+    registered.system === scope.system &&
+    registered.kind === "paper" &&
+    registered.libraryID === libraryID &&
+    (registered.paperItemID || 0) === paperItemID,
   );
 }
 

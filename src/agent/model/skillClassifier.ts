@@ -132,7 +132,9 @@ function buildClassifierPrompt(
     );
   }
   if (request.selectedTagContexts?.length) {
-    context.push(`- Selected tag scopes: ${request.selectedTagContexts.length}`);
+    context.push(
+      `- Selected tag scopes: ${request.selectedTagContexts.length}`,
+    );
   }
 
   return [

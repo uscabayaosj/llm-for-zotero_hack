@@ -252,16 +252,16 @@ function hasPaperTarget(request: SkillRoutingRequest): boolean {
   const context = resolveSkillRequestContext(request);
   return Boolean(
     context.hasSinglePaper ||
-      context.hasPaperSet ||
-      context.singlePaperTargetedByText,
+    context.hasPaperSet ||
+    context.singlePaperTargetedByText,
   );
 }
 
 function hasLibraryScopeTarget(request: SkillRoutingRequest): boolean {
   return Boolean(
     request.selectedCollectionContexts?.length ||
-      request.selectedTagContexts?.length ||
-      LIBRARY_SCOPE_TARGET_PATTERN.test(request.userText || ""),
+    request.selectedTagContexts?.length ||
+    LIBRARY_SCOPE_TARGET_PATTERN.test(request.userText || ""),
   );
 }
 
@@ -306,7 +306,10 @@ function shouldSuppressAutomaticSkill(params: {
   if (forcedIds.has(skillId)) return false;
   if (skillId !== SIMPLE_PAPER_QA_SKILL_ID) return false;
   if (!hasPaperTarget(request)) return true;
-  return hasLibraryScopeTarget(request) && !resolveSkillRequestContext(request).singlePaperTargetedByText;
+  return (
+    hasLibraryScopeTarget(request) &&
+    !resolveSkillRequestContext(request).singlePaperTargetedByText
+  );
 }
 
 export function resolveSkillRouting(

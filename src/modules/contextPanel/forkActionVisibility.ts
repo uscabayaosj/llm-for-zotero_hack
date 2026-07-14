@@ -7,7 +7,9 @@ import {
 } from "./portalScope";
 import type { Message } from "./types";
 
-function normalizeConversationSystem(value: unknown): ConversationSystem | null {
+function normalizeConversationSystem(
+  value: unknown,
+): ConversationSystem | null {
   return value === "upstream" || value === "claude_code" || value === "codex"
     ? value
     : null;

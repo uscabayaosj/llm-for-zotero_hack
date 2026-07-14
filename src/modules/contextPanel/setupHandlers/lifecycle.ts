@@ -38,9 +38,11 @@ export function observeElementDisconnected(
   const ownerWindow = element.ownerDocument?.defaultView;
   const MutationObserverCtor =
     ownerWindow?.MutationObserver ||
-    (globalThis as typeof globalThis & {
-      MutationObserver?: typeof MutationObserver;
-    }).MutationObserver;
+    (
+      globalThis as typeof globalThis & {
+        MutationObserver?: typeof MutationObserver;
+      }
+    ).MutationObserver;
   if (!MutationObserverCtor || !element.ownerDocument) {
     return () => {};
   }

@@ -55,16 +55,17 @@ export const MAX_SELECTED_IMAGES = 50;
 export const MAX_UPLOAD_PDF_SIZE_BYTES = 50 * 1024 * 1024;
 export const CHAT_ATTACHMENTS_DIR_NAME = "chat-attachments";
 export const PAPER_CONVERSATION_KEY_BASE = UPSTREAM_PAPER_CONVERSATION_KEY_BASE;
-export const GLOBAL_CONVERSATION_KEY_BASE = UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE;
+export const GLOBAL_CONVERSATION_KEY_BASE =
+  UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE;
 export const GLOBAL_HISTORY_LIMIT = 50;
 
-export function isUpstreamGlobalConversationKey(conversationKey: number): boolean {
+export function isUpstreamGlobalConversationKey(
+  conversationKey: number,
+): boolean {
   return isConversationKeyForKind("upstream", "global", conversationKey);
 }
 
-export function formatFigureCountLabel(
-  count: number,
-): string {
+export function formatFigureCountLabel(count: number): string {
   if (count <= 0) return "";
   const noun = count === 1 ? t("Figure") : t("Figures");
   return `${noun} (${count})`;
@@ -106,7 +107,6 @@ export const BUILTIN_SHORTCUT_FILES = [
   { id: "limitations", label: "Limitations", file: "limitations.txt" },
   { id: "mermaid-diagram", label: "Diagram", file: "mermaid-diagram.txt" },
 ] as const;
-
 
 export const STOPWORDS = new Set([
   "an",

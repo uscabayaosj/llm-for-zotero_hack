@@ -242,6 +242,30 @@ function getPageLabelFromElement(
 ): string | undefined {
   let current = element || null;
   while (current) {
+    const explicitPageLabel = current.getAttribute("data-page-label")?.trim();
+    if (explicitPageLabel) return explicitPageLabel;
+
+    const localizationArgs = current.getAttribute("data-l10n-args");
+    if (localizationArgs) {
+      try {
+        const parsed = JSON.parse(localizationArgs) as Record<string, unknown>;
+        const localizedPageLabel = String(
+          parsed.pageLabel ?? parsed.page ?? parsed.label ?? "",
+        ).trim();
+        if (localizedPageLabel) return localizedPageLabel;
+      } catch {
+        // Ignore malformed localization metadata and use the PDF.js fallback.
+      }
+    }
+
+    const ariaLabel = current.getAttribute("aria-label")?.trim();
+    if (ariaLabel) {
+      const pageLabelMatch = ariaLabel.match(
+        /(?:^|\b)page\s*:?\s*([^\s,.]+)(?:\s|[,.]|$)/i,
+      );
+      if (pageLabelMatch?.[1]) return pageLabelMatch[1];
+    }
+
     const pageNumberAttr = current.getAttribute("data-page-number");
     if (pageNumberAttr) {
       return pageNumberAttr;
@@ -709,7 +733,7 @@ function locateCurrentSelectionFromDom(
       selectionText,
       expectedPageIndex,
       pageIndex,
-      getPageLabelFromElement(selectionPageElement),
+      getPageLabelForIndex(reader, pageIndex),
       countRenderedPages(doc),
     );
   }
@@ -741,7 +765,7 @@ export function getCurrentSelectionPageLocationFromReader(
     return {
       contextItemId,
       pageIndex,
-      pageLabel: getPageLabelFromElement(selectionPageElement),
+      pageLabel: getPageLabelForIndex(reader, pageIndex),
       pagesScanned: countRenderedPages(doc),
     };
   }
@@ -756,17 +780,23 @@ export function getPageLabelForIndex(
   if (!Number.isFinite(pageIndex) || pageIndex < 0) return undefined;
   const normalizedPageIndex = Math.floor(pageIndex);
 
+  // PDF.js data-page-number is always the internal 1-based index. Prefer
+  // the viewer's pageLabels array so printed labels such as 431 or iv are
+  // preserved instead of being collapsed to the internal page number 4.
+  const app = getPdfViewerApplication(reader);
+  const labels =
+    app?.pdfViewer?.pageLabels ||
+    app?.pdfViewer?._pageLabels ||
+    app?.pdfDocument?._pageLabels;
+  if (Array.isArray(labels) && labels[normalizedPageIndex]) {
+    return String(labels[normalizedPageIndex]);
+  }
+
   const docs = collectReaderSelectionDocuments(reader);
   for (const doc of docs) {
     const pageElement = getPageElementByIndex(doc, normalizedPageIndex);
     const pageLabel = getPageLabelFromElement(pageElement);
     if (pageLabel) return pageLabel;
-  }
-
-  const app = getPdfViewerApplication(reader);
-  const labels = app?.pdfViewer?.pageLabels;
-  if (Array.isArray(labels) && labels[normalizedPageIndex]) {
-    return String(labels[normalizedPageIndex]);
   }
 
   return `${normalizedPageIndex + 1}`;
@@ -915,7 +945,7 @@ function extractRenderedPageTexts(reader: any): {
       if (!text) continue;
       pagesByIndex.set(pageIndex, {
         pageIndex,
-        pageLabel: getPageLabelFromElement(pageElement) || `${pageIndex + 1}`,
+        pageLabel: getPageLabelForIndex(reader, pageIndex),
         text,
       });
     }

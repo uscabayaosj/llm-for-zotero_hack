@@ -15,7 +15,6 @@ export function getPdfPageRenderScaleForCount(total: number): number {
 // These mirror the equivalent private helpers in agent/services/pdfPageService
 // but live here so contextPanel code can use them without importing agent code.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function unwrapWrappedJsObject<T>(value: T): T {
   if (!value || (typeof value !== "object" && typeof value !== "function")) {
     return value;
@@ -97,7 +96,6 @@ function resolveRenderablePdfPage(value: unknown): RenderablePdfPage | null {
   return null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getPdfViewerApplication(reader: any): any | null {
   const candidates = [
     reader?._internalReader?._lastView,
@@ -125,7 +123,6 @@ export function getPdfViewerApplication(reader: any): any | null {
   return null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getReaderDocument(reader: any): Document | null {
   return (
     reader?._iframeWindow?.document ||
@@ -135,7 +132,6 @@ function getReaderDocument(reader: any): Document | null {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getPdfApplicationDocument(app: any, reader: any): Document | null {
   const candidates = [
     app?.pdfViewer?.container?.ownerDocument,
@@ -181,7 +177,6 @@ function pickLargestCanvas(
   return best;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getPageViewCanvas(
   app: any,
   pageIndex: number,
@@ -222,9 +217,8 @@ function findRenderedPageCanvas(
 }
 
 async function waitForRenderedPageCanvas(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
   timeoutMs = 1800,
@@ -253,7 +247,6 @@ function getCloneInto(): CloneIntoFn | undefined {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getPdfRenderWindow(canvasDoc: Document, reader: any): Window | null {
   try {
     const canvasWindow = unwrapWrappedJsObject(
@@ -591,7 +584,7 @@ function buildManualViewport(
 function scopeViewportForRender(
   viewport: ViewportLike,
   canvasDoc: Document,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
 ): ViewportLike {
   try {
@@ -824,9 +817,8 @@ function dataUrlToBytes(dataUrl: string): Uint8Array | null {
 }
 
 export async function renderPdfPageToDataUrl(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
   options: PdfJsPageRenderOptions = {},
@@ -954,14 +946,18 @@ export async function renderPdfPageToDataUrl(
 }
 
 export async function renderPdfPageToBytes(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
   options: PdfJsPageRenderOptions = {},
 ): Promise<Uint8Array | null> {
-  const dataUrl = await renderPdfPageToDataUrl(app, reader, pageNumber, options);
+  const dataUrl = await renderPdfPageToDataUrl(
+    app,
+    reader,
+    pageNumber,
+    options,
+  );
   return dataUrl ? dataUrlToBytes(dataUrl) : null;
 }
 
@@ -1056,7 +1052,7 @@ export function parsePageRanges(input: string, maxPage: number): number[] {
 /**
  * Navigates the reader to a specific page index (0-based).
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 async function navigateReaderToPage(
   reader: any,
   pageIndex: number,
@@ -1082,9 +1078,8 @@ async function navigateReaderToPage(
  * canvas after off-screen attempts fail.
  */
 export async function capturePdfPageToDataUrl(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
   options: PdfJsPageRenderOptions = {},
@@ -1124,9 +1119,8 @@ export async function capturePdfPageToDataUrl(
 }
 
 export async function capturePdfPageToBytes(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
   options: PdfJsPageRenderOptions = {},

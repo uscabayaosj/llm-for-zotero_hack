@@ -71,11 +71,7 @@ describe("historySearchPopupController helpers", function () {
     const newest = historyEntry(102, 300);
     const tiedNewerKey = historyEntry(103, 300);
 
-    const sorted = sortHistorySearchPopupEntries([
-      older,
-      newest,
-      tiedNewerKey,
-    ]);
+    const sorted = sortHistorySearchPopupEntries([older, newest, tiedNewerKey]);
 
     assert.deepEqual(
       sorted.map((entry) => entry.conversationKey),
@@ -90,7 +86,11 @@ describe("historySearchPopupController helpers", function () {
 
     const mapped = mapHistorySearchPopupResults(
       [first, second],
-      [searchResult(second, 3), searchResult(missing, 2), searchResult(first, 1)],
+      [
+        searchResult(second, 3),
+        searchResult(missing, 2),
+        searchResult(first, 1),
+      ],
     );
 
     assert.deepEqual(
@@ -128,8 +128,14 @@ describe("historySearchPopupController helpers", function () {
     };
 
     assert.equal(getHistoryEntryLabelType(orphan), "orphan");
-    assert.equal(getHistoryEntryLabelType(historyEntry(205, 500, "paper")), "paper");
-    assert.equal(getHistoryEntryLabelType(historyEntry(206, 600, "global")), "library");
+    assert.equal(
+      getHistoryEntryLabelType(historyEntry(205, 500, "paper")),
+      "paper",
+    );
+    assert.equal(
+      getHistoryEntryLabelType(historyEntry(206, 600, "global")),
+      "library",
+    );
   });
 
   it("resolves popup chip theme from rendered surface color", function () {

@@ -1,6 +1,9 @@
 import type { GeneratedChatImage } from "./types";
 
-function cleanGeneratedImageText(value: unknown, maxLength: number): string | undefined {
+function cleanGeneratedImageText(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.trim();
   if (!text) return undefined;
@@ -17,7 +20,9 @@ export function isRenderableGeneratedImageSrc(value: unknown): value is string {
   );
 }
 
-export function normalizeGeneratedChatImages(value: unknown): GeneratedChatImage[] {
+export function normalizeGeneratedChatImages(
+  value: unknown,
+): GeneratedChatImage[] {
   if (!Array.isArray(value)) return [];
   const images: GeneratedChatImage[] = [];
   const seen = new Set<string>();

@@ -52,7 +52,6 @@ import {
   ensureMarkedReaderSelectionTrackingListener,
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
-import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
 import {
   buildPinnedSelectedTextKey,
   isPinnedSelectedText,
@@ -60,7 +59,7 @@ import {
 } from "./setupHandlers/controllers/pinnedContextController";
 import { readNoteSnapshot } from "./noteSnapshot";
 
-type SelectedTextPageLocation = {
+export type SelectedTextPageLocation = {
   contextItemId?: number;
   pageIndex?: number;
   pageLabel?: string;
@@ -1196,6 +1195,59 @@ export function appendSelectedTextContextForItem(
   return true;
 }
 
+export function updateSelectedTextContextLocationForItem(
+  itemId: number,
+  text: string,
+  source: SelectedTextSource,
+  paperContext: PaperContextRef | null | undefined,
+  location: SelectedTextPageLocation | null | undefined,
+): boolean {
+  const normalizedText = normalizeSelectedText(text || "");
+  const normalizedSource = normalizeSelectedTextSource(source);
+  const normalizedPaperContext = normalizePaperContextRefs([paperContext])[0];
+  const contextItemId = normalizePositiveInt(location?.contextItemId);
+  const rawPageIndex = Number(location?.pageIndex);
+  const pageIndex =
+    Number.isFinite(rawPageIndex) && rawPageIndex >= 0
+      ? Math.floor(rawPageIndex)
+      : undefined;
+  const pageLabel =
+    typeof location?.pageLabel === "string" && location.pageLabel.trim()
+      ? location.pageLabel.trim()
+      : pageIndex !== undefined
+        ? `${pageIndex + 1}`
+        : undefined;
+  if (!contextItemId && pageIndex === undefined && !pageLabel) return false;
+
+  const paperIdentity = (context?: PaperContextRef | null): string =>
+    context ? `${context.itemId}:${context.contextItemId}` : "";
+  const expectedPaperIdentity = paperIdentity(normalizedPaperContext);
+  const contexts = getSelectedTextContextEntries(itemId);
+  const index = contexts.findIndex(
+    (entry) =>
+      entry.text === normalizedText &&
+      entry.source === normalizedSource &&
+      paperIdentity(entry.paperContext) === expectedPaperIdentity &&
+      (!contextItemId || entry.contextItemId === contextItemId) &&
+      !Number.isFinite(entry.pageIndex),
+  );
+  if (index < 0) return false;
+
+  const existing = contexts[index];
+  const next = {
+    ...existing,
+    contextItemId: contextItemId || existing.contextItemId,
+    pageIndex,
+    pageLabel,
+  };
+  setSelectedTextContextEntries(itemId, [
+    ...contexts.slice(0, index),
+    next,
+    ...contexts.slice(index + 1),
+  ]);
+  return true;
+}
+
 export function getSelectedTextExpandedIndex(
   itemId: number,
   count: number,
@@ -1706,35 +1758,4 @@ export function refreshActiveNoteChipPreview(body: Element): void {
     "aria-expanded",
     isNoteContextExpanded(contextOwnerId) ? "true" : "false",
   );
-}
-
-export async function includeSelectedTextFromReader(
-  body: Element,
-  item: Zotero.Item,
-  prefetchedText?: string,
-  options?: {
-    paperContext?: PaperContextRef | null;
-    targetItemId?: number | null;
-  },
-): Promise<boolean> {
-  const selectedText =
-    normalizeSelectedText(prefetchedText || "") ||
-    getActiveReaderSelectionText(body.ownerDocument as Document, item);
-  const targetItemId =
-    typeof options?.targetItemId === "number" && options.targetItemId > 0
-      ? Math.floor(options.targetItemId)
-      : item.id;
-  const reader = getActiveReaderForSelectedTab();
-  const location = await resolveCurrentSelectionPageLocationFromReader(
-    reader,
-    selectedText,
-  );
-  return addSelectedTextContext(body, targetItemId, selectedText, {
-    noSelectionStatusText: "No text selected in reader",
-    successStatusText: "Selected text included",
-    focusInput: true,
-    source: "pdf",
-    paperContext: options?.paperContext,
-    location,
-  });
 }

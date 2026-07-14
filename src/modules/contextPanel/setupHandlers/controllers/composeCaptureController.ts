@@ -7,14 +7,13 @@ import {
   selectedImagePreviewExpandedCache,
 } from "../../state";
 import {
-  appendSelectedTextContextForItem,
-  applySelectedTextPreview,
   getActiveContextAttachmentFromTabs,
   getActiveReaderForSelectedTab,
   getActiveReaderSelectionText,
 } from "../../contextResolution";
 import { resolvePaperContextRefFromAttachment } from "../../paperAttribution";
-import { resolveCurrentSelectionPageLocationFromReader } from "../../livePdfSelectionLocator";
+import { getCurrentSelectionPageLocationFromReader } from "../../livePdfSelectionLocator";
+import { includeReaderSelectedText } from "../../readerTextInclusion";
 import {
   captureScreenshotSelection,
   optimizeImageDataUrl,
@@ -127,19 +126,32 @@ export function attachComposeCaptureController(
       body.removeEventListener("click", bodyDelegation.__llmAddTextClick, true);
     }
 
-    let pendingSelectedText = "";
+    let pendingSelection: {
+      text: string;
+      reader: any | null;
+      location: ReturnType<typeof getCurrentSelectionPageLocationFromReader>;
+    } | null = null;
 
     const cacheSelectionBeforeFocusShift = (event: Event) => {
       if (!(event.target as Element)?.closest?.("#llm-select-text")) return;
       const currentItem = activeContextPanels.get(body)?.() ?? deps.getItem();
       if (!currentItem) return;
-      pendingSelectedText = getActiveReaderSelectionText(
+      const selectedText = getActiveReaderSelectionText(
         body.ownerDocument as Document,
         currentItem,
       );
+      if (!selectedText) return;
+      const reader = getActiveReaderForSelectedTab();
+      pendingSelection = {
+        text: selectedText,
+        reader,
+        location: reader
+          ? getCurrentSelectionPageLocationFromReader(reader, selectedText)
+          : null,
+      };
     };
 
-    const addTextClickHandler = async (event: Event) => {
+    const addTextClickHandler = (event: Event) => {
       if (!(event.target as Element)?.closest?.("#llm-select-text")) return;
       event.preventDefault();
       event.stopPropagation();
@@ -152,13 +164,10 @@ export function attachComposeCaptureController(
         ? deps.getConversationKey(currentItem)
         : Number(root?.dataset?.itemId || 0);
 
-      if (!conversationKey) {
-        deps.log("LLM addText: no conversationKey");
-        return;
-      }
-
-      let selectedText = pendingSelectedText;
-      pendingSelectedText = "";
+      let selectedText = pendingSelection?.text || "";
+      let reader = pendingSelection?.reader || null;
+      let selectedTextLocation = pendingSelection?.location || null;
+      pendingSelection = null;
       if (!selectedText) {
         const nextItem = activeContextPanels.get(body)?.() ?? deps.getItem();
         if (nextItem) {
@@ -166,12 +175,12 @@ export function attachComposeCaptureController(
             body.ownerDocument as Document,
             nextItem,
           );
+          reader = getActiveReaderForSelectedTab();
+          selectedTextLocation =
+            reader && selectedText
+              ? getCurrentSelectionPageLocationFromReader(reader, selectedText)
+              : null;
         }
-      }
-      if (!selectedText) {
-        deps.log("LLM addText: no text selected");
-        setStatus(t("Select text in the reader first"), "warning");
-        return;
       }
 
       const readerAttachment = getActiveContextAttachmentFromTabs();
@@ -179,23 +188,15 @@ export function attachComposeCaptureController(
         resolvePaperContextRefFromAttachment(readerAttachment);
       const paperContext = isGlobal ? readerPaperContext : null;
 
-      const reader = getActiveReaderForSelectedTab();
-      const selectedTextLocation =
-        await resolveCurrentSelectionPageLocationFromReader(
-          reader,
-          selectedText,
-        );
-
-      const added = appendSelectedTextContextForItem(
+      void includeReaderSelectedText({
+        body,
         conversationKey,
         selectedText,
-        "pdf",
+        reader,
         paperContext,
-        selectedTextLocation,
-      );
-      if (added) {
-        applySelectedTextPreview(body, conversationKey);
-      }
+        initialLocation: selectedTextLocation,
+        log: deps.log,
+      });
     };
 
     bodyDelegation.__llmAddTextPointerDown =

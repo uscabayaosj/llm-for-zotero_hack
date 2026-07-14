@@ -94,10 +94,11 @@ describe("panelContextLifecycle", function () {
       resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
       "utf8",
     );
-    const initStart = setupSource.indexOf(
-      "Initialize model and preview state",
+    const initStart = setupSource.indexOf("Initialize model and preview state");
+    const coldStartup = setupSource.indexOf(
+      "[webchat] Cold startup",
+      initStart,
     );
-    const coldStartup = setupSource.indexOf("[webchat] Cold startup", initStart);
     const initBlock = setupSource.slice(initStart, coldStartup);
     const applyWebChat = initBlock.indexOf("applyWebChatModeUI();");
     const resetPreview = initBlock.indexOf("resetComposePreviewUI();");

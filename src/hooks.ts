@@ -81,9 +81,8 @@ function runDeferredStartupTask(
 async function ensureStartupUserSkillsLoaded(): Promise<void> {
   if (!startupUserSkillsLoadTask) {
     startupUserSkillsLoadTask = (async () => {
-      const { initUserSkills, loadUserSkills } = await import(
-        "./agent/skills/userSkills"
-      );
+      const { initUserSkills, loadUserSkills } =
+        await import("./agent/skills/userSkills");
       const { setUserSkills } = await import("./agent/skills");
       await initUserSkills();
       setUserSkills(await loadUserSkills());
@@ -112,7 +111,10 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     ztoolkit.log("LLM: Failed to initialize Claude Code store", err);
   }
   try {
-    await measureStartupPhase("Codex App Server store", initCodexAppServerStore);
+    await measureStartupPhase(
+      "Codex App Server store",
+      initCodexAppServerStore,
+    );
     readiness.codexStoreReady = true;
   } catch (err) {
     ztoolkit.log("LLM: Failed to initialize Codex App Server store", err);
@@ -121,7 +123,9 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   return readiness;
 }
 
-function allConversationStoresReady(readiness: ConversationStoreReadiness): boolean {
+function allConversationStoresReady(
+  readiness: ConversationStoreReadiness,
+): boolean {
   return (
     readiness.chatStoreReady &&
     readiness.claudeStoreReady &&
@@ -135,32 +139,31 @@ function scheduleConversationMaintenance(
   if (!allConversationStoresReady(readiness)) return;
 
   runDeferredStartupTask("conversation catalog maintenance", async () => {
-    const { repairConversationCatalogSummaries } = await import(
-      "./shared/conversationIntegrity"
-    );
-    const { markConversationIDTransitionMigrationApplied } = await import(
-      "./shared/conversationSchemaMigrations"
-    );
+    const { repairConversationCatalogSummaries } =
+      await import("./shared/conversationIntegrity");
+    const { markConversationIDTransitionMigrationApplied } =
+      await import("./shared/conversationSchemaMigrations");
     await repairConversationCatalogSummaries();
     await markConversationIDTransitionMigrationApplied();
   });
 
   runDeferredStartupTask("conversation search index refresh", async () => {
-    const { refreshConversationSearchIndex } = await import(
-      "./shared/conversationSearchIndex"
-    );
+    const { refreshConversationSearchIndex } =
+      await import("./shared/conversationSearchIndex");
     await refreshConversationSearchIndex();
   });
 }
 
 function scheduleConversationIntegrityAudit(): void {
   runDeferredStartupTask("conversation integrity audit", async () => {
-    const { auditConversationIntegrity } = await import(
-      "./shared/conversationIntegrity"
-    );
+    const { auditConversationIntegrity } =
+      await import("./shared/conversationIntegrity");
     const report = await auditConversationIntegrity();
     if (!report.ok) {
-      ztoolkit.log("LLM: Conversation history integrity audit found issues", report);
+      ztoolkit.log(
+        "LLM: Conversation history integrity audit found issues",
+        report,
+      );
     }
   });
 }
@@ -168,9 +171,8 @@ function scheduleConversationIntegrityAudit(): void {
 function scheduleClaudeProjectBootstrapIfEnabled(): void {
   if (!getStartupBoolPref("enableClaudeCodeMode")) return;
   runDeferredStartupTask("Claude project bootstrap", async () => {
-    const { ensureClaudeProjectBootstrapIfEnabled } = await import(
-      "./claudeCode/bootstrapGate"
-    );
+    const { ensureClaudeProjectBootstrapIfEnabled } =
+      await import("./claudeCode/bootstrapGate");
     await ensureClaudeProjectBootstrapIfEnabled();
   });
 }
@@ -221,7 +223,10 @@ function scheduleMineruAutoWatchRegistration(): void {
 function scheduleDeferredStartupWork(
   readiness: ConversationStoreReadiness,
 ): void {
-  runDeferredStartupTask("legacy cache migrations", runDeferredLegacyMigrations);
+  runDeferredStartupTask(
+    "legacy cache migrations",
+    runDeferredLegacyMigrations,
+  );
   scheduleConversationMaintenance(readiness);
   scheduleConversationIntegrityAudit();
   scheduleClaudeProjectBootstrapIfEnabled();
@@ -265,9 +270,8 @@ async function onStartup() {
   // Mark initialized as true to confirm plugin loading status
   // outside of the plugin (e.g. scaffold testing process)
   if (__env__ === "test" || __env__ === "development") {
-    const { installWorkflowTestHarness } = await import(
-      "./modules/contextPanel/workflowTestHarness"
-    );
+    const { installWorkflowTestHarness } =
+      await import("./modules/contextPanel/workflowTestHarness");
     installWorkflowTestHarness(addon);
   }
   addon.data.initialized = true;
@@ -300,9 +304,11 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
         void 0;
       }
       try {
-        const pane = (win as unknown as {
-          ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
-        }).ZoteroPane;
+        const pane = (
+          win as unknown as {
+            ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
+          }
+        ).ZoteroPane;
         const selectedItems = pane?.getSelectedItems?.();
         return Array.isArray(selectedItems) ? selectedItems : [];
       } catch {

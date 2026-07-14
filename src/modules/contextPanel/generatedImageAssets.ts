@@ -125,9 +125,7 @@ function decodeBase64Bytes(base64: string): Uint8Array {
   return bytes;
 }
 
-export function isEmbeddableGeneratedImage(
-  image: GeneratedChatImage,
-): boolean {
+export function isEmbeddableGeneratedImage(image: GeneratedChatImage): boolean {
   const normalized = normalizeGeneratedChatImages([image])[0];
   if (!normalized) return false;
   if (resolveNormalizedGeneratedImageLocalPath(normalized)) return true;
@@ -145,7 +143,9 @@ export async function resolveGeneratedImageAsset(
   if (path) {
     const bytes = await readAttachmentBytes(path);
     const mimeType = inferGeneratedImageMimeType(path || normalized.label);
-    const imageWithPath = normalized.path ? normalized : { ...normalized, path };
+    const imageWithPath = normalized.path
+      ? normalized
+      : { ...normalized, path };
     return {
       image: imageWithPath,
       bytes,

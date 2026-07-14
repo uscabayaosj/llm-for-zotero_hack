@@ -79,7 +79,8 @@ export async function importNoteImageAsset(
       (params.imagePath ? await readImageBytes(params.imagePath) : null);
     if (!bytes) return null;
 
-    const mimeType = params.mimeType || inferMimeType(params.imagePath, "image/png");
+    const mimeType =
+      params.mimeType || inferMimeType(params.imagePath, "image/png");
     const blob = new Blob([bytesToArrayBuffer(bytes)], { type: mimeType });
     const Attachments = (Zotero as any).Attachments;
     if (!Attachments?.importEmbeddedImage) return null;
@@ -156,7 +157,9 @@ export async function importLocalImagesIntoNote(
 export function normalizeEmbeddableGeneratedImages(
   images: unknown,
 ): GeneratedChatImage[] {
-  return normalizeGeneratedChatImages(images).filter(isEmbeddableGeneratedImage);
+  return normalizeGeneratedChatImages(images).filter(
+    isEmbeddableGeneratedImage,
+  );
 }
 
 export function formatGeneratedImagesEmbeddedLabel(count: number): string {

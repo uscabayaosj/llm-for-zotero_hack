@@ -4,10 +4,12 @@ export function storedMessageRoleOrderSql(roleColumn = "role"): string {
   return `CASE ${roleColumn} WHEN 'user' THEN 0 WHEN 'assistant' THEN 1 ELSE 2 END`;
 }
 
-export function storedMessageDisplayOrderSql(options: {
-  direction?: StoredMessageOrderDirection;
-  tableAlias?: string;
-} = {}): string {
+export function storedMessageDisplayOrderSql(
+  options: {
+    direction?: StoredMessageOrderDirection;
+    tableAlias?: string;
+  } = {},
+): string {
   const direction = options.direction === "desc" ? "DESC" : "ASC";
   const column = (name: string) =>
     options.tableAlias ? `${options.tableAlias}.${name}` : name;

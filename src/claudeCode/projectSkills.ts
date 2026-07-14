@@ -40,15 +40,18 @@ type OSLike = {
 };
 
 function getToolkitGlobal<T>(name: string): T | undefined {
-  const toolkit = (globalThis as { ztoolkit?: { getGlobal?: (key: string) => unknown } })
-    .ztoolkit;
+  const toolkit = (
+    globalThis as { ztoolkit?: { getGlobal?: (key: string) => unknown } }
+  ).ztoolkit;
   if (!toolkit?.getGlobal) return undefined;
   return toolkit.getGlobal(name) as T | undefined;
 }
 
 function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils ||
-    getToolkitGlobal<IOUtilsLike>("IOUtils");
+  return (
+    (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils ||
+    getToolkitGlobal<IOUtilsLike>("IOUtils")
+  );
 }
 
 function getProcess(): ProcessLike | undefined {
@@ -80,9 +83,11 @@ function getOS(): OSLike | undefined {
 function getNsIFile(): unknown {
   const ci = (globalThis as { Ci?: { nsIFile?: unknown } }).Ci;
   if (ci?.nsIFile) return ci.nsIFile;
-  const components = (globalThis as {
-    Components?: { interfaces?: { nsIFile?: unknown } };
-  }).Components;
+  const components = (
+    globalThis as {
+      Components?: { interfaces?: { nsIFile?: unknown } };
+    }
+  ).Components;
   return components?.interfaces?.nsIFile;
 }
 
@@ -101,16 +106,22 @@ export function getClaudeUserHomeDir(): string {
     getPathUtils()?.homeDir?.trim() ||
     getOS()?.Constants?.Path?.homeDir?.trim() ||
     getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-    (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
+    (
+      Zotero as unknown as { Profile?: { dir?: string } }
+    ).Profile?.dir?.trim() ||
     "";
   if (home) return home;
   throw new Error("Cannot resolve home directory for Claude runtime root");
 }
 
 export function getClaudeProfileDir(): string {
-  const profileDir = (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim();
+  const profileDir = (
+    Zotero as unknown as { Profile?: { dir?: string } }
+  ).Profile?.dir?.trim();
   if (profileDir) return profileDir;
-  throw new Error("Cannot resolve Zotero profile directory for Claude runtime root");
+  throw new Error(
+    "Cannot resolve Zotero profile directory for Claude runtime root",
+  );
 }
 
 export function buildClaudeProfileSignature(profileDir: string): string {
@@ -130,11 +141,7 @@ export function getClaudeProfileSignature(): string {
 export function getClaudeRuntimeRootDir(): string {
   const dataDir = getZoteroDataDir();
   if (dataDir) {
-    return joinLocalPath(
-      dataDir,
-      "agent-runtime",
-      getClaudeProfileSignature(),
-    );
+    return joinLocalPath(dataDir, "agent-runtime", getClaudeProfileSignature());
   }
   return joinLocalPath(
     getClaudeUserHomeDir(),
@@ -189,7 +196,9 @@ export async function ensureClaudeProjectSkillStructure(): Promise<void> {
   await ensureDir(getClaudeProjectCommandsDir());
 }
 
-export async function listClaudeProjectSkillEntries(): Promise<ClaudeProjectSkillEntry[]> {
+export async function listClaudeProjectSkillEntries(): Promise<
+  ClaudeProjectSkillEntry[]
+> {
   const io = getIOUtils();
   if (!io?.exists || !io?.read || !io?.getChildren) return [];
   await ensureClaudeProjectSkillStructure();
@@ -197,7 +206,10 @@ export async function listClaudeProjectSkillEntries(): Promise<ClaudeProjectSkil
   const commandsDir = getClaudeProjectCommandsDir();
   const entries: ClaudeProjectSkillEntry[] = [];
 
-  const readMarkdownEntry = async (filePath: string, fallback: string): Promise<void> => {
+  const readMarkdownEntry = async (
+    filePath: string,
+    fallback: string,
+  ): Promise<void> => {
     const data = await io.read?.(filePath);
     if (!data) return;
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -206,7 +218,9 @@ export async function listClaudeProjectSkillEntries(): Promise<ClaudeProjectSkil
     entries.push({
       name: parseCommandName(raw, fallback),
       filePath,
-      openPath: isSkillFile ? filePath.replace(/[\\/]SKILL\.md$/i, "") : filePath,
+      openPath: isSkillFile
+        ? filePath.replace(/[\\/]SKILL\.md$/i, "")
+        : filePath,
       description: parseDescription(raw),
     });
   };
@@ -255,18 +269,26 @@ export async function listClaudeProjectSkillEntries(): Promise<ClaudeProjectSkil
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function createClaudeProjectSkillTemplate(): Promise<string | null> {
+export async function createClaudeProjectSkillTemplate(): Promise<
+  string | null
+> {
   const io = getIOUtils();
   if (!io?.exists || !io?.write || !io?.makeDirectory) return null;
   await ensureClaudeProjectSkillStructure();
   const encoder = new TextEncoder();
   let index = 1;
   while (index <= 999) {
-    const dirPath = joinLocalPath(getClaudeProjectSkillsDir(), `zotero-skill-${index}`);
+    const dirPath = joinLocalPath(
+      getClaudeProjectSkillsDir(),
+      `zotero-skill-${index}`,
+    );
     const filePath = joinLocalPath(dirPath, "SKILL.md");
     const exists = await io.exists(filePath).catch(() => false);
     if (!exists) {
-      await io.makeDirectory(dirPath, { createAncestors: true, ignoreExisting: true });
+      await io.makeDirectory(dirPath, {
+        createAncestors: true,
+        ignoreExisting: true,
+      });
       const template = `---
 name: zotero-skill-${index}
 description: Claude Code skill for Zotero runtime
@@ -281,13 +303,16 @@ Describe when Claude should use this Zotero-specific skill.`;
   return null;
 }
 
-export async function deleteClaudeProjectSkillFile(filePath: string): Promise<boolean> {
+export async function deleteClaudeProjectSkillFile(
+  filePath: string,
+): Promise<boolean> {
   const io = getIOUtils();
   if (!io?.remove) return false;
   try {
     const normalizedPath = filePath.trim();
     const normalizedSkillsDir = getClaudeProjectSkillsDir();
-    const isSkillEntry = /[\\/]SKILL\.md$/i.test(normalizedPath) &&
+    const isSkillEntry =
+      /[\\/]SKILL\.md$/i.test(normalizedPath) &&
       normalizedPath.startsWith(normalizedSkillsDir);
     if (isSkillEntry) {
       const skillDir = normalizedPath.replace(/[\\/]SKILL\.md$/i, "");

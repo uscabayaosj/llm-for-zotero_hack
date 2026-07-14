@@ -88,9 +88,20 @@ export type WorkflowTestReaderSelectionTrackingDiagnostics = {
   elapsedMs: number;
 };
 
+export type WorkflowTestReaderPopupRoutingDiagnostics = {
+  firstReaderTabId: string;
+  secondReaderTabId: string;
+  addTextButtonLabel: string;
+  firstConversationHasText: boolean;
+  secondConversationHasText: boolean;
+};
+
 export type WorkflowTestHighlightAwareRetrievalDiagnostics = {
+  trigger: "popup" | "action-bar";
   readerItemId: number;
   addTextButtonLabel: string;
+  immediatePreviewText: string;
+  clickToSelectedContextMs: number;
   selectedContext: NonNullable<
     SendQuestionOptions["selectedTextContexts"]
   >[number];
@@ -161,12 +172,21 @@ export type WorkflowTestApi = {
   getLastSend: () => SendQuestionOptions | null;
   getDiagnostics: (panelId?: string) => Promise<WorkflowTestDiagnostics>;
   exerciseReaderSelectionTrackingRecovery: () => Promise<WorkflowTestReaderSelectionTrackingDiagnostics>;
+  exerciseReaderPopupActiveTabRouting: (input: {
+    firstPanelId: string;
+    firstAttachmentItemId: number;
+    secondPanelId: string;
+    secondAttachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+  }) => Promise<WorkflowTestReaderPopupRoutingDiagnostics>;
   exerciseHighlightAwareContextRetrieval: (input: {
     panelId: string;
     attachmentItemId: number;
     pageIndex: number;
     selectedText: string;
     question: string;
+    trigger: "popup" | "action-bar";
   }) => Promise<WorkflowTestHighlightAwareRetrievalDiagnostics>;
   cleanupFixture: (
     fixture:

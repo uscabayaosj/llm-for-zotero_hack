@@ -21,7 +21,10 @@ describe("modelDisplayLabel", function () {
   });
 
   it("keeps other provider labels unchanged", function () {
-    assert.equal(formatDisplayModelName("gpt-4o-mini", "OpenAI"), "gpt-4o-mini");
+    assert.equal(
+      formatDisplayModelName("gpt-4o-mini", "OpenAI"),
+      "gpt-4o-mini",
+    );
     assert.equal(formatDisplayModelName("", "OpenAI (codex auth, legacy)"), "");
   });
 });

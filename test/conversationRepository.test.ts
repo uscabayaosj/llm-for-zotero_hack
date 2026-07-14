@@ -667,7 +667,8 @@ describe("conversationRepository", function () {
     });
     const originalForkThread = codexAppServerForkService.forkThread;
     const originalArchiveThread = codexAppServerForkService.archiveThread;
-    const originalCreateCatalogEntry = conversationRepository.createCatalogEntry;
+    const originalCreateCatalogEntry =
+      conversationRepository.createCatalogEntry;
     const originalGetCatalogEntry = conversationRepository.getCatalogEntry;
     const originalSetCatalogTitle = conversationRepository.setCatalogTitle;
     const forkCalls: string[] = [];
@@ -841,8 +842,14 @@ describe("conversationRepository", function () {
           ],
         ],
       );
-      assert.equal(result?.forkLink.sourceConversationKey, sourceConversationKey);
-      assert.equal(result?.forkLink.targetConversationKey, targetConversationKey);
+      assert.equal(
+        result?.forkLink.sourceConversationKey,
+        sourceConversationKey,
+      );
+      assert.equal(
+        result?.forkLink.targetConversationKey,
+        targetConversationKey,
+      );
     } finally {
       codexAppServerForkService.forkThread = originalForkThread;
       codexAppServerForkService.archiveThread = originalArchiveThread;
@@ -869,8 +876,10 @@ describe("conversationRepository", function () {
     });
     const originalForkThread = codexAppServerForkService.forkThread;
     const originalArchiveThread = codexAppServerForkService.archiveThread;
-    const originalCreateCatalogEntry = conversationRepository.createCatalogEntry;
-    const originalDeleteCatalogEntry = conversationRepository.deleteCatalogEntry;
+    const originalCreateCatalogEntry =
+      conversationRepository.createCatalogEntry;
+    const originalDeleteCatalogEntry =
+      conversationRepository.deleteCatalogEntry;
     const originalGetCatalogEntry = conversationRepository.getCatalogEntry;
     const forkCalls: string[] = [];
     const archiveCalls: string[] = [];

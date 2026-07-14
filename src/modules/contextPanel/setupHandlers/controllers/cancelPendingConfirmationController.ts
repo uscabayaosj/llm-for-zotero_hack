@@ -15,9 +15,7 @@ export function cancelVisiblePendingConfirmationCards(
   ) as HTMLElement[];
   const requestIds = Array.from(
     new Set(
-      cards
-        .map((card) => card.dataset.requestId?.trim() || "")
-        .filter(Boolean),
+      cards.map((card) => card.dataset.requestId?.trim() || "").filter(Boolean),
     ),
   );
 

@@ -40,7 +40,10 @@ class CodexAppServerNativeOnlyAgentAdapter implements AgentModelAdapter {
 }
 
 export function resolveRequestProviderProtocol(
-  request: Pick<AgentRuntimeRequest, "providerProtocol" | "authMode" | "apiBase">,
+  request: Pick<
+    AgentRuntimeRequest,
+    "providerProtocol" | "authMode" | "apiBase"
+  >,
 ): ProviderProtocol {
   return normalizeProviderProtocolForAuthMode({
     protocol: request.providerProtocol,

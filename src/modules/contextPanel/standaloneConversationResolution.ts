@@ -25,7 +25,9 @@ function hasNoUserTurns(summary: ConversationDraftSummary): boolean {
 }
 
 function hasNoProviderThreadState(summary: ConversationDraftSummary): boolean {
-  return !summary.providerSessionId?.trim() && !summary.scopedConversationKey?.trim();
+  return (
+    !summary.providerSessionId?.trim() && !summary.scopedConversationKey?.trim()
+  );
 }
 
 const GENERATED_DRAFT_TITLES = new Set([
@@ -36,7 +38,9 @@ const GENERATED_DRAFT_TITLES = new Set([
   "new codex paper chat",
 ]);
 
-function hasMeaningfulConversationTitle(summary: ConversationDraftSummary): boolean {
+function hasMeaningfulConversationTitle(
+  summary: ConversationDraftSummary,
+): boolean {
   const title = typeof summary.title === "string" ? summary.title.trim() : "";
   if (!title) return false;
   return !GENERATED_DRAFT_TITLES.has(title.toLowerCase());
@@ -158,7 +162,9 @@ export function collapseDuplicateReusableConversationDrafts<
   entries: readonly T[];
   activeConversationKey?: number | null;
 }): T[] {
-  const activeConversationKey = normalizePositiveInt(params.activeConversationKey);
+  const activeConversationKey = normalizePositiveInt(
+    params.activeConversationKey,
+  );
   const selectedByScope = new Map<string, T>();
   const reusableScopeByEntry = new Map<T, string>();
 
@@ -166,7 +172,12 @@ export function collapseDuplicateReusableConversationDrafts<
     if (
       !isReusableConversationDraft({
         summary: entry,
-        kind: entry.kind === "paper" ? "paper" : entry.kind === "global" ? "global" : undefined,
+        kind:
+          entry.kind === "paper"
+            ? "paper"
+            : entry.kind === "global"
+              ? "global"
+              : undefined,
         libraryID: entry.libraryID,
         paperItemID: entry.paperItemID,
       })
@@ -183,8 +194,12 @@ export function collapseDuplicateReusableConversationDrafts<
     }
     const entryKey = normalizePositiveInt(entry.conversationKey);
     const selectedKey = normalizePositiveInt(selected.conversationKey);
-    const entryIsActive = Boolean(activeConversationKey && entryKey === activeConversationKey);
-    const selectedIsActive = Boolean(activeConversationKey && selectedKey === activeConversationKey);
+    const entryIsActive = Boolean(
+      activeConversationKey && entryKey === activeConversationKey,
+    );
+    const selectedIsActive = Boolean(
+      activeConversationKey && selectedKey === activeConversationKey,
+    );
     if (entryIsActive !== selectedIsActive) {
       if (entryIsActive) selectedByScope.set(scopeKey, entry);
       continue;
@@ -193,7 +208,8 @@ export function collapseDuplicateReusableConversationDrafts<
     const selectedTimestamp = normalizeActivityTimestamp(selected);
     if (
       entryTimestamp > selectedTimestamp ||
-      (entryTimestamp === selectedTimestamp && (entryKey || 0) > (selectedKey || 0))
+      (entryTimestamp === selectedTimestamp &&
+        (entryKey || 0) > (selectedKey || 0))
     ) {
       selectedByScope.set(scopeKey, entry);
     }

@@ -78,7 +78,10 @@ export const MCP_METHODS = {
   TOOLS_CALL: "tools/call",
 } as const;
 
-export function makeResult(id: string | number | null, result: unknown): JsonRpcResponse {
+export function makeResult(
+  id: string | number | null,
+  result: unknown,
+): JsonRpcResponse {
   return { jsonrpc: "2.0", id, result };
 }
 

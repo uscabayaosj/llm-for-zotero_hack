@@ -287,7 +287,10 @@ describe("historyLoader", function () {
       },
     };
 
-    const rows = await loadAllConversationHistory({ libraryID: 1, limit: null });
+    const rows = await loadAllConversationHistory({
+      libraryID: 1,
+      limit: null,
+    });
 
     assert.lengthOf(rows, 2);
     assert.isFalse(

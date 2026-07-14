@@ -304,10 +304,7 @@ export function renderAgentActionsInSlashMenu(
           hasPaperScopeProfile,
         )
       ) {
-        const parsedInput = isPagedLibraryActionForMode(
-          action.name,
-          actionMode,
-        )
+        const parsedInput = isPagedLibraryActionForMode(action.name, actionMode)
           ? parseCommandParams(action.name, "", actionMode)
           : undefined;
         void context.executeAgentAction(action, parsedInput, userQuery);

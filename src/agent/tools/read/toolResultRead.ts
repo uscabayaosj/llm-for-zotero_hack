@@ -198,8 +198,8 @@ async function executeToolResultRead(
   const currentSignature = context.resourceSignature;
   const isStaleScope = Boolean(
     record.resourceSignature &&
-      currentSignature &&
-      record.resourceSignature !== currentSignature,
+    currentSignature &&
+    record.resourceSignature !== currentSignature,
   );
   if (isStaleScope) {
     warnings.push(

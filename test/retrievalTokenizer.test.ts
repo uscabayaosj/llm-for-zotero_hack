@@ -69,7 +69,9 @@ describe("retrievalTokenizer", function () {
   });
 
   it("uses multilingual tokens for diversity overlap", function () {
-    const first = tokenizeRetrievalDiversity("이 논문은 표현학습 방법을 제안한다");
+    const first = tokenizeRetrievalDiversity(
+      "이 논문은 표현학습 방법을 제안한다",
+    );
     const second = tokenizeRetrievalDiversity("표현학습 접근법을 비교한다");
 
     assert.isTrue(first.has("표현"));

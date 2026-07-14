@@ -1,6 +1,9 @@
 import { getClaudeProfileSignature } from "./projectSkills";
 
-export const activeClaudeGlobalConversationByLibrary = new Map<string, number>();
+export const activeClaudeGlobalConversationByLibrary = new Map<
+  string,
+  number
+>();
 export const activeClaudeConversationModeByLibrary = new Map<
   string,
   "paper" | "global"

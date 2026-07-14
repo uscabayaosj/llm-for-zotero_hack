@@ -49,7 +49,8 @@ export function createReadPaperTool(
             properties: {
               contextItemId: {
                 type: "number",
-                description: "Zotero attachment item ID (from paper context or query results)",
+                description:
+                  "Zotero attachment item ID (from paper context or query results)",
               },
               itemId: {
                 type: "number",
@@ -103,16 +104,12 @@ export function createReadPaperTool(
           const a = args as Record<string, unknown> | null;
           if (a?.chunkIndexes) return "Reading specific paper chunks";
           const count = Array.isArray(a?.targets) ? a.targets.length : 1;
-          return count > 1
-            ? `Reading ${count} papers`
-            : "Reading paper";
+          return count > 1 ? `Reading ${count} papers` : "Reading paper";
         },
         onSuccess: ({ content }) => {
           const c = content as { results?: unknown[] } | null;
           const count = Array.isArray(c?.results) ? c.results.length : 1;
-          return count > 1
-            ? `Read ${count} papers`
-            : "Read paper content";
+          return count > 1 ? `Read ${count} papers` : "Read paper content";
         },
       },
     },
@@ -130,7 +127,11 @@ export function createReadPaperTool(
       if (input.targets && input.targets.length > MAX_TARGETS) {
         return fail(`targets supports at most ${MAX_TARGETS} papers`);
       }
-      if (input.chunkIndexes?.length && input.targets && input.targets.length > 1) {
+      if (
+        input.chunkIndexes?.length &&
+        input.targets &&
+        input.targets.length > 1
+      ) {
         return fail("chunkIndexes can only be used with a single paper target");
       }
       return ok(input);
@@ -140,7 +141,13 @@ export function createReadPaperTool(
         // Read specific chunks from a single paper
         const paperContext =
           input.target?.paperContext ||
-          resolveDefaultTargets(input.target, input.targets, context, zoteroGateway, 1)[0];
+          resolveDefaultTargets(
+            input.target,
+            input.targets,
+            context,
+            zoteroGateway,
+            1,
+          )[0];
         if (!paperContext) {
           throw new Error(describeNoDefaultPaperTarget(context.request));
         }

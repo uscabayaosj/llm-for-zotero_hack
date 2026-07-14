@@ -6,10 +6,7 @@
  * a separate file upload step before the PDF can be referenced in messages.
  */
 
-import {
-  buildManualMultipartBody,
-  type MultipartField,
-} from "./multipart";
+import { buildManualMultipartBody, type MultipartField } from "./multipart";
 
 type UploadResult = {
   systemMessageContent: string;
@@ -41,9 +38,10 @@ export function detectPdfUploadProvider(apiBase: string): PdfUploadProvider {
   return null;
 }
 
-function buildPdfUploadMultipartBody(
-  fields: MultipartField[],
-): { contentType: string; body: BodyInit } {
+function buildPdfUploadMultipartBody(fields: MultipartField[]): {
+  contentType: string;
+  body: BodyInit;
+} {
   const manual = buildManualMultipartBody(fields, {
     boundaryPrefix: "FormBoundary",
     fallbackName: "field",
@@ -74,9 +72,7 @@ function buildPdfUploadMultipartBody(
  */
 function normalizeQwenFileUploadBase(apiBase: string): string {
   const raw = apiBase.replace(/\/+$/, "");
-  const match = raw.match(
-    /^(https?:\/\/dashscope(?:-intl)?\.aliyuncs\.com)/i,
-  );
+  const match = raw.match(/^(https?:\/\/dashscope(?:-intl)?\.aliyuncs\.com)/i);
   if (match) return `${match[1]}/compatible-mode/v1`;
   return raw;
 }
@@ -90,10 +86,19 @@ async function uploadPdfToQwen(
   const fetchFn = getFetch();
   const base = normalizeQwenFileUploadBase(apiBase);
 
-  ztoolkit.log("LLM: Qwen PDF upload starting", { base, fileName, size: pdfBytes.byteLength });
+  ztoolkit.log("LLM: Qwen PDF upload starting", {
+    base,
+    fileName,
+    size: pdfBytes.byteLength,
+  });
 
   const { contentType, body } = buildPdfUploadMultipartBody([
-    { name: "file", filename: fileName, contentType: "application/pdf", data: pdfBytes },
+    {
+      name: "file",
+      filename: fileName,
+      contentType: "application/pdf",
+      data: pdfBytes,
+    },
     { name: "purpose", value: "file-extract" },
   ]);
 
@@ -108,10 +113,15 @@ async function uploadPdfToQwen(
 
   if (!uploadResponse.ok) {
     const errorText = await uploadResponse.text().catch(() => "");
-    throw new Error(`Qwen file upload failed: ${uploadResponse.status} ${errorText.slice(0, 300)}`);
+    throw new Error(
+      `Qwen file upload failed: ${uploadResponse.status} ${errorText.slice(0, 300)}`,
+    );
   }
 
-  const uploadData = (await uploadResponse.json()) as { id?: string; status?: string };
+  const uploadData = (await uploadResponse.json()) as {
+    id?: string;
+    status?: string;
+  };
   ztoolkit.log("LLM: Qwen PDF upload response", uploadData);
   const fileId = uploadData?.id;
   if (!fileId) {
@@ -135,10 +145,19 @@ async function uploadPdfToKimi(
   const fetchFn = getFetch();
   const base = apiBase.replace(/\/+$/, "");
 
-  ztoolkit.log("LLM: Kimi PDF upload starting", { base, fileName, size: pdfBytes.byteLength });
+  ztoolkit.log("LLM: Kimi PDF upload starting", {
+    base,
+    fileName,
+    size: pdfBytes.byteLength,
+  });
 
   const { contentType, body } = buildPdfUploadMultipartBody([
-    { name: "file", filename: fileName, contentType: "application/pdf", data: pdfBytes },
+    {
+      name: "file",
+      filename: fileName,
+      contentType: "application/pdf",
+      data: pdfBytes,
+    },
     { name: "purpose", value: "file-extract" },
   ]);
 
@@ -153,10 +172,15 @@ async function uploadPdfToKimi(
 
   if (!uploadResponse.ok) {
     const errorText = await uploadResponse.text().catch(() => "");
-    throw new Error(`Kimi file upload failed: ${uploadResponse.status} ${errorText.slice(0, 300)}`);
+    throw new Error(
+      `Kimi file upload failed: ${uploadResponse.status} ${errorText.slice(0, 300)}`,
+    );
   }
 
-  const uploadData = (await uploadResponse.json()) as { id?: string; status?: string };
+  const uploadData = (await uploadResponse.json()) as {
+    id?: string;
+    status?: string;
+  };
   ztoolkit.log("LLM: Kimi PDF upload response", uploadData);
   const fileId = uploadData?.id;
   if (!fileId) {
@@ -174,7 +198,9 @@ async function uploadPdfToKimi(
 
   if (!contentResponse.ok) {
     const errorText = await contentResponse.text().catch(() => "");
-    throw new Error(`Kimi file content extraction failed: ${contentResponse.status} ${errorText.slice(0, 300)}`);
+    throw new Error(
+      `Kimi file content extraction failed: ${contentResponse.status} ${errorText.slice(0, 300)}`,
+    );
   }
 
   const extractedText = await contentResponse.text();

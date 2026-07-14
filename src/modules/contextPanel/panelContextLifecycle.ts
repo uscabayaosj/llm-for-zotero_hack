@@ -27,8 +27,8 @@ export function hasPanelContextOwnerChanged(
   if (!isSamePaperConversation(params)) return false;
   return Boolean(
     params.currentContextOwnerItemKey &&
-      params.newContextOwnerItemKey &&
-      params.currentContextOwnerItemKey !== params.newContextOwnerItemKey,
+    params.newContextOwnerItemKey &&
+    params.currentContextOwnerItemKey !== params.newContextOwnerItemKey,
   );
 }
 

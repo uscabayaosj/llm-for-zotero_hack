@@ -993,7 +993,7 @@ function buildLibraryRetrieveCoverageEntries(
             normalizeText(pool.type, 40) === "mixed") &&
           firstTagKey
         ? firstTagKey
-      : libraryResourceKey(libraryID);
+        : libraryResourceKey(libraryID);
   const entries: AgentCoverageEntry[] = [];
   const scopeEntry = createCoverageEntry({
     resourceKey,
@@ -1005,7 +1005,7 @@ function buildLibraryRetrieveCoverageEntries(
           ? "tag resource pool"
           : normalizeText(pool.type, 40) === "mixed"
             ? "mixed resource pool"
-        : "library resource pool"),
+            : "library resource pool"),
     sourceKind: "zotero_metadata",
     topic,
     granularity: "scope",

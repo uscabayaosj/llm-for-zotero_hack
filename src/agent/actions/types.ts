@@ -37,12 +37,19 @@ export type ActionLLMConfig = {
  * - `"mcp_response"`: The action pauses and the confirmation card is returned in the MCP
  *   response body so an external agent can handle it.
  */
-export type ActionConfirmationMode = "native_ui" | "auto_approve" | "mcp_response";
+export type ActionConfirmationMode =
+  | "native_ui"
+  | "auto_approve"
+  | "mcp_response";
 
 export type ActionProgressEvent =
   | { type: "step_start"; step: string; index: number; total: number }
   | { type: "step_done"; step: string; summary?: string }
-  | { type: "confirmation_required"; requestId: string; action: AgentPendingAction }
+  | {
+      type: "confirmation_required";
+      requestId: string;
+      action: AgentPendingAction;
+    }
   | { type: "status"; message: string };
 
 export type ActionServices = {
@@ -102,5 +109,8 @@ export interface AgentAction<TInput = unknown, TOutput = unknown> {
   /** Optional shared scope behavior for paper-scoped slash actions. */
   paperScopeProfile?: PaperScopedActionProfile;
   inputSchema: object;
-  execute(input: TInput, ctx: ActionExecutionContext): Promise<ActionResult<TOutput>>;
+  execute(
+    input: TInput,
+    ctx: ActionExecutionContext,
+  ): Promise<ActionResult<TOutput>>;
 }

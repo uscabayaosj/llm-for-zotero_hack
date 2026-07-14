@@ -126,7 +126,7 @@ export async function resolvePdfModeModelInputs(params: {
   let displayPdfPaperAttachments: ChatAttachment[] = [];
   let modelPdfPaperAttachments: ChatAttachment[] = [];
   let modelSelectedPdfAttachments = selectedPdfFiles;
-  let pdfPageImageDataUrls: string[] = [];
+  const pdfPageImageDataUrls: string[] = [];
   const pdfUploadSystemMessages: string[] = [];
   const hasProviderProcessedPdfs = paperContexts.length > 0 && !isWebChat;
 

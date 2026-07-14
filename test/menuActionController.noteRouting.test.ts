@@ -415,10 +415,8 @@ describe("menu action controller note routing", function () {
       body: body as unknown as Element,
       status: status as unknown as HTMLElement,
       responseMenu: responseMenu as unknown as HTMLDivElement,
-      responseMenuCopyBtn:
-        responseMenuCopyBtn as unknown as HTMLButtonElement,
-      responseMenuNoteBtn:
-        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuCopyBtn: responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn: responseMenuNoteBtn as unknown as HTMLButtonElement,
       responseMenuDeleteBtn: null,
       promptMenu: null,
       promptMenuDeleteBtn: null,
@@ -505,10 +503,8 @@ describe("menu action controller note routing", function () {
       body: body as unknown as Element,
       status: status as unknown as HTMLElement,
       responseMenu: responseMenu as unknown as HTMLDivElement,
-      responseMenuCopyBtn:
-        responseMenuCopyBtn as unknown as HTMLButtonElement,
-      responseMenuNoteBtn:
-        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuCopyBtn: responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn: responseMenuNoteBtn as unknown as HTMLButtonElement,
       responseMenuDeleteBtn: null,
       promptMenu: null,
       promptMenuDeleteBtn: null,
@@ -586,10 +582,8 @@ describe("menu action controller note routing", function () {
       body: body as unknown as Element,
       status: new FakeElement() as unknown as HTMLElement,
       responseMenu: responseMenu as unknown as HTMLDivElement,
-      responseMenuCopyBtn:
-        responseMenuCopyBtn as unknown as HTMLButtonElement,
-      responseMenuNoteBtn:
-        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuCopyBtn: responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn: responseMenuNoteBtn as unknown as HTMLButtonElement,
       responseMenuDeleteBtn:
         responseMenuDeleteBtn as unknown as HTMLButtonElement,
       promptMenu: null,
@@ -977,10 +971,8 @@ describe("menu action controller note routing", function () {
       body: body as unknown as Element,
       status: new FakeElement() as unknown as HTMLElement,
       responseMenu: responseMenu as unknown as HTMLDivElement,
-      responseMenuCopyBtn:
-        responseMenuCopyBtn as unknown as HTMLButtonElement,
-      responseMenuNoteBtn:
-        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuCopyBtn: responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn: responseMenuNoteBtn as unknown as HTMLButtonElement,
       responseMenuDeleteBtn:
         responseMenuDeleteBtn as unknown as HTMLButtonElement,
       promptMenu: null,

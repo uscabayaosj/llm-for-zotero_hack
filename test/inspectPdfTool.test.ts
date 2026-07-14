@@ -27,7 +27,11 @@ describe("search_paper tool", function () {
   it("retrieves evidence across multiple paper contexts", async function () {
     const tool = createSearchPaperTool(
       {
-        retrieveEvidence: async ({ papers }: { papers: Array<{ itemId: number }> }) =>
+        retrieveEvidence: async ({
+          papers,
+        }: {
+          papers: Array<{ itemId: number }>;
+        }) =>
           papers.map((paper, index) => ({
             paperContext: {
               itemId: paper.itemId,
@@ -115,10 +119,13 @@ describe("search_paper tool", function () {
     const results = (result as { results: Array<{ paperContext: unknown }> })
       .results;
     assert.lengthOf(results, 2);
-    assert.deepEqual(results.map((entry) => entry.paperContext), [
-      { itemId: 1, contextItemId: 101, title: "Paper 1" },
-      { itemId: 2, contextItemId: 202, title: "Paper 2" },
-    ]);
+    assert.deepEqual(
+      results.map((entry) => entry.paperContext),
+      [
+        { itemId: 1, contextItemId: 101, title: "Paper 1" },
+        { itemId: 2, contextItemId: 202, title: "Paper 2" },
+      ],
+    );
   });
 
   it("does not fall back to ambient paper context for invalid evidence targets", async function () {
@@ -204,10 +211,7 @@ describe("read_attachment tool", function () {
   };
 
   it("requires confirmation before sending an attached file to the model", async function () {
-    const tool = createReadAttachmentTool(
-      {} as never,
-      {} as never,
-    );
+    const tool = createReadAttachmentTool({} as never, {} as never);
 
     const validated = tool.validate({
       attachFile: true,
@@ -220,7 +224,10 @@ describe("read_attachment tool", function () {
       baseContext,
     );
     assert.isTrue(shouldConfirm);
-    const pending = await tool.createPendingAction?.(validated.value, baseContext);
+    const pending = await tool.createPendingAction?.(
+      validated.value,
+      baseContext,
+    );
     assert.exists(pending);
     assert.equal(pending?.toolName, "read_attachment");
     assert.equal(pending?.confirmLabel, "Send to model");
@@ -229,7 +236,8 @@ describe("read_attachment tool", function () {
   it("reads markdown child attachments with parent-aware source metadata", async function () {
     const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
     (globalThis as { IOUtils?: unknown }).IOUtils = {
-      read: async () => new TextEncoder().encode("Translated markdown content."),
+      read: async () =>
+        new TextEncoder().encode("Translated markdown content."),
     };
     try {
       const parent = {
@@ -270,10 +278,10 @@ describe("read_attachment tool", function () {
       const validated = tool.validate({ target: { contextItemId: 77 } });
       assert.isTrue(validated.ok);
       if (!validated.ok) return;
-      const result = (await tool.execute(validated.value, baseContext)) as Record<
-        string,
-        unknown
-      >;
+      const result = (await tool.execute(
+        validated.value,
+        baseContext,
+      )) as Record<string, unknown>;
       assert.equal(result.textContent, "Translated markdown content.");
       assert.equal(result.sourceMode, "markdown");
       assert.equal(result.sourceType, "Markdown attachment");
@@ -346,10 +354,10 @@ describe("read_attachment tool", function () {
       const validated = tool.validate({ target: { contextItemId: 88 } });
       assert.isTrue(validated.ok);
       if (!validated.ok) return;
-      const result = (await tool.execute(validated.value, baseContext)) as Record<
-        string,
-        unknown
-      >;
+      const result = (await tool.execute(
+        validated.value,
+        baseContext,
+      )) as Record<string, unknown>;
       assert.equal(result.textContent, "Alpha\nBeta");
       assert.equal(result.sourceMode, "docx");
       assert.equal(result.sourceType, "DOCX attachment");
@@ -429,7 +437,8 @@ describe("view_pdf_pages tool", function () {
       };
       (
         globalThis as typeof globalThis & { btoa?: (value: string) => string }
-      ).btoa = (value: string) => Buffer.from(value, "binary").toString("base64");
+      ).btoa = (value: string) =>
+        Buffer.from(value, "binary").toString("base64");
 
       const tool = createViewPdfPagesTool(
         {
@@ -440,7 +449,11 @@ describe("view_pdf_pages tool", function () {
               title: "Paper One",
               contextItemId: 101,
               itemId: 1,
-              paperContext: { itemId: 1, contextItemId: 101, title: "Paper One" },
+              paperContext: {
+                itemId: 1,
+                contextItemId: 101,
+                title: "Paper One",
+              },
             },
             capturedPage: {
               pageIndex: 3,

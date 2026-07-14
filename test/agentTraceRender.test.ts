@@ -1,4 +1,3 @@
-/* eslint-disable mocha/max-top-level-suites -- This file groups related context-panel render suites around shared fake DOM helpers. */
 import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import {

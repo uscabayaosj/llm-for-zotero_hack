@@ -681,9 +681,7 @@ export const conversationRepository = {
     if (params.system === "codex") {
       const latestCodexForkableAssistantTimestamp =
         await getLatestCodexForkableAssistantTimestamp(sourceConversationKey);
-      if (
-        latestCodexForkableAssistantTimestamp !== throughAssistantTimestamp
-      ) {
+      if (latestCodexForkableAssistantTimestamp !== throughAssistantTimestamp) {
         return null;
       }
       forkedCodexThreadId = await codexAppServerForkService.forkThread({

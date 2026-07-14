@@ -1,6 +1,9 @@
 import { assert } from "chai";
 import { afterEach, describe, it } from "mocha";
-import { getClaudeBridgeRuntime, resetClaudeBridgeRuntime } from "../src/claudeCode/runtime";
+import {
+  getClaudeBridgeRuntime,
+  resetClaudeBridgeRuntime,
+} from "../src/claudeCode/runtime";
 
 describe("claude bridge runtime cache", function () {
   afterEach(function () {

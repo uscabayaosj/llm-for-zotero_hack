@@ -15,8 +15,9 @@ function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
 }
 
 describe("GeminiNativeAgentAdapter", function () {
-  const originalToolkit = (globalThis as typeof globalThis & { ztoolkit?: unknown })
-    .ztoolkit;
+  const originalToolkit = (
+    globalThis as typeof globalThis & { ztoolkit?: unknown }
+  ).ztoolkit;
   const tools: ToolSpec[] = [
     {
       name: "query_library",
@@ -111,15 +112,13 @@ describe("GeminiNativeAgentAdapter", function () {
 
     const contents = capturedBody?.contents as Array<Record<string, unknown>>;
     const firstParts = contents?.[0]?.parts as Array<Record<string, unknown>>;
-    const parameters = (
-      (
-        (
-          capturedBody?.tools as Array<Record<string, unknown>>
-        )?.[0]?.functionDeclarations as Array<Record<string, unknown>>
-      )?.[0]?.parameters as Record<string, unknown>
-    ) || { type: "" };
+    const parameters = ((
+      (capturedBody?.tools as Array<Record<string, unknown>>)?.[0]
+        ?.functionDeclarations as Array<Record<string, unknown>>
+    )?.[0]?.parameters as Record<string, unknown>) || { type: "" };
     assert.equal(
-      ((firstParts?.[1]?.inlineData as Record<string, unknown>)?.mimeType as string) || "",
+      ((firstParts?.[1]?.inlineData as Record<string, unknown>)
+        ?.mimeType as string) || "",
       "image/png",
     );
     assert.notInclude(JSON.stringify(capturedBody), "additionalProperties");
@@ -192,24 +191,20 @@ describe("GeminiNativeAgentAdapter", function () {
       ],
     });
 
-    const parameters = (
-      (
-        (
-          capturedBody?.tools as Array<Record<string, unknown>>
-        )?.[0]?.functionDeclarations as Array<Record<string, unknown>>
-      )?.[0]?.parameters as Record<string, unknown>
-    ) || { type: "" };
+    const parameters = ((
+      (capturedBody?.tools as Array<Record<string, unknown>>)?.[0]
+        ?.functionDeclarations as Array<Record<string, unknown>>
+    )?.[0]?.parameters as Record<string, unknown>) || { type: "" };
     const properties = (parameters.properties as Record<string, unknown>) || {};
     assert.equal(parameters.type, "object");
+    assert.equal((properties.pages as Record<string, unknown>).type, "array");
     assert.equal(
-      (properties.pages as Record<string, unknown>).type,
-      "array",
-    );
-    assert.equal(
-      (
-        ((properties.pages as Record<string, unknown>).items as Record<string, unknown>)
-          ?.type as string
-      ) || "",
+      ((
+        (properties.pages as Record<string, unknown>).items as Record<
+          string,
+          unknown
+        >
+      )?.type as string) || "",
       "integer",
     );
     assert.equal(
@@ -221,7 +216,10 @@ describe("GeminiNativeAgentAdapter", function () {
       "string",
     );
     assert.notInclude(JSON.stringify(capturedBody), "additionalProperties");
-    assert.notInclude(JSON.stringify(capturedBody), '["string","number","boolean"]');
+    assert.notInclude(
+      JSON.stringify(capturedBody),
+      '["string","number","boolean"]',
+    );
   });
 
   it("streams final text from native SSE", async function () {
@@ -468,8 +466,10 @@ describe("GeminiNativeAgentAdapter", function () {
     });
 
     assert.equal(secondStep.kind, "final");
-    const contents = (secondRequestBody?.contents as Array<Record<string, unknown>>) || [];
-    const modelParts = (contents[1]?.parts as Array<Record<string, unknown>>) || [];
+    const contents =
+      (secondRequestBody?.contents as Array<Record<string, unknown>>) || [];
+    const modelParts =
+      (contents[1]?.parts as Array<Record<string, unknown>>) || [];
     const functionCall = modelParts[0]?.functionCall as Record<string, unknown>;
     assert.equal(functionCall?.thoughtSignature, "sig-123");
   });
@@ -540,10 +540,11 @@ describe("GeminiNativeAgentAdapter", function () {
       tools,
     });
 
-    const contents = (capturedBody?.contents as Array<{
-      role?: string;
-      parts?: Array<Record<string, unknown>>;
-    }>) || [];
+    const contents =
+      (capturedBody?.contents as Array<{
+        role?: string;
+        parts?: Array<Record<string, unknown>>;
+      }>) || [];
     assert.deepEqual(
       contents.map((content) => content.role),
       ["user", "model", "user", "user"],
@@ -574,7 +575,10 @@ describe("GeminiNativeAgentAdapter", function () {
         { name: "query_library", response: { results: [{ itemId: 102 }] } },
       ],
     );
-    assert.equal(contents[3]?.parts?.[0]?.text, "Use those collection results now");
+    assert.equal(
+      contents[3]?.parts?.[0]?.text,
+      "Use those collection results now",
+    );
   });
 
   it("filters cached Gemini function calls to executed continuation responses", async function () {
@@ -669,10 +673,11 @@ describe("GeminiNativeAgentAdapter", function () {
       tools,
     });
 
-    const secondContents = (requestBodies[1]?.contents as Array<{
-      role?: string;
-      parts?: Array<Record<string, unknown>>;
-    }>) || [];
+    const secondContents =
+      (requestBodies[1]?.contents as Array<{
+        role?: string;
+        parts?: Array<Record<string, unknown>>;
+      }>) || [];
     const modelParts = secondContents[1]?.parts || [];
     assert.deepEqual(modelParts[0], {
       text: "Plan first.",

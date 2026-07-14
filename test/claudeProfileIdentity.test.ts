@@ -53,10 +53,7 @@ describe("Claude profile-aware identity", function () {
       paperTitle: "Paper",
     });
 
-    assert.equal(
-      runtimeRoot,
-      `/zotero-data/agent-runtime/${profileSignature}`,
-    );
+    assert.equal(runtimeRoot, `/zotero-data/agent-runtime/${profileSignature}`);
     assert.equal(paperScope.scopeId, `${profileSignature}:7:42`);
   });
 

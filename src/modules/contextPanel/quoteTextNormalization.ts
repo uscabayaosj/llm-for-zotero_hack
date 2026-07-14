@@ -12,8 +12,7 @@ const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
 const LINE_BREAK_HYPHEN_GAP_PATTERN = /^[\u00ad\s]*[-‐‑‒–—][\u00ad\s]*$/u;
 const SOFT_HYPHEN_GAP_PATTERN = /^[\u00ad\s]+$/u;
 const SOURCE_SPAN_LEADING_BOUNDARY_CHARS = "\"'“‘([";
-const SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN =
-  /[.,;:!?"'”’)\]}。！？、，；：]/;
+const SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN = /[.,;:!?"'”’)\]}。！？、，；：]/;
 
 export type QuoteTextToken = {
   text: string;
@@ -198,7 +197,8 @@ function isCanonicalMatchBoundary(
 ): boolean {
   return (
     (canonicalStart <= 0 || canonicalText[canonicalStart - 1] === " ") &&
-    (canonicalEnd >= canonicalText.length || canonicalText[canonicalEnd] === " ")
+    (canonicalEnd >= canonicalText.length ||
+      canonicalText[canonicalEnd] === " ")
   );
 }
 
@@ -239,7 +239,10 @@ export function countCanonicalTextMatches(
   return count;
 }
 
-function expandSourceSpanStart(sourceText: string, sourceStart: number): number {
+function expandSourceSpanStart(
+  sourceText: string,
+  sourceStart: number,
+): number {
   let cursor = sourceStart;
   while (
     cursor > 0 &&

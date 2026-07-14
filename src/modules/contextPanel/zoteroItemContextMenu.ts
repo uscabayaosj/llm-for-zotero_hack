@@ -92,8 +92,7 @@ export async function dispatchZoteroItemsAsContext(
     if (!preparedTarget) {
       return { dispatched: false, openedStandalone: true };
     }
-    const result =
-      await preparedTarget.addItemsAsDefaultContext(selectedItems);
+    const result = await preparedTarget.addItemsAsDefaultContext(selectedItems);
     await preparedTarget.afterItemsAsDefaultContextAdded?.(
       result,
       selectedItems,

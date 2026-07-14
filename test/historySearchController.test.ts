@@ -165,7 +165,9 @@ describe("historySearchController", function () {
       [
         paper.conversationKey,
         createHistorySearchDocument(paper, [
-          { text: "The paper chat mentions global drift evidence twice: drift drift." },
+          {
+            text: "The paper chat mentions global drift evidence twice: drift drift.",
+          },
         ]),
       ],
       [

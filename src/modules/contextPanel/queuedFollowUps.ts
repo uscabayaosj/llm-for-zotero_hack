@@ -98,7 +98,8 @@ export function registerQueuedFollowUpBody(
   body: Element,
 ): void {
   if (!threadKey) return;
-  const existing = queuedFollowUpBodiesByThread.get(threadKey) || new Set<Element>();
+  const existing =
+    queuedFollowUpBodiesByThread.get(threadKey) || new Set<Element>();
   existing.add(body);
   queuedFollowUpBodiesByThread.set(threadKey, existing);
 }

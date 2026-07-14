@@ -39,14 +39,16 @@ function hasProviderSessionId(value: unknown): boolean {
 export function getLatestCompletedForkableAssistantTimestamp(
   history: readonly ConversationForkEligibilityMessage[] | null | undefined,
 ): number {
-  const latest = [...(history || [])].reverse().find(
-    (message) =>
-      message.role === "assistant" &&
-      !message.streaming &&
-      !message.compactMarker &&
-      !message.webchatRunState &&
-      !message.webchatCompletionReason,
-  );
+  const latest = [...(history || [])]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "assistant" &&
+        !message.streaming &&
+        !message.compactMarker &&
+        !message.webchatRunState &&
+        !message.webchatCompletionReason,
+    );
   return normalizeTimestamp(latest?.timestamp);
 }
 
@@ -61,8 +63,9 @@ export function evaluateConversationForkEligibility(params: {
   sourceProviderSessionId?: string | null;
 }): ConversationForkEligibility {
   const hasHistory = params.history !== undefined && params.history !== null;
-  const latestForkableAssistantTimestamp =
-    hasHistory ? getLatestCompletedForkableAssistantTimestamp(params.history) : 0;
+  const latestForkableAssistantTimestamp = hasHistory
+    ? getLatestCompletedForkableAssistantTimestamp(params.history)
+    : 0;
   const blocked = (
     reason: ConversationForkEligibilityReason,
   ): ConversationForkEligibility => ({

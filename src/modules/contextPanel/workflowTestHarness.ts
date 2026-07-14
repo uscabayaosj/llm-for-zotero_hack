@@ -16,6 +16,7 @@ import type {
   WorkflowTestHighlightAwareRetrievalDiagnostics,
   WorkflowTestNoteFixture,
   WorkflowTestPanel,
+  WorkflowTestReaderPopupRoutingDiagnostics,
   WorkflowTestReaderSelectionTrackingDiagnostics,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestStandaloneDiagnostics,
@@ -57,6 +58,7 @@ import {
 } from "./readerSelectionTracking";
 import { config } from "./constants";
 import { collectReaderSelectionDocuments } from "./readerSelection";
+import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 
 type PanelRecord = {
   id: string;
@@ -1125,24 +1127,44 @@ async function closeWorkflowReader(
   }
 }
 
-async function exerciseHighlightAwareContextRetrieval(input: {
-  panelId: string;
-  attachmentItemId: number;
+async function exerciseReaderPopupActiveTabRouting(input: {
+  firstPanelId: string;
+  firstAttachmentItemId: number;
+  secondPanelId: string;
+  secondAttachmentItemId: number;
   pageIndex: number;
   selectedText: string;
-  question: string;
-}): Promise<WorkflowTestHighlightAwareRetrievalDiagnostics> {
+}): Promise<WorkflowTestReaderPopupRoutingDiagnostics> {
   assertWorkflowTestEnabled();
-  const panel = getPanel(input.panelId);
-  const reader = await openWorkflowPdfReader(
-    input.attachmentItemId,
-    input.pageIndex,
+  const firstPanel = getPanel(input.firstPanelId);
+  const secondPanel = getPanel(input.secondPanelId);
+  const firstReader = await openWorkflowPdfReader(
+    input.firstAttachmentItemId,
+    0,
   );
+  let secondReader: _ZoteroTypes.ReaderInstance | null = null;
   let popupHost: HTMLElement | null = null;
   let selectionDoc: Document | null = null;
   try {
+    secondReader = await openWorkflowPdfReader(
+      input.secondAttachmentItemId,
+      input.pageIndex,
+    );
+    const mainDocument = Zotero.getMainWindow?.()?.document || null;
+    const firstReaderPanel = mainDocument
+      ? getReaderContextPanelForTab(mainDocument, firstReader.tabID)
+      : null;
+    const secondReaderPanel = mainDocument
+      ? getReaderContextPanelForTab(mainDocument, secondReader.tabID)
+      : null;
+    if (!firstReaderPanel || !secondReaderPanel) {
+      throw new Error("Workflow reader tabs do not expose distinct panels");
+    }
+    firstReaderPanel.appendChild(firstPanel.body);
+    secondReaderPanel.appendChild(secondPanel.body);
+
     const selected = await selectWorkflowPdfText({
-      reader,
+      reader: secondReader,
       pageIndex: input.pageIndex,
       selectedText: input.selectedText,
     });
@@ -1159,10 +1181,13 @@ async function exerciseHighlightAwareContextRetrieval(input: {
       throw new Error("Add Text reader selection handler is unavailable");
     }
     await handler({
-      reader,
+      reader: secondReader,
       doc: selected.doc,
       params: {
-        annotation: { text: input.selectedText } as any,
+        annotation: {
+          text: input.selectedText,
+          position: { pageIndex: input.pageIndex },
+        } as any,
       },
       append: (node: Node | string) => popupHost?.append(node),
       type: READER_TEXT_SELECTION_POPUP_EVENT,
@@ -1173,7 +1198,153 @@ async function exerciseHighlightAwareContextRetrieval(input: {
     if (!addTextButton) {
       throw new Error("Add Text button was not rendered in the reader popup");
     }
-    addTextButton.click();
+    const PointerEventCtor = selected.doc.defaultView?.MouseEvent;
+    if (!PointerEventCtor) {
+      throw new Error("Workflow reader window does not expose MouseEvent");
+    }
+    addTextButton.dispatchEvent(
+      new PointerEventCtor("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      }),
+    );
+
+    const secondItem =
+      activeContextPanels.get(secondPanel.body)?.() || secondPanel.item;
+    await waitForSelectedContext({
+      conversationKey: getConversationKey(secondItem),
+      selectedText: input.selectedText,
+      pageIndex: input.pageIndex,
+    });
+    const firstItem =
+      activeContextPanels.get(firstPanel.body)?.() || firstPanel.item;
+    return {
+      firstReaderTabId: `${firstReader.tabID || ""}`,
+      secondReaderTabId: `${secondReader.tabID || ""}`,
+      addTextButtonLabel: addTextButton.textContent?.trim() || "",
+      firstConversationHasText: getSelectedTextContextEntries(
+        getConversationKey(firstItem),
+      ).some((context) => context.text === input.selectedText),
+      secondConversationHasText: getSelectedTextContextEntries(
+        getConversationKey(secondItem),
+      ).some((context) => context.text === input.selectedText),
+    };
+  } finally {
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    popupHost?.remove();
+    if (secondReader) await closeWorkflowReader(secondReader);
+    await closeWorkflowReader(firstReader);
+  }
+}
+
+async function exerciseHighlightAwareContextRetrieval(input: {
+  panelId: string;
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+  question: string;
+  trigger: "popup" | "action-bar";
+}): Promise<WorkflowTestHighlightAwareRetrievalDiagnostics> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(input.panelId);
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  let popupHost: HTMLElement | null = null;
+  let selectionDoc: Document | null = null;
+  try {
+    const mainDocument = Zotero.getMainWindow?.()?.document || null;
+    const readerPanel = mainDocument
+      ? getReaderContextPanelForTab(mainDocument, reader.tabID)
+      : null;
+    if (!readerPanel) {
+      throw new Error("Workflow reader tab does not expose a context panel");
+    }
+    readerPanel.appendChild(panel.body);
+    const selected = await selectWorkflowPdfText({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    selectionDoc = selected.doc;
+    const clickedAt = Date.now();
+    let addTextButtonLabel = "";
+    if (input.trigger === "popup") {
+      popupHost = selected.doc.createElement("div");
+      popupHost.dataset.workflowAddTextPopup = "true";
+      (selected.doc.body || selected.doc.documentElement).appendChild(
+        popupHost,
+      );
+
+      const readerApi =
+        Zotero.Reader as unknown as ReaderSelectionTrackingReader<
+          _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">
+        >;
+      const handler = readerApi.__llmSelectionTracking?.handler;
+      if (!handler) {
+        throw new Error("Add Text reader selection handler is unavailable");
+      }
+      await handler({
+        reader,
+        doc: selected.doc,
+        params: {
+          annotation: { text: input.selectedText } as any,
+        },
+        append: (node: Node | string) => popupHost?.append(node),
+        type: READER_TEXT_SELECTION_POPUP_EVENT,
+      });
+      const addTextButton = (
+        Array.from(popupHost.querySelectorAll("button")) as HTMLButtonElement[]
+      ).find((button) => button.textContent?.trim() === "Add Text");
+      if (!addTextButton) {
+        throw new Error("Add Text button was not rendered in the reader popup");
+      }
+      addTextButtonLabel = addTextButton.textContent?.trim() || "";
+      const PointerEventCtor = selected.doc.defaultView?.MouseEvent;
+      if (!PointerEventCtor) {
+        throw new Error("Workflow reader window does not expose MouseEvent");
+      }
+      addTextButton.dispatchEvent(
+        new PointerEventCtor("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        }),
+      );
+    } else {
+      const addTextButton = panel.body.querySelector(
+        "#llm-select-text",
+      ) as HTMLButtonElement | null;
+      if (!addTextButton) {
+        throw new Error("Include selected text action was not rendered");
+      }
+      addTextButtonLabel = addTextButton.getAttribute("aria-label") || "";
+      const MouseEventCtor =
+        addTextButton.ownerDocument.defaultView?.MouseEvent;
+      if (!MouseEventCtor) {
+        throw new Error("Workflow panel window does not expose MouseEvent");
+      }
+      addTextButton.dispatchEvent(
+        new MouseEventCtor("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        }),
+      );
+      addTextButton.dispatchEvent(
+        new MouseEventCtor("click", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+        }),
+      );
+    }
+    const immediatePreviewText =
+      panel.body
+        .querySelector(".llm-selected-context-text")
+        ?.textContent?.trim() || "";
 
     const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
     const selectedContext = await waitForSelectedContext({
@@ -1181,6 +1352,7 @@ async function exerciseHighlightAwareContextRetrieval(input: {
       selectedText: input.selectedText,
       pageIndex: input.pageIndex,
     });
+    const clickToSelectedContextMs = Date.now() - clickedAt;
 
     lastSend = null;
     lastFinalRequest = null;
@@ -1204,8 +1376,11 @@ async function exerciseHighlightAwareContextRetrieval(input: {
       throw new Error("Final send did not include a resolved highlight anchor");
     }
     return {
+      trigger: input.trigger,
       readerItemId: Number(reader._item?.id || reader.itemID || 0),
-      addTextButtonLabel: addTextButton.textContent?.trim() || "",
+      addTextButtonLabel,
+      immediatePreviewText,
+      clickToSelectedContextMs,
       selectedContext,
       resolvedAnchor,
       lastSend: capturedSend,
@@ -1301,6 +1476,7 @@ export function installWorkflowTestHarness(targetAddon: {
     getLastSend: () => lastSend,
     getDiagnostics,
     exerciseReaderSelectionTrackingRecovery,
+    exerciseReaderPopupActiveTabRouting,
     exerciseHighlightAwareContextRetrieval,
     cleanupFixture,
   };

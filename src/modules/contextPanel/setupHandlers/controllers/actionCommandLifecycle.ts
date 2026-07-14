@@ -26,7 +26,9 @@ export type ActionProgressIndicator = {
 
 export type ActionCommandLifecycle = {
   closeActionHitlPanel: () => void;
-  createActionProgressIndicator: (actionName: string) => ActionProgressIndicator;
+  createActionProgressIndicator: (
+    actionName: string,
+  ) => ActionProgressIndicator;
   showActionCompletionCard: (feedback: ActionCompletionFeedback) => void;
   showActionHitlCard: (
     requestId: string,
@@ -119,7 +121,11 @@ export function getActionTransitionText(actionId: string | undefined): {
   description: string;
 } {
   const pagedText = getPagedReviewTransitionText(actionId);
-  if (actionId === "previous" || actionId === "refresh" || actionId === "next") {
+  if (
+    actionId === "previous" ||
+    actionId === "refresh" ||
+    actionId === "next"
+  ) {
     return pagedText;
   }
   return {
@@ -178,8 +184,7 @@ export function createActionCommandLifecycle(params: {
     actionHitlPanel,
     body,
     chatBox,
-    registerPendingConfirmation =
-      getAgentApi().registerPendingConfirmation,
+    registerPendingConfirmation = getAgentApi().registerPendingConfirmation,
     syncHasActionCardAttr,
   } = params;
   let actionCompletionDismissTimer: ReturnType<typeof setTimeout> | null = null;

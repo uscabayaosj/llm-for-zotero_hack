@@ -42,7 +42,10 @@ describe("conversationDeletion", function () {
           calls.push(`local-${target.kind}:${target.conversationKey}`);
         }
       },
-      clearOwnerAttachmentRefs: async (_ownerType: string, ownerKey: number) => {
+      clearOwnerAttachmentRefs: async (
+        _ownerType: string,
+        ownerKey: number,
+      ) => {
         calls.push(`refs:${ownerKey}`);
       },
       removeConversationAttachmentFiles: async (conversationKey: number) => {
@@ -114,9 +117,7 @@ describe("conversationDeletion", function () {
     assert.deepInclude(logs[0]?.[1] as Record<string, unknown>, {
       reason: "scope_mismatch",
     });
-    assert.isObject(
-      (logs[0]?.[1] as { target?: unknown } | undefined)?.target,
-    );
+    assert.isObject((logs[0]?.[1] as { target?: unknown } | undefined)?.target);
     assert.isObject(
       (logs[0]?.[1] as { registered?: unknown } | undefined)?.registered,
     );
@@ -313,9 +314,7 @@ describe("conversationDeletion", function () {
     assert.isTrue(result.ok);
     assert.include(calls, "compose:44");
     assert.notInclude(calls, "compose:7102");
-    assert.includeMembers(calls, [
-      "local-paper:7102",
-    ]);
+    assert.includeMembers(calls, ["local-paper:7102"]);
   });
 
   it("validates local Codex rows before archiving the native thread", async function () {
@@ -354,7 +353,9 @@ describe("conversationDeletion", function () {
     const calls: string[] = [];
     const operations = createOperations(calls);
     operations.preflightDeleteLocalConversationRows = async (target) => {
-      calls.push(`preflight-${target.conversationSystem}:${target.conversationKey}`);
+      calls.push(
+        `preflight-${target.conversationSystem}:${target.conversationKey}`,
+      );
       throw new Error("ambiguous local rows");
     };
 
@@ -410,10 +411,7 @@ describe("conversationDeletion", function () {
 
     assert.isFalse(result.ok);
     assert.isTrue(result.blocked);
-    assert.deepEqual(calls, [
-      "preflight-codex:8102",
-      "archive:thread-blocked",
-    ]);
+    assert.deepEqual(calls, ["preflight-codex:8102", "archive:thread-blocked"]);
   });
 
   it("allows local Codex deletion when there is no stored native thread id", async function () {
@@ -445,7 +443,9 @@ describe("conversationDeletion", function () {
     const calls: string[] = [];
     const operations = createOperations(calls);
     operations.deleteLocalConversationRows = async (target) => {
-      calls.push(`local-${target.conversationSystem}:${target.conversationKey}`);
+      calls.push(
+        `local-${target.conversationSystem}:${target.conversationKey}`,
+      );
       throw new Error("local transaction failed");
     };
 

@@ -127,10 +127,15 @@ async function tableExists(db: ZoteroDb, tableName: string): Promise<boolean> {
   return Boolean(rows?.length);
 }
 
-function messageJoinCondition(messageAlias: string, conversationAlias: string): string {
-  return `(${messageAlias}.conversation_id = ${conversationAlias}.conversation_id OR ((` +
+function messageJoinCondition(
+  messageAlias: string,
+  conversationAlias: string,
+): string {
+  return (
+    `(${messageAlias}.conversation_id = ${conversationAlias}.conversation_id OR ((` +
     `${messageAlias}.conversation_id IS NULL OR TRIM(${messageAlias}.conversation_id) = '') AND ` +
-    `${messageAlias}.conversation_key = ${conversationAlias}.conversation_key))`;
+    `${messageAlias}.conversation_key = ${conversationAlias}.conversation_key))`
+  );
 }
 
 function firstUserTitleSql(messageTable: string): string {
@@ -142,7 +147,10 @@ function firstUserTitleSql(messageTable: string): string {
            LIMIT 1)`;
 }
 
-function lastActivitySql(messageTable: string, activityFallbackSql: string): string {
+function lastActivitySql(
+  messageTable: string,
+  activityFallbackSql: string,
+): string {
   return `COALESCE(
            (
              SELECT MAX(m.timestamp)
@@ -319,7 +327,8 @@ export async function auditConversationIntegrity(): Promise<ConversationIntegrit
 
     const existingCatalogs = [];
     for (const catalogTable of store.catalogTables) {
-      if (await tableExists(db, catalogTable)) existingCatalogs.push(catalogTable);
+      if (await tableExists(db, catalogTable))
+        existingCatalogs.push(catalogTable);
     }
     if (existingCatalogs.length) {
       const joins = existingCatalogs

@@ -226,10 +226,12 @@ export function createDelegatingTool<TResult = unknown>(params: {
         resolution,
         context,
       );
-      return resolved ? rewriteReviewResolution(resolved, params.name) : {
-        kind: "deliver",
-        toolMessageContent: result.content,
-      };
+      return resolved
+        ? rewriteReviewResolution(resolved, params.name)
+        : {
+            kind: "deliver",
+            toolMessageContent: result.content,
+          };
     },
   };
 }

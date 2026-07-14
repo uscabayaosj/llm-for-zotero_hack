@@ -112,11 +112,15 @@ export function createSearchLiteratureOnlineTool(
       label: "Search Literature Online",
       summaries: {
         onCall: ({ args }) => {
-          const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+          const a =
+            args && typeof args === "object"
+              ? (args as Record<string, unknown>)
+              : {};
           const mode = String(a.mode || "search");
           const author = typeof a.author === "string" ? a.author : undefined;
           const query = typeof a.query === "string" ? a.query : undefined;
-          const detail = author && query ? `${query} by ${author}` : author || query || mode;
+          const detail =
+            author && query ? `${query} by ${author}` : author || query || mode;
           return `Searching live literature (${detail})`;
         },
         onSuccess: ({ content }) => {
@@ -131,7 +135,8 @@ export function createSearchLiteratureOnlineTool(
             : "No online results found";
         },
         onPending: "Waiting for your review of the online search results",
-        onApproved: "Review received - continuing with the selected literature action",
+        onApproved:
+          "Review received - continuing with the selected literature action",
         onDenied: "Stopped after reviewing the online search results",
       },
     },
@@ -151,7 +156,9 @@ export function createSearchLiteratureOnlineTool(
       if (!mode) {
         return fail("mode is required");
       }
-      const paperContext = validateObject<Record<string, unknown>>(args.paperContext)
+      const paperContext = validateObject<Record<string, unknown>>(
+        args.paperContext,
+      )
         ? normalizeToolPaperContext(args.paperContext) || undefined
         : undefined;
       const query =
@@ -170,8 +177,18 @@ export function createSearchLiteratureOnlineTool(
         typeof args.arxivId === "string" && args.arxivId.trim()
           ? args.arxivId.trim()
           : undefined;
-      if (mode === "metadata" && !doi && !title && !arxivId && !query && !itemId && !paperContext) {
-        return fail("metadata mode requires doi, title, arxivId, query, itemId, or paperContext");
+      if (
+        mode === "metadata" &&
+        !doi &&
+        !title &&
+        !arxivId &&
+        !query &&
+        !itemId &&
+        !paperContext
+      ) {
+        return fail(
+          "metadata mode requires doi, title, arxivId, query, itemId, or paperContext",
+        );
       }
       const author =
         typeof args.author === "string" && args.author.trim()
@@ -183,7 +200,9 @@ export function createSearchLiteratureOnlineTool(
       // Only OpenAlex supports recommendations, references, and citations.
       // Auto-correct source for these modes to prevent silent degradation.
       const requiresOpenAlex =
-        mode === "recommendations" || mode === "references" || mode === "citations";
+        mode === "recommendations" ||
+        mode === "references" ||
+        mode === "citations";
       const rawSource =
         args.source === "openalex" ||
         args.source === "arxiv" ||
@@ -216,7 +235,9 @@ export function createSearchLiteratureOnlineTool(
       return {
         workflow: input.workflow,
         mode: input.mode,
-        ...((results && typeof results === "object" ? results : { results }) as object),
+        ...((results && typeof results === "object"
+          ? results
+          : { results }) as object),
       };
     },
     createResultReviewAction: (input, result, context) =>

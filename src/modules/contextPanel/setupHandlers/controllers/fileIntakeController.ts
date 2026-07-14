@@ -19,7 +19,11 @@ type FileIntakeControllerDeps = {
     fileName: string,
     bytes: Uint8Array,
   ) => Promise<{ storedPath: string; contentHash: string }>;
-  selectedImageCache: { get(key: number): string[] | undefined; set(key: number, value: string[]): unknown; delete(key: number): boolean };
+  selectedImageCache: {
+    get(key: number): string[] | undefined;
+    set(key: number, value: string[]): unknown;
+    delete(key: number): boolean;
+  };
   selectedFileAttachmentCache: Map<number, ChatAttachment[]>;
   updateImagePreview: () => void;
   updateFilePreview: () => void;
@@ -47,9 +51,7 @@ const isTextLikeFile = (file: File): boolean => {
   );
 };
 
-const resolveAttachmentCategory = (
-  file: File,
-): ChatAttachment["category"] => {
+const resolveAttachmentCategory = (file: File): ChatAttachment["category"] => {
   const lowerName = (file.name || "").toLowerCase();
   const mime = (file.type || "").toLowerCase();
   if (mime.startsWith("image/")) return "image";
@@ -81,7 +83,8 @@ const readFileAsDataURL = async (
       }
       reject(new Error("Invalid data URL result"));
     };
-    reader.onerror = () => reject(reader.error || new Error("File read failed"));
+    reader.onerror = () =>
+      reject(reader.error || new Error("File read failed"));
     reader.readAsDataURL(file);
   });
 };
@@ -98,7 +101,8 @@ const readFileAsText = async (owner: Element, file: File): Promise<string> => {
       }
       reject(new Error("Invalid text result"));
     };
-    reader.onerror = () => reject(reader.error || new Error("File read failed"));
+    reader.onerror = () =>
+      reject(reader.error || new Error("File read failed"));
     reader.readAsText(file);
   });
 };
@@ -124,7 +128,8 @@ const readFileAsArrayBuffer = async (
       }
       reject(new Error("Invalid arrayBuffer result"));
     };
-    reader.onerror = () => reject(reader.error || new Error("File read failed"));
+    reader.onerror = () =>
+      reject(reader.error || new Error("File read failed"));
     reader.readAsArrayBuffer(file);
   });
 };
@@ -144,9 +149,7 @@ export function isZoteroItemDragEvent(event: DragEvent): boolean {
   return types.includes("zotero/item");
 }
 
-export function parseZoteroItemDragData(
-  data: string | undefined,
-): number[] {
+export function parseZoteroItemDragData(data: string | undefined): number[] {
   if (!data) return [];
   return data
     .split(/[\n,]/)
@@ -187,7 +190,9 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
       deps.getCurrentModel(),
     );
     const nextImages = [...(deps.selectedImageCache.get(item.id) || [])];
-    const nextFiles = [...(deps.selectedFileAttachmentCache.get(item.id) || [])];
+    const nextFiles = [
+      ...(deps.selectedFileAttachmentCache.get(item.id) || []),
+    ];
     let addedCount = 0;
     let replacedCount = 0;
     let blockedPdfCount = 0;
@@ -313,7 +318,8 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
         skippedImageCount > 0 ||
         failedPersistCount > 0)
     ) {
-      const replaceText = replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      const replaceText =
+        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
       const blockedText =
         blockedPdfCount > 0
           ? `, skipped ${blockedPdfCount} unsupported PDF(s)`
@@ -325,7 +331,8 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
       return;
     }
     if (addedCount > 0 || replacedCount > 0) {
-      const replaceText = replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      const replaceText =
+        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
       deps.setStatusMessage(
         `Uploaded ${addedCount} attachment(s)${replaceText}`,
         "ready",

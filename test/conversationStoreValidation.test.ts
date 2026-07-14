@@ -43,7 +43,10 @@ const sampleMessage: StoredChatMessage = {
 };
 
 function installQueryRecorder(
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown[]> = async () => [],
+  queryAsync: (
+    sql: string,
+    params?: unknown[],
+  ) => Promise<unknown[]> = async () => [],
 ): { queries: QueryRecord[]; restore: () => void } {
   const originalZotero = globalThis.Zotero;
   const queries: QueryRecord[] = [];
@@ -121,7 +124,10 @@ describe("conversation store key validation", function () {
   it("rejects Codex-range keys at Claude store boundaries", async function () {
     const { queries, restore } = installQueryRecorder();
     try {
-      await appendClaudeMessage(CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1, sampleMessage);
+      await appendClaudeMessage(
+        CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+        sampleMessage,
+      );
       await upsertClaudeConversationSummary({
         conversationKey: CODEX_PAPER_CONVERSATION_KEY_BASE + 1,
         libraryID: 1,
@@ -137,7 +143,10 @@ describe("conversation store key validation", function () {
   it("rejects Claude-range keys at Codex store boundaries", async function () {
     const { queries, restore } = installQueryRecorder();
     try {
-      await appendCodexMessage(CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1, sampleMessage);
+      await appendCodexMessage(
+        CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1,
+        sampleMessage,
+      );
       await upsertCodexConversationSummary({
         conversationKey: CLAUDE_PAPER_CONVERSATION_KEY_BASE + 1,
         libraryID: 1,
@@ -153,7 +162,10 @@ describe("conversation store key validation", function () {
   it("rejects runtime keys in the upstream chat store", async function () {
     const { queries, restore } = installQueryRecorder();
     try {
-      await appendMessage(CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1, sampleMessage);
+      await appendMessage(
+        CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+        sampleMessage,
+      );
 
       assert.lengthOf(queries, 0);
     } finally {
@@ -232,7 +244,9 @@ describe("conversation store key validation", function () {
       assert.equal(entries[0]?.conversationKey, conversationKey);
       assert.isTrue(
         queries.some((query) =>
-          query.sql.includes("INSERT INTO llm_for_zotero_conversation_registry"),
+          query.sql.includes(
+            "INSERT INTO llm_for_zotero_conversation_registry",
+          ),
         ),
       );
     } finally {
@@ -278,9 +292,10 @@ describe("conversation store key validation", function () {
 
       assert.lengthOf(entries, 1);
       assert.equal(entries[0]?.paperItemID, 3342);
-      const repairUpdate = queries.find((query) =>
-        query.sql.includes("UPDATE llm_for_zotero_codex_conversations") &&
-        query.sql.includes("paper_item_id = ?"),
+      const repairUpdate = queries.find(
+        (query) =>
+          query.sql.includes("UPDATE llm_for_zotero_codex_conversations") &&
+          query.sql.includes("paper_item_id = ?"),
       );
       assert.equal(repairUpdate, undefined);
     } finally {
@@ -318,7 +333,9 @@ describe("conversation store key validation", function () {
       assert.equal(entries[0]?.conversationKey, conversationKey);
       assert.isTrue(
         queries.some((query) =>
-          query.sql.includes("INSERT INTO llm_for_zotero_conversation_registry"),
+          query.sql.includes(
+            "INSERT INTO llm_for_zotero_conversation_registry",
+          ),
         ),
       );
     } finally {
@@ -397,7 +414,9 @@ describe("conversation store key validation", function () {
     });
     try {
       const codexMessages = await loadCodexConversation(codexConversationKey);
-      const claudeMessages = await loadClaudeConversation(claudeConversationKey);
+      const claudeMessages = await loadClaudeConversation(
+        claudeConversationKey,
+      );
 
       assert.equal(codexMessages[0]?.text, "Codex legacy row");
       assert.equal(claudeMessages[0]?.text, "Claude legacy row");
@@ -612,7 +631,9 @@ describe("conversation store key validation", function () {
     try {
       const upstreamMessages = await loadConversation(upstreamConversationKey);
       const codexMessages = await loadCodexConversation(codexConversationKey);
-      const claudeMessages = await loadClaudeConversation(claudeConversationKey);
+      const claudeMessages = await loadClaudeConversation(
+        claudeConversationKey,
+      );
 
       assert.equal(upstreamMessages[0]?.text, "Recovered upstream row");
       assert.equal(codexMessages[0]?.text, "Recovered Codex row");
@@ -852,10 +873,7 @@ describe("conversation store key validation", function () {
         sql.includes("FROM llm_for_zotero_chat_messages") &&
         params?.[0] === conversationKey
       ) {
-        return [
-          { conversationID },
-          { conversationID: staleConversationID },
-        ];
+        return [{ conversationID }, { conversationID: staleConversationID }];
       }
       return [];
     });
@@ -1028,8 +1046,10 @@ describe("misrouted Codex conversation repair", function () {
         return [{ conversationKey: codexKey }];
       }
       if (sql.includes("COUNT(*) AS rowCount")) {
-        if (sql.includes("FROM llm_for_zotero_claude_")) return [{ rowCount: 1 }];
-        if (sql.includes("FROM llm_for_zotero_codex_")) return [{ rowCount: 0 }];
+        if (sql.includes("FROM llm_for_zotero_claude_"))
+          return [{ rowCount: 1 }];
+        if (sql.includes("FROM llm_for_zotero_codex_"))
+          return [{ rowCount: 0 }];
       }
       return [];
     });
@@ -1109,7 +1129,9 @@ describe("chat history startup schema compatibility", function () {
 
   it("adds legacy Claude catalog timestamp columns before creating the activity index", async function () {
     const { queries, restore } = installQueryRecorder(async (sql) => {
-      if (sql.includes("PRAGMA table_info(llm_for_zotero_claude_conversations)")) {
+      if (
+        sql.includes("PRAGMA table_info(llm_for_zotero_claude_conversations)")
+      ) {
         return legacyConversationColumns;
       }
       return [];
@@ -1119,13 +1141,15 @@ describe("chat history startup schema compatibility", function () {
 
       const createdAtColumnIndex = queries.findIndex(
         (query) =>
-          query.sql.includes("ALTER TABLE llm_for_zotero_claude_conversations") &&
-          query.sql.includes("ADD COLUMN created_at INTEGER"),
+          query.sql.includes(
+            "ALTER TABLE llm_for_zotero_claude_conversations",
+          ) && query.sql.includes("ADD COLUMN created_at INTEGER"),
       );
       const updatedAtColumnIndex = queries.findIndex(
         (query) =>
-          query.sql.includes("ALTER TABLE llm_for_zotero_claude_conversations") &&
-          query.sql.includes("ADD COLUMN updated_at INTEGER"),
+          query.sql.includes(
+            "ALTER TABLE llm_for_zotero_claude_conversations",
+          ) && query.sql.includes("ADD COLUMN updated_at INTEGER"),
       );
       const timestampBackfillIndex = queries.findIndex(
         (query) =>
@@ -1152,7 +1176,9 @@ describe("chat history startup schema compatibility", function () {
 
   it("adds legacy Codex catalog timestamp columns before creating the activity index", async function () {
     const { queries, restore } = installQueryRecorder(async (sql) => {
-      if (sql.includes("PRAGMA table_info(llm_for_zotero_codex_conversations)")) {
+      if (
+        sql.includes("PRAGMA table_info(llm_for_zotero_codex_conversations)")
+      ) {
         return legacyConversationColumns;
       }
       return [];
@@ -1162,13 +1188,15 @@ describe("chat history startup schema compatibility", function () {
 
       const createdAtColumnIndex = queries.findIndex(
         (query) =>
-          query.sql.includes("ALTER TABLE llm_for_zotero_codex_conversations") &&
-          query.sql.includes("ADD COLUMN created_at INTEGER"),
+          query.sql.includes(
+            "ALTER TABLE llm_for_zotero_codex_conversations",
+          ) && query.sql.includes("ADD COLUMN created_at INTEGER"),
       );
       const updatedAtColumnIndex = queries.findIndex(
         (query) =>
-          query.sql.includes("ALTER TABLE llm_for_zotero_codex_conversations") &&
-          query.sql.includes("ADD COLUMN updated_at INTEGER"),
+          query.sql.includes(
+            "ALTER TABLE llm_for_zotero_codex_conversations",
+          ) && query.sql.includes("ADD COLUMN updated_at INTEGER"),
       );
       const timestampBackfillIndex = queries.findIndex(
         (query) =>
@@ -1240,12 +1268,16 @@ describe("Claude conversation identity repair", function () {
           query.sql.includes("ORDER BY updatedAt DESC"),
       );
       assert.include(catalogQuery?.sql || "", "AS userTurnCount");
-      assert.include(catalogQuery?.sql || "", "provider_session_id AS providerSessionId");
+      assert.include(
+        catalogQuery?.sql || "",
+        "provider_session_id AS providerSessionId",
+      );
       assert.include(catalogQuery?.sql || "", "model_name AS modelName");
 
-      const repairUpdate = queries.find((query) =>
-        query.sql.includes("UPDATE llm_for_zotero_claude_conversations") &&
-        query.sql.includes("paper_item_id = ?"),
+      const repairUpdate = queries.find(
+        (query) =>
+          query.sql.includes("UPDATE llm_for_zotero_claude_conversations") &&
+          query.sql.includes("paper_item_id = ?"),
       );
       assert.equal(repairUpdate, undefined);
       assert.isFalse(
@@ -1377,16 +1409,20 @@ describe("Codex conversation identity repair", function () {
           query.sql.includes("ORDER BY updatedAt DESC"),
       );
       assert.include(catalogQuery?.sql || "", "AS userTurnCount");
-      assert.include(catalogQuery?.sql || "", "provider_session_id AS providerSessionId");
+      assert.include(
+        catalogQuery?.sql || "",
+        "provider_session_id AS providerSessionId",
+      );
       assert.include(catalogQuery?.sql || "", "model_name AS modelName");
       assert.notInclude(
         catalogQuery?.sql || "",
         "FROM llm_for_zotero_codex_conversations\n",
       );
 
-      const repairUpdate = queries.find((query) =>
-        query.sql.includes("UPDATE llm_for_zotero_codex_conversations") &&
-        query.sql.includes("paper_item_id = ?"),
+      const repairUpdate = queries.find(
+        (query) =>
+          query.sql.includes("UPDATE llm_for_zotero_codex_conversations") &&
+          query.sql.includes("paper_item_id = ?"),
       );
       assert.equal(repairUpdate, undefined);
       assert.isFalse(

@@ -103,8 +103,12 @@ export type ConversationDeletionResult = {
 };
 
 type ConversationDeletionOperations = {
-  preflightDeleteLocalConversationRows: (target: ConversationDeletionTarget) => Promise<void>;
-  deleteLocalConversationRows: (target: ConversationDeletionTarget) => Promise<void>;
+  preflightDeleteLocalConversationRows: (
+    target: ConversationDeletionTarget,
+  ) => Promise<void>;
+  deleteLocalConversationRows: (
+    target: ConversationDeletionTarget,
+  ) => Promise<void>;
   clearOwnerAttachmentRefs: typeof clearOwnerAttachmentRefs;
   removeConversationAttachmentFiles: typeof removeConversationAttachmentFiles;
   archiveCodexThread: (threadId: string) => Promise<void>;
@@ -220,8 +224,7 @@ function buildOperations(
     },
     clearOwnerAttachmentRefs,
     removeConversationAttachmentFiles,
-    archiveCodexThread: (threadId) =>
-      archiveCodexAppServerThread({ threadId }),
+    archiveCodexThread: (threadId) => archiveCodexAppServerThread({ threadId }),
     invalidateClaudeConversation: async (conversationKey, target) => {
       if (!deps.getCoreAgentRuntime) {
         return;
@@ -327,15 +330,19 @@ function clearRememberedSelection(target: ConversationDeletionTarget): void {
     if (target.conversationSystem === "claude_code") {
       const stateKey = buildClaudeLibraryStateKey(target.libraryID);
       if (
-        Math.floor(Number(activeClaudeGlobalConversationByLibrary.get(stateKey) || 0)) ===
-        conversationKey
+        Math.floor(
+          Number(activeClaudeGlobalConversationByLibrary.get(stateKey) || 0),
+        ) === conversationKey
       ) {
         activeClaudeGlobalConversationByLibrary.delete(stateKey);
       }
       const persistedKey = Number(
         getLastUsedClaudeGlobalConversationKey(target.libraryID) || 0,
       );
-      if (Number.isFinite(persistedKey) && Math.floor(persistedKey) === conversationKey) {
+      if (
+        Number.isFinite(persistedKey) &&
+        Math.floor(persistedKey) === conversationKey
+      ) {
         removeLastUsedClaudeGlobalConversationKey(target.libraryID);
       }
       return;
@@ -343,22 +350,27 @@ function clearRememberedSelection(target: ConversationDeletionTarget): void {
     if (target.conversationSystem === "codex") {
       const stateKey = buildCodexLibraryStateKey(target.libraryID);
       if (
-        Math.floor(Number(activeCodexGlobalConversationByLibrary.get(stateKey) || 0)) ===
-        conversationKey
+        Math.floor(
+          Number(activeCodexGlobalConversationByLibrary.get(stateKey) || 0),
+        ) === conversationKey
       ) {
         activeCodexGlobalConversationByLibrary.delete(stateKey);
       }
       const persistedKey = Number(
         getLastUsedCodexGlobalConversationKey(target.libraryID) || 0,
       );
-      if (Number.isFinite(persistedKey) && Math.floor(persistedKey) === conversationKey) {
+      if (
+        Number.isFinite(persistedKey) &&
+        Math.floor(persistedKey) === conversationKey
+      ) {
         removeLastUsedCodexGlobalConversationKey(target.libraryID);
       }
       return;
     }
     if (
-      Math.floor(Number(activeGlobalConversationByLibrary.get(target.libraryID) || 0)) ===
-      conversationKey
+      Math.floor(
+        Number(activeGlobalConversationByLibrary.get(target.libraryID) || 0),
+      ) === conversationKey
     ) {
       activeGlobalConversationByLibrary.delete(target.libraryID);
     }
@@ -378,15 +390,19 @@ function clearRememberedSelection(target: ConversationDeletionTarget): void {
   if (target.conversationSystem === "claude_code") {
     const stateKey = buildClaudePaperStateKey(target.libraryID, paperItemID);
     if (
-      Math.floor(Number(activeClaudePaperConversationByPaper.get(stateKey) || 0)) ===
-      conversationKey
+      Math.floor(
+        Number(activeClaudePaperConversationByPaper.get(stateKey) || 0),
+      ) === conversationKey
     ) {
       activeClaudePaperConversationByPaper.delete(stateKey);
     }
     const persistedKey = Number(
       getLastUsedClaudePaperConversationKey(target.libraryID, paperItemID) || 0,
     );
-    if (Number.isFinite(persistedKey) && Math.floor(persistedKey) === conversationKey) {
+    if (
+      Number.isFinite(persistedKey) &&
+      Math.floor(persistedKey) === conversationKey
+    ) {
       removeLastUsedClaudePaperConversationKey(target.libraryID, paperItemID);
     }
     return;
@@ -394,15 +410,19 @@ function clearRememberedSelection(target: ConversationDeletionTarget): void {
   if (target.conversationSystem === "codex") {
     const stateKey = buildCodexPaperStateKey(target.libraryID, paperItemID);
     if (
-      Math.floor(Number(activeCodexPaperConversationByPaper.get(stateKey) || 0)) ===
-      conversationKey
+      Math.floor(
+        Number(activeCodexPaperConversationByPaper.get(stateKey) || 0),
+      ) === conversationKey
     ) {
       activeCodexPaperConversationByPaper.delete(stateKey);
     }
     const persistedKey = Number(
       getLastUsedCodexPaperConversationKey(target.libraryID, paperItemID) || 0,
     );
-    if (Number.isFinite(persistedKey) && Math.floor(persistedKey) === conversationKey) {
+    if (
+      Number.isFinite(persistedKey) &&
+      Math.floor(persistedKey) === conversationKey
+    ) {
       removeLastUsedCodexPaperConversationKey(target.libraryID, paperItemID);
     }
     return;
@@ -417,7 +437,10 @@ function clearRememberedSelection(target: ConversationDeletionTarget): void {
   const persistedKey = Number(
     getLastUsedPaperConversationKey(target.libraryID, paperItemID) || 0,
   );
-  if (Number.isFinite(persistedKey) && Math.floor(persistedKey) === conversationKey) {
+  if (
+    Number.isFinite(persistedKey) &&
+    Math.floor(persistedKey) === conversationKey
+  ) {
     removeLastUsedPaperConversationKey(target.libraryID, paperItemID);
   }
 }
@@ -447,7 +470,8 @@ export async function finalizeConversationDeletion(
   const resolvedRef = targetConversationID
     ? null
     : await resolveConversationRefForKey(conversationKey);
-  const conversationID = targetConversationID || resolvedRef?.conversationID || "";
+  const conversationID =
+    targetConversationID || resolvedRef?.conversationID || "";
   let normalizedTarget: ConversationDeletionTarget = {
     ...target,
     conversationID: conversationID || undefined,
@@ -498,7 +522,10 @@ export async function finalizeConversationDeletion(
     result,
     "cancel_pending_request",
     "LLM: Failed to cancel pending request for deleted conversation",
-    () => (deps.cancelPendingRequest || defaultCancelPendingRequest)(conversationKey),
+    () =>
+      (deps.cancelPendingRequest || defaultCancelPendingRequest)(
+        conversationKey,
+      ),
     log,
   );
 
@@ -507,7 +534,11 @@ export async function finalizeConversationDeletion(
       result,
       "claude_session",
       "LLM: Failed to invalidate deleted Claude conversation",
-      () => operations.invalidateClaudeConversation(conversationKey, normalizedTarget),
+      () =>
+        operations.invalidateClaudeConversation(
+          conversationKey,
+          normalizedTarget,
+        ),
       log,
     );
   }

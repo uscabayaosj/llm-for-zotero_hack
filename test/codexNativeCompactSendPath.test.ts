@@ -20,10 +20,7 @@ describe("Codex native compact send path", function () {
       "void persistConversationMessage(",
       compactBranch,
     );
-    const userPersist = source.indexOf(
-      'role: "user",',
-      userPersistCall,
-    );
+    const userPersist = source.indexOf('role: "user",', userPersistCall);
     const nativeTurn = source.indexOf(
       "await runCodexAppServerNativeTurn",
       compactBranch,

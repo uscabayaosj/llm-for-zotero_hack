@@ -37,8 +37,11 @@ describe("cancelPendingConfirmationController", function () {
           : [],
     } as unknown as ParentNode;
 
-    const calls: Array<{ requestId: string; approved: boolean; actionId?: string }> =
-      [];
+    const calls: Array<{
+      requestId: string;
+      approved: boolean;
+      actionId?: string;
+    }> = [];
     const resolveConfirmation: ResolvePendingConfirmation = (
       requestId,
       resolution,

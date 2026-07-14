@@ -15,7 +15,10 @@ function prefKey(key: string): string {
   return `${PREF_PREFIX}.${key}`;
 }
 
-function readMap(store: Map<string, unknown>, key: string): Record<string, number> {
+function readMap(
+  store: Map<string, unknown>,
+  key: string,
+): Record<string, number> {
   const raw = store.get(prefKey(key));
   return typeof raw === "string"
     ? (JSON.parse(raw) as Record<string, number>)
@@ -107,7 +110,9 @@ describe("conversation key preference cleanup", function () {
       },
     );
     assert.equal(
-      prefStore.get(prefKey("codexAppServerLastAllocatedGlobalConversationKey")),
+      prefStore.get(
+        prefKey("codexAppServerLastAllocatedGlobalConversationKey"),
+      ),
       0,
     );
     assert.equal(

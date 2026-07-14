@@ -65,7 +65,10 @@ export type ReferenceSelectorPanelLayout = {
   fitPanelsToAvailableHeight: (
     preferredOpenPanel?: ReferenceSelectorPanelKey,
   ) => void;
-  applyPanelHeight: (panel: HTMLElement, key: ReferenceSelectorPanelKey) => void;
+  applyPanelHeight: (
+    panel: HTMLElement,
+    key: ReferenceSelectorPanelKey,
+  ) => void;
   createPanelSeparator: (
     ownerDoc: Document,
     key: ReferenceSelectorPanelKey,
@@ -102,14 +105,18 @@ export function createReferenceSelectorPanelLayout(
 
   const getPanelStackBudget = (): number => {
     const rawMaxHeight =
-      deps.paperPicker?.style.getPropertyValue("--llm-paper-picker-max-height") ||
-      "";
+      deps.paperPicker?.style.getPropertyValue(
+        "--llm-paper-picker-max-height",
+      ) || "";
     const maxHeight = Number.parseFloat(rawMaxHeight);
     const safeMaxHeight =
       Number.isFinite(maxHeight) && maxHeight > 0
         ? maxHeight
         : REFERENCE_SELECTOR_MAX_HEIGHT;
-    return Math.max(0, safeMaxHeight - REFERENCE_SELECTOR_LIST_VERTICAL_PADDING);
+    return Math.max(
+      0,
+      safeMaxHeight - REFERENCE_SELECTOR_LIST_VERTICAL_PADDING,
+    );
   };
 
   const getPanelBudgetHeight = (
@@ -134,7 +141,9 @@ export function createReferenceSelectorPanelLayout(
       Math.min(REFERENCE_SELECTOR_PANEL_MAX_HEIGHT[key], Math.floor(height)),
     );
 
-  const getPanelAvailableMaxHeight = (key: ReferenceSelectorPanelKey): number => {
+  const getPanelAvailableMaxHeight = (
+    key: ReferenceSelectorPanelKey,
+  ): number => {
     const reservedHeight = REFERENCE_SELECTOR_PANEL_KEYS.filter(
       (panelKey) => panelKey !== key,
     ).reduce((total, panelKey) => total + getPanelBudgetHeight(panelKey), 0);
@@ -226,7 +235,8 @@ export function createReferenceSelectorPanelLayout(
   const capturePanelHeights = (): void => {
     for (const [key, panel] of getRenderedPanels()) {
       if (!panel) continue;
-      if (panel.classList.contains("llm-paper-picker-panel-collapsed")) continue;
+      if (panel.classList.contains("llm-paper-picker-panel-collapsed"))
+        continue;
       const rect =
         typeof panel.getBoundingClientRect === "function"
           ? panel.getBoundingClientRect()
@@ -265,15 +275,17 @@ export function createReferenceSelectorPanelLayout(
     return REFERENCE_SELECTOR_PANEL_DEFAULT_HEIGHT[key];
   };
 
-  const captureRenderedPanelHeights =
-    (): Map<ReferenceSelectorPanelKey, number> => {
-      const heights = new Map<ReferenceSelectorPanelKey, number>();
-      for (const [key, panel] of getRenderedPanels()) {
-        const height = getPanelRenderedHeight(panel, key);
-        if (Number.isFinite(height) && height > 0) heights.set(key, height);
-      }
-      return heights;
-    };
+  const captureRenderedPanelHeights = (): Map<
+    ReferenceSelectorPanelKey,
+    number
+  > => {
+    const heights = new Map<ReferenceSelectorPanelKey, number>();
+    for (const [key, panel] of getRenderedPanels()) {
+      const height = getPanelRenderedHeight(panel, key);
+      if (Number.isFinite(height) && height > 0) heights.set(key, height);
+    }
+    return heights;
+  };
 
   const applyPanelHeight = (
     panel: HTMLElement,
@@ -402,7 +414,10 @@ export function createReferenceSelectorPanelLayout(
       return;
     }
     const targetHeight = getPanelRenderedHeight(panel, key);
-    if (!Number.isFinite(targetHeight) || Math.abs(targetHeight - fromHeight) < 1)
+    if (
+      !Number.isFinite(targetHeight) ||
+      Math.abs(targetHeight - fromHeight) < 1
+    )
       return;
     const media = ownerWin.matchMedia?.("(prefers-reduced-motion: reduce)");
     if (media?.matches) return;
@@ -420,11 +435,12 @@ export function createReferenceSelectorPanelLayout(
     shell: HTMLElement,
     previousHeights: Map<ReferenceSelectorPanelKey, number>,
   ): void => {
-    const panels: Array<[ReferenceSelectorPanelKey, HTMLElement | undefined]> = [
-      ["folders", shell.children[0] as HTMLElement | undefined],
-      ["references", shell.children[1] as HTMLElement | undefined],
-      ["tags", shell.children[2] as HTMLElement | undefined],
-    ];
+    const panels: Array<[ReferenceSelectorPanelKey, HTMLElement | undefined]> =
+      [
+        ["folders", shell.children[0] as HTMLElement | undefined],
+        ["references", shell.children[1] as HTMLElement | undefined],
+        ["tags", shell.children[2] as HTMLElement | undefined],
+      ];
     for (const [key, panel] of panels) {
       if (!panel) continue;
       animatePanelHeight(panel, key, previousHeights.get(key));

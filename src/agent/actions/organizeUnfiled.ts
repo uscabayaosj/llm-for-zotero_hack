@@ -562,12 +562,7 @@ async function suggestCollectionsForItems(
 ): Promise<Array<{ itemId: number; collectionId: number }>> {
   if (!ctx.llm || !collections.length) return [];
   return collectActionLlmBatchResults(items, LLM_BATCH_SIZE, (batch) =>
-    suggestCollectionsBatch(
-      batch,
-      collections,
-      userQuery,
-      ctx,
-    ),
+    suggestCollectionsBatch(batch, collections, userQuery, ctx),
   );
 }
 

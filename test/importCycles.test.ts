@@ -2,15 +2,16 @@ import { assert } from "chai";
 import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
-const { checkImportCycles, formatCycle } = require("../scripts/check-import-cycles.cjs") as {
-  checkImportCycles: (root?: string) => {
-    unexpectedRuntime: string[][];
-    staleAllowedRuntime: string[][];
-    unexpectedStatic: string[][];
-    staleAllowedStatic: string[][];
+const { checkImportCycles, formatCycle } =
+  require("../scripts/check-import-cycles.cjs") as {
+    checkImportCycles: (root?: string) => {
+      unexpectedRuntime: string[][];
+      staleAllowedRuntime: string[][];
+      unexpectedStatic: string[][];
+      staleAllowedStatic: string[][];
+    };
+    formatCycle: (cycle: string[]) => string;
   };
-  formatCycle: (cycle: string[]) => string;
-};
 
 function formatCycles(cycles: string[][]): string[] {
   return cycles.map((cycle) => formatCycle(cycle));

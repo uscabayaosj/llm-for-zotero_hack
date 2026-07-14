@@ -1,8 +1,15 @@
 import { initAgentSubsystem } from "../agent";
 import type { AgentEvent } from "../agent/types";
 import { updateClaudeRuntimeRetention, buildClaudeScope } from "./runtime";
-import { CLAUDE_RUNTIME_RELEASE_GRACE_MS, isClaudeConversationKey } from "./constants";
-import { resolveConversationSystemForItem, resolveConversationBaseItem, resolveDisplayConversationKind } from "../modules/contextPanel/portalScope";
+import {
+  CLAUDE_RUNTIME_RELEASE_GRACE_MS,
+  isClaudeConversationKey,
+} from "./constants";
+import {
+  resolveConversationSystemForItem,
+  resolveConversationBaseItem,
+  resolveDisplayConversationKind,
+} from "../modules/contextPanel/portalScope";
 import { getConversationKey } from "../modules/contextPanel/conversationIdentity";
 
 type RetentionTarget = {
@@ -26,7 +33,11 @@ const retainedThreads = new Map<string, ThreadRetentionEntry>();
 const pendingRetentionEventsByBody = new WeakMap<Element, AgentEvent[]>();
 let nextMountOrdinal = 1;
 
-function pushRetentionEvent(body: Element | null | undefined, stage: string, payload?: Record<string, unknown>): void {
+function pushRetentionEvent(
+  body: Element | null | undefined,
+  stage: string,
+  payload?: Record<string, unknown>,
+): void {
   if (!body) return;
   const events = pendingRetentionEventsByBody.get(body) || [];
   events.push({
@@ -47,7 +58,10 @@ export function consumePendingRetentionEvents(body: Element): AgentEvent[] {
   return events;
 }
 
-async function ensureRemoteRetention(entry: ThreadRetentionEntry, body: Element): Promise<void> {
+async function ensureRemoteRetention(
+  entry: ThreadRetentionEntry,
+  body: Element,
+): Promise<void> {
   if (entry.retainInFlight) {
     pushRetentionEvent(body, "frontend.runtime_retention.await_inflight", {
       conversationKey: entry.target.conversationKey,
@@ -83,7 +97,7 @@ async function ensureRemoteRetention(entry: ThreadRetentionEntry, body: Element)
         scopeType: entry.target.scope.scopeType,
         scopeId: entry.target.scope.scopeId,
         mountId: entry.mountId,
-      probeId: entry.probeId,
+        probeId: entry.probeId,
         retainedRemotely: retained,
       });
     })
@@ -93,7 +107,7 @@ async function ensureRemoteRetention(entry: ThreadRetentionEntry, body: Element)
         scopeType: entry.target.scope.scopeType,
         scopeId: entry.target.scope.scopeId,
         mountId: entry.mountId,
-      probeId: entry.probeId,
+        probeId: entry.probeId,
         message: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -114,27 +128,37 @@ function makeProbeId(): string {
 
 const getCoreRuntime = () => initAgentSubsystem();
 
-function resolveRetentionTarget(item: any | null | undefined): RetentionTarget | null {
+function resolveRetentionTarget(
+  item: any | null | undefined,
+): RetentionTarget | null {
   if (!item) return null;
   const conversationKey = getConversationKey(item);
   if (
     resolveConversationSystemForItem(item) !== "claude_code" &&
     !isClaudeConversationKey(conversationKey)
-  ) return null;
+  )
+    return null;
   const kind = resolveDisplayConversationKind(item);
   if (!kind) return null;
   const baseItem = resolveConversationBaseItem(item);
   const libraryID = Number(item.libraryID || baseItem?.libraryID || 0);
-  if (!Number.isFinite(conversationKey) || conversationKey <= 0 || !Number.isFinite(libraryID) || libraryID <= 0) {
+  if (
+    !Number.isFinite(conversationKey) ||
+    conversationKey <= 0 ||
+    !Number.isFinite(libraryID) ||
+    libraryID <= 0
+  ) {
     return null;
   }
   const scope = buildClaudeScope({
     libraryID: Math.floor(libraryID),
     kind,
-    paperItemID: kind === "paper" ? Number(baseItem?.id || 0) || undefined : undefined,
-    paperTitle: kind === "paper"
-      ? String(baseItem?.getField?.("title") || "").trim() || undefined
-      : undefined,
+    paperItemID:
+      kind === "paper" ? Number(baseItem?.id || 0) || undefined : undefined,
+    paperTitle:
+      kind === "paper"
+        ? String(baseItem?.getField?.("title") || "").trim() || undefined
+        : undefined,
   });
   return {
     conversationKey,
@@ -164,15 +188,21 @@ export async function retainClaudeRuntimeForBody(
           void (async () => {
             try {
               await liveEntry.retainInFlight;
-            } catch {}
+            } catch {
+              // Release still needs to proceed after a failed retain attempt.
+            }
             if (!liveEntry.retainedRemotely) return;
-            pushRetentionEvent(liveEntry.lastRetainBody, "frontend.runtime_retention.release_dispatch", {
-              conversationKey: liveEntry.target.conversationKey,
-              scopeType: liveEntry.target.scope.scopeType,
-              scopeId: liveEntry.target.scope.scopeId,
-              mountId: liveEntry.mountId,
-              probeId: liveEntry.probeId,
-            });
+            pushRetentionEvent(
+              liveEntry.lastRetainBody,
+              "frontend.runtime_retention.release_dispatch",
+              {
+                conversationKey: liveEntry.target.conversationKey,
+                scopeType: liveEntry.target.scope.scopeType,
+                scopeId: liveEntry.target.scope.scopeId,
+                mountId: liveEntry.mountId,
+                probeId: liveEntry.probeId,
+              },
+            );
             await updateClaudeRuntimeRetention(await getCoreRuntime(), {
               conversationKey: liveEntry.target.conversationKey,
               scope: liveEntry.target.scope,
@@ -218,7 +248,9 @@ export async function retainClaudeRuntimeForBody(
   await ensureRemoteRetention(entry, body).catch(() => {});
 }
 
-export async function releaseClaudeRuntimeForBody(body: Element): Promise<void> {
+export async function releaseClaudeRuntimeForBody(
+  body: Element,
+): Promise<void> {
   const previousThreadKey = retainedThreadKeyByBody.get(body) || null;
   if (!previousThreadKey) return;
   retainedThreadKeyByBody.delete(body);
@@ -230,13 +262,17 @@ export async function releaseClaudeRuntimeForBody(body: Element): Promise<void> 
     const liveEntry = retainedThreads.get(previousThreadKey);
     if (!liveEntry || liveEntry.bodies.size > 0) return;
     retainedThreads.delete(previousThreadKey);
-    pushRetentionEvent(liveEntry.lastRetainBody, "frontend.runtime_retention.release_dispatch", {
-      conversationKey: liveEntry.target.conversationKey,
-      scopeType: liveEntry.target.scope.scopeType,
-      scopeId: liveEntry.target.scope.scopeId,
-      mountId: liveEntry.mountId,
-      probeId: liveEntry.probeId,
-    });
+    pushRetentionEvent(
+      liveEntry.lastRetainBody,
+      "frontend.runtime_retention.release_dispatch",
+      {
+        conversationKey: liveEntry.target.conversationKey,
+        scopeType: liveEntry.target.scope.scopeType,
+        scopeId: liveEntry.target.scope.scopeId,
+        mountId: liveEntry.mountId,
+        probeId: liveEntry.probeId,
+      },
+    );
     void (async () => {
       await updateClaudeRuntimeRetention(await getCoreRuntime(), {
         conversationKey: liveEntry.target.conversationKey,

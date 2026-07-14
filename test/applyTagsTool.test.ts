@@ -64,9 +64,7 @@ describe("apply_tags tool", function () {
     const rejected = tool.applyConfirmation?.(
       validated.value,
       {
-        "tagAssignments:apply_tags": [
-          { id: "7", value: [] },
-        ],
+        "tagAssignments:apply_tags": [{ id: "7", value: [] }],
       },
       baseContext,
     );

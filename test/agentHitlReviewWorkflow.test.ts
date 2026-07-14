@@ -12,14 +12,19 @@ import type {
   AgentRuntimeRequest,
   AgentToolDefinition,
 } from "../src/agent/types";
-import type { AgentModelAdapter, AgentStepParams } from "../src/agent/model/adapter";
+import type {
+  AgentModelAdapter,
+  AgentStepParams,
+} from "../src/agent/model/adapter";
 
 type MockDbRow = Record<string, unknown>;
 
 function installMockDb() {
   const runs = new Map<string, MockDbRow>();
   const events: MockDbRow[] = [];
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
   (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
     DB: {
       executeTransaction: async (fn: () => Promise<unknown>) => fn(),
@@ -56,12 +61,18 @@ function installMockDb() {
           });
           return [];
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_run_events")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_run_events")
+        ) {
           return events
             .filter((entry) => entry.runId === params[0])
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_runs")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_runs")
+        ) {
           const run = runs.get(String(params[0]));
           return run ? [run] : [];
         }
@@ -81,7 +92,8 @@ class StepAdapter implements AgentModelAdapter {
 
   constructor(
     private readonly steps: Array<
-      AgentModelStep | ((params: AgentStepParams) => Promise<AgentModelStep> | AgentModelStep)
+      | AgentModelStep
+      | ((params: AgentStepParams) => Promise<AgentModelStep> | AgentModelStep)
     >,
     private readonly capabilities: AgentModelCapabilities = {
       streaming: false,
@@ -126,7 +138,9 @@ function makeRequest(
 }
 
 function createStubSearchTool(
-  execute: (input: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>,
+  execute: (
+    input: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>,
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
     spec: {
@@ -158,7 +172,9 @@ function createStubSearchTool(
 
 function createStubFacadeTool(
   toolName: string,
-  execute: (input: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>,
+  execute: (
+    input: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>,
   acceptActionIds: string[] = [],
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
@@ -216,7 +232,13 @@ describe("AgentRuntime HITL review workflow", function () {
                 DOI: "10.1000/a",
                 date: "2024",
                 url: "https://doi.org/10.1000/a",
-                creators: [{ creatorType: "author", name: "Alice Example", fieldMode: 1 }],
+                creators: [
+                  {
+                    creatorType: "author",
+                    name: "Alice Example",
+                    fieldMode: 1,
+                  },
+                ],
               },
             },
             {
@@ -227,22 +249,30 @@ describe("AgentRuntime HITL review workflow", function () {
                 DOI: "10.1000/b",
                 date: "2025",
                 url: "https://doi.org/10.1000/b",
-                creators: [{ creatorType: "author", name: "Bob Example", fieldMode: 1 }],
+                creators: [
+                  { creatorType: "author", name: "Bob Example", fieldMode: 1 },
+                ],
               },
             },
           ],
         })),
       );
       registry.register(
-        createStubFacadeTool("library_update", async (input) => {
-          const metadata = input.metadata as Record<string, unknown> | undefined;
-          assert.exists(metadata);
-          assert.equal(metadata?.DOI, "10.1000/a");
-          return {
-            appliedCount: 1,
-            results: [{ itemId: 1 }],
-          };
-        }, ["apply_direct", "review_changes"]),
+        createStubFacadeTool(
+          "library_update",
+          async (input) => {
+            const metadata = input.metadata as
+              | Record<string, unknown>
+              | undefined;
+            assert.exists(metadata);
+            assert.equal(metadata?.DOI, "10.1000/a");
+            return {
+              appliedCount: 1,
+              results: [{ itemId: 1 }],
+            };
+          },
+          ["apply_direct", "review_changes"],
+        ),
       );
       const adapter = new StepAdapter([
         {
@@ -251,7 +281,11 @@ describe("AgentRuntime HITL review workflow", function () {
             {
               id: "call-search",
               name: "literature_search",
-              arguments: { workflow: "review", mode: "metadata", query: "paper metadata" },
+              arguments: {
+                workflow: "review",
+                mode: "metadata",
+                query: "paper metadata",
+              },
             },
           ],
           assistantMessage: {
@@ -261,7 +295,11 @@ describe("AgentRuntime HITL review workflow", function () {
               {
                 id: "call-search",
                 name: "literature_search",
-                arguments: { workflow: "review", mode: "metadata", query: "paper metadata" },
+                arguments: {
+                  workflow: "review",
+                  mode: "metadata",
+                  query: "paper metadata",
+                },
               },
             ],
           },
@@ -307,8 +345,7 @@ describe("AgentRuntime HITL review workflow", function () {
       assert.equal(adapter.stepIndex, 1);
       const resultIndex = events.findIndex(
         (event) =>
-          event.type === "tool_result" &&
-          event.name === "literature_search",
+          event.type === "tool_result" && event.name === "literature_search",
       );
       const reviewIndex = events.findIndex(
         (event) =>
@@ -317,8 +354,7 @@ describe("AgentRuntime HITL review workflow", function () {
       );
       const updateResultIndex = events.findIndex(
         (event) =>
-          event.type === "tool_result" &&
-          event.name === "library_update",
+          event.type === "tool_result" && event.name === "library_update",
       );
       assert.isAtLeast(resultIndex, 0);
       assert.isAbove(reviewIndex, resultIndex);
@@ -350,17 +386,18 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("library_import", async (input) => {
-          assert.deepEqual(
-            input.identifiers,
-            ["10.1000/importable"],
-          );
-          return {
-            appliedCount: 1,
-            result: { succeeded: 1, failed: 0 },
-            warnings: [],
-          };
-        }, ["import"]),
+        createStubFacadeTool(
+          "library_import",
+          async (input) => {
+            assert.deepEqual(input.identifiers, ["10.1000/importable"]);
+            return {
+              appliedCount: 1,
+              result: { succeeded: 1, failed: 0 },
+              warnings: [],
+            };
+          },
+          ["import"],
+        ),
       );
       const adapter = new StepAdapter([
         {
@@ -369,7 +406,11 @@ describe("AgentRuntime HITL review workflow", function () {
             {
               id: "call-search",
               name: "literature_search",
-              arguments: { workflow: "review", mode: "search", query: "plasticity" },
+              arguments: {
+                workflow: "review",
+                mode: "search",
+                query: "plasticity",
+              },
             },
           ],
           assistantMessage: {
@@ -379,7 +420,11 @@ describe("AgentRuntime HITL review workflow", function () {
               {
                 id: "call-search",
                 name: "literature_search",
-                arguments: { workflow: "review", mode: "search", query: "plasticity" },
+                arguments: {
+                  workflow: "review",
+                  mode: "search",
+                  query: "plasticity",
+                },
               },
             ],
           },
@@ -409,7 +454,10 @@ describe("AgentRuntime HITL review workflow", function () {
             });
             return;
           }
-          if (event.type === "confirmation_required" && event.action.toolName === "library_import") {
+          if (
+            event.type === "confirmation_required" &&
+            event.action.toolName === "library_import"
+          ) {
             sawFacadeConfirmation = true;
           }
         },
@@ -444,18 +492,19 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("note_write", async (input) => {
-          assert.equal(input.mode, "create");
-          assert.include(
-            String(input.content || ""),
-            "Custom reviewed note",
-          );
-          return {
-            appliedCount: 1,
-            result: { status: "created" },
-            warnings: [],
-          };
-        }, ["save_paper_note", "save_metadata_note"]),
+        createStubFacadeTool(
+          "note_write",
+          async (input) => {
+            assert.equal(input.mode, "create");
+            assert.include(String(input.content || ""), "Custom reviewed note");
+            return {
+              appliedCount: 1,
+              result: { status: "created" },
+              warnings: [],
+            };
+          },
+          ["save_paper_note", "save_metadata_note"],
+        ),
       );
       const adapter = new StepAdapter([
         {
@@ -503,7 +552,10 @@ describe("AgentRuntime HITL review workflow", function () {
             });
             return;
           }
-          if (event.type === "confirmation_required" && event.action.toolName === "note_write") {
+          if (
+            event.type === "confirmation_required" &&
+            event.action.toolName === "note_write"
+          ) {
             sawFacadeConfirmation = true;
           }
         },
@@ -536,7 +588,10 @@ describe("AgentRuntime HITL review workflow", function () {
             query,
             results: [
               {
-                title: query === "refined search" ? "Refined Paper" : "Initial Paper",
+                title:
+                  query === "refined search"
+                    ? "Refined Paper"
+                    : "Initial Paper",
                 authors: ["Elliot Example"],
                 year: 2026,
                 doi:
@@ -555,7 +610,11 @@ describe("AgentRuntime HITL review workflow", function () {
             {
               id: "call-search",
               name: "literature_search",
-              arguments: { workflow: "review", mode: "search", query: "initial search" },
+              arguments: {
+                workflow: "review",
+                mode: "search",
+                query: "initial search",
+              },
             },
           ],
           assistantMessage: {
@@ -565,7 +624,11 @@ describe("AgentRuntime HITL review workflow", function () {
               {
                 id: "call-search",
                 name: "literature_search",
-                arguments: { workflow: "review", mode: "search", query: "initial search" },
+                arguments: {
+                  workflow: "review",
+                  mode: "search",
+                  query: "initial search",
+                },
               },
             ],
           },
@@ -642,7 +705,11 @@ describe("AgentRuntime HITL review workflow", function () {
             {
               id: "call-search",
               name: "literature_search",
-              arguments: { workflow: "review", mode: "search", query: "cancel flow" },
+              arguments: {
+                workflow: "review",
+                mode: "search",
+                query: "cancel flow",
+              },
             },
           ],
           assistantMessage: {
@@ -652,7 +719,11 @@ describe("AgentRuntime HITL review workflow", function () {
               {
                 id: "call-search",
                 name: "literature_search",
-                arguments: { workflow: "review", mode: "search", query: "cancel flow" },
+                arguments: {
+                  workflow: "review",
+                  mode: "search",
+                  query: "cancel flow",
+                },
               },
             ],
           },

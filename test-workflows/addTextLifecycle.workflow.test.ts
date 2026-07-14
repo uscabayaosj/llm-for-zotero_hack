@@ -15,6 +15,7 @@ describe("workflow: Add Text lifecycle", function () {
 
   let api: WorkflowTestApi;
   let fixture: WorkflowTestFixture | null = null;
+  const additionalFixtures: WorkflowTestFixture[] = [];
 
   beforeEach(async function () {
     api = getWorkflowTestApi();
@@ -25,6 +26,9 @@ describe("workflow: Add Text lifecycle", function () {
     if (fixture) {
       await api.cleanupFixture(fixture);
       fixture = null;
+    }
+    while (additionalFixtures.length) {
+      await api.cleanupFixture(additionalFixtures.pop()!);
     }
     await api.reset();
   });
@@ -40,132 +44,206 @@ describe("workflow: Add Text lifecycle", function () {
     assert.isBelow(diagnostics.elapsedMs, 2000, JSON.stringify(diagnostics));
   });
 
-  it("preserves a non-first-page PDF highlight through the final model request", async function () {
-    const filler = (label: string, count: number) =>
-      Array.from(
-        { length: count },
-        (_, index) =>
-          `${label} evidence sentence ${index + 1} describes stable local context for retrieval.`,
-      ).join(" ");
-    const selectedText = "HIGHLIGHT_PAGE_TWO_ANCHOR_RESULT";
-    const precedingMarker = "PRECEDING_LOCKED_CHUNK_MARKER";
-    const followingMarker = "FOLLOWING_LOCKED_CHUNK_MARKER";
+  it("recovers the listener and routes popup text only to the active reader tab", async function () {
+    const recovery = await api.exerciseReaderSelectionTrackingRecovery();
+    assert.equal(recovery.afterDrop, 0, JSON.stringify(recovery));
+    assert.equal(recovery.afterHealthCheck, 1, JSON.stringify(recovery));
+
+    const selectedText = "ACTIVE_READER_TAB_ONLY_SELECTION";
     fixture = await api.createPaperWithPdfFixture({
-      title: "Workflow Highlight-Aware Retrieval",
-      pdfTitle: "Workflow Highlight-Aware Retrieval PDF",
-      pages: [
-        `${filler("page one", 38)} ${precedingMarker}`,
-        `${filler("page two before", 20)} ${selectedText} ${filler(
-          "page two after",
-          20,
-        )}`,
-        `${followingMarker} ${filler("page three", 38)}`,
-      ],
+      title: "Workflow Inactive Reader",
+      pdfTitle: "Workflow Inactive Reader PDF",
+      pages: ["This text belongs to the inactive reader tab."],
     });
-    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const activeFixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Active Reader",
+      pdfTitle: "Workflow Active Reader PDF",
+      pages: [`The active reader contains ${selectedText} for routing.`],
+    });
+    additionalFixtures.push(activeFixture);
+    const firstPanel = await api.renderPanelForItem(fixture.parentItemId);
+    const secondPanel = await api.renderPanelForItem(
+      activeFixture.parentItemId,
+    );
 
-    const diagnostics = await api.exerciseHighlightAwareContextRetrieval({
-      panelId: panel.panelId,
-      attachmentItemId: fixture.pdfAttachmentId,
-      pageIndex: 1,
+    const diagnostics = await api.exerciseReaderPopupActiveTabRouting({
+      firstPanelId: firstPanel.panelId,
+      firstAttachmentItemId: fixture.pdfAttachmentId,
+      secondPanelId: secondPanel.panelId,
+      secondAttachmentItemId: activeFixture.pdfAttachmentId,
+      pageIndex: 0,
       selectedText,
-      question: "Explain the highlighted result.",
     });
-    const diagnosticMessage = JSON.stringify({
-      readerItemId: diagnostics.readerItemId,
-      addTextButtonLabel: diagnostics.addTextButtonLabel,
-      selectedContext: diagnostics.selectedContext,
-      resolvedAnchor: {
-        contextItemId: diagnostics.resolvedAnchor.contextItemId,
-        pageIndex: diagnostics.resolvedAnchor.pageIndex,
-        pageLabel: diagnostics.resolvedAnchor.pageLabel,
-        resolution: diagnostics.resolvedAnchor.resolution,
-        primaryChunkIndex: diagnostics.resolvedAnchor.primaryChunkIndex,
-        preferredChunkIndexes: diagnostics.resolvedAnchor.preferredChunkIndexes,
-        injectedChars: diagnostics.resolvedAnchor.injectedChars,
-      },
-      finalPrompt: diagnostics.lastFinalRequest.prompt,
-      finalStrategy: diagnostics.lastFinalRequest.strategy,
-      finalContextHasSelectedText:
-        diagnostics.lastFinalRequest.combinedContext.includes(selectedText),
-      finalContextHasPrecedingMarker:
-        diagnostics.lastFinalRequest.combinedContext.includes(precedingMarker),
-      finalContextHasFollowingMarker:
-        diagnostics.lastFinalRequest.combinedContext.includes(followingMarker),
-    });
+    const message = JSON.stringify(diagnostics);
 
-    assert.equal(
-      diagnostics.readerItemId,
-      fixture.pdfAttachmentId,
-      diagnosticMessage,
+    assert.isNotEmpty(diagnostics.firstReaderTabId, message);
+    assert.isNotEmpty(diagnostics.secondReaderTabId, message);
+    assert.notEqual(
+      diagnostics.firstReaderTabId,
+      diagnostics.secondReaderTabId,
+      message,
     );
-    assert.equal(diagnostics.addTextButtonLabel, "Add Text", diagnosticMessage);
-    assert.equal(
-      diagnostics.selectedContext.contextItemId,
-      fixture.pdfAttachmentId,
-      diagnosticMessage,
-    );
-    assert.equal(diagnostics.selectedContext.pageIndex, 1, diagnosticMessage);
-    assert.equal(diagnostics.selectedContext.pageLabel, "2", diagnosticMessage);
-    assert.equal(
-      diagnostics.resolvedAnchor.resolution,
-      "chunks",
-      diagnosticMessage,
-    );
-    assert.lengthOf(
-      diagnostics.resolvedAnchor.preferredChunkIndexes,
-      3,
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.resolvedAnchor.contextText,
-      selectedText,
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.resolvedAnchor.contextText,
-      precedingMarker,
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.resolvedAnchor.contextText,
-      "[following local context]",
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.prompt,
-      `attachment_id=${fixture.pdfAttachmentId}`,
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.prompt,
-      "page_label=2",
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.prompt,
-      "page_index=1",
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.prompt,
-      "location_resolution=chunks",
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.combinedContext,
-      selectedText,
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.combinedContext,
-      precedingMarker,
-      diagnosticMessage,
-    );
-    assert.include(
-      diagnostics.lastFinalRequest.combinedContext,
-      followingMarker,
-      diagnosticMessage,
-    );
+    assert.equal(diagnostics.addTextButtonLabel, "Add Text", message);
+    assert.isFalse(diagnostics.firstConversationHasText, message);
+    assert.isTrue(diagnostics.secondConversationHasText, message);
   });
+
+  for (const trigger of ["popup", "action-bar"] as const) {
+    it(`shows ${trigger} text immediately and preserves its page through the final request`, async function () {
+      const filler = (label: string, count: number) =>
+        Array.from(
+          { length: count },
+          (_, index) =>
+            `${label} evidence sentence ${index + 1} describes stable local context for retrieval.`,
+        ).join(" ");
+      const selectedText = "HIGHLIGHT_PAGE_TWO_ANCHOR_RESULT";
+      const precedingMarker = "PRECEDING_LOCKED_CHUNK_MARKER";
+      const followingMarker = "FOLLOWING_LOCKED_CHUNK_MARKER";
+      fixture = await api.createPaperWithPdfFixture({
+        title: "Workflow Highlight-Aware Retrieval",
+        pdfTitle: "Workflow Highlight-Aware Retrieval PDF",
+        pages: [
+          `${filler("page one", 38)} ${precedingMarker}`,
+          `${filler("page two before", 20)} ${selectedText} ${filler(
+            "page two after",
+            20,
+          )}`,
+          `${followingMarker} ${filler("page three", 38)}`,
+        ],
+      });
+      const panel = await api.renderPanelForItem(fixture.parentItemId);
+
+      const diagnostics = await api.exerciseHighlightAwareContextRetrieval({
+        panelId: panel.panelId,
+        attachmentItemId: fixture.pdfAttachmentId,
+        pageIndex: 1,
+        selectedText,
+        question: "Explain the highlighted result.",
+        trigger,
+      });
+      const diagnosticMessage = JSON.stringify({
+        trigger: diagnostics.trigger,
+        readerItemId: diagnostics.readerItemId,
+        addTextButtonLabel: diagnostics.addTextButtonLabel,
+        immediatePreviewText: diagnostics.immediatePreviewText,
+        clickToSelectedContextMs: diagnostics.clickToSelectedContextMs,
+        selectedContext: diagnostics.selectedContext,
+        resolvedAnchor: {
+          contextItemId: diagnostics.resolvedAnchor.contextItemId,
+          pageIndex: diagnostics.resolvedAnchor.pageIndex,
+          pageLabel: diagnostics.resolvedAnchor.pageLabel,
+          resolution: diagnostics.resolvedAnchor.resolution,
+          primaryChunkIndex: diagnostics.resolvedAnchor.primaryChunkIndex,
+          preferredChunkIndexes:
+            diagnostics.resolvedAnchor.preferredChunkIndexes,
+          injectedChars: diagnostics.resolvedAnchor.injectedChars,
+        },
+        finalPrompt: diagnostics.lastFinalRequest.prompt,
+        finalStrategy: diagnostics.lastFinalRequest.strategy,
+        finalContextHasSelectedText:
+          diagnostics.lastFinalRequest.combinedContext.includes(selectedText),
+        finalContextHasPrecedingMarker:
+          diagnostics.lastFinalRequest.combinedContext.includes(
+            precedingMarker,
+          ),
+        finalContextHasFollowingMarker:
+          diagnostics.lastFinalRequest.combinedContext.includes(
+            followingMarker,
+          ),
+      });
+
+      assert.equal(
+        diagnostics.readerItemId,
+        fixture.pdfAttachmentId,
+        diagnosticMessage,
+      );
+      assert.equal(diagnostics.trigger, trigger, diagnosticMessage);
+      assert.equal(
+        diagnostics.addTextButtonLabel,
+        "Add Text",
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.immediatePreviewText,
+        selectedText,
+        diagnosticMessage,
+      );
+      assert.isBelow(
+        diagnostics.clickToSelectedContextMs,
+        250,
+        diagnosticMessage,
+      );
+      assert.equal(
+        diagnostics.selectedContext.contextItemId,
+        fixture.pdfAttachmentId,
+        diagnosticMessage,
+      );
+      assert.equal(diagnostics.selectedContext.pageIndex, 1, diagnosticMessage);
+      assert.equal(
+        diagnostics.selectedContext.pageLabel,
+        "2",
+        diagnosticMessage,
+      );
+      assert.equal(
+        diagnostics.resolvedAnchor.resolution,
+        "chunks",
+        diagnosticMessage,
+      );
+      assert.lengthOf(
+        diagnostics.resolvedAnchor.preferredChunkIndexes,
+        3,
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.resolvedAnchor.contextText,
+        selectedText,
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.resolvedAnchor.contextText,
+        precedingMarker,
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.resolvedAnchor.contextText,
+        "[following local context]",
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.prompt,
+        `attachment_id=${fixture.pdfAttachmentId}`,
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.prompt,
+        "page_label=2",
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.prompt,
+        "page_index=1",
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.prompt,
+        "location_resolution=chunks",
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.combinedContext,
+        selectedText,
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.combinedContext,
+        precedingMarker,
+        diagnosticMessage,
+      );
+      assert.include(
+        diagnostics.lastFinalRequest.combinedContext,
+        followingMarker,
+        diagnosticMessage,
+      );
+    });
+  }
 });

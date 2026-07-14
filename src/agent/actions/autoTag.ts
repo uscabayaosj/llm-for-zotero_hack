@@ -710,13 +710,7 @@ async function suggestTagsForItems(
 ): Promise<Array<{ itemId: number; tags: string[] }>> {
   if (!ctx.llm) return [];
   return collectActionLlmBatchResults(items, LLM_BATCH_SIZE, (batch) =>
-    suggestTagsBatch(
-      batch,
-      existingTags,
-      maxTags,
-      userQuery,
-      ctx,
-    ),
+    suggestTagsBatch(batch, existingTags, maxTags, userQuery, ctx),
   );
 }
 

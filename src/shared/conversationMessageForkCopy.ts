@@ -116,8 +116,7 @@ export async function copyConversationMessagesThroughAssistantAnchor(
   const targetConversationID =
     await config.resolveTargetConversationID(targetKey);
   if (!targetConversationID) return emptyResult;
-  const timestampBase =
-    normalizeTimestamp(params.timestampBase) || Date.now();
+  const timestampBase = normalizeTimestamp(params.timestampBase) || Date.now();
   const targetAnchorAssistantTimestamp = timestampBase + rows.length - 1;
   const insertColumns = [
     "conversation_id",

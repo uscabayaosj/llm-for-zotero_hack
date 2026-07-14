@@ -9,6 +9,9 @@ import type {
   AdvancedModelParams,
   ActiveNoteSession,
   ActiveNoteContext,
+  SelectedTextContext,
+  SelectedTextAnchorResolution,
+  ResolvedSelectedTextAnchor,
   PaperContextRef,
   QuoteCitation,
   NoteContextRef,
@@ -32,6 +35,9 @@ export type {
   AdvancedModelParams,
   ActiveNoteSession,
   ActiveNoteContext,
+  SelectedTextContext,
+  SelectedTextAnchorResolution,
+  ResolvedSelectedTextAnchor,
   PaperContextRef,
   QuoteCitation,
   NoteContextRef,
@@ -42,16 +48,6 @@ export type {
   PaperConversationSummary,
 } from "../../shared/types";
 
-export type SelectedTextContext = {
-  text: string;
-  source: SelectedTextSource;
-  paperContext?: PaperContextRef;
-  noteContext?: NoteContextRef;
-  contextItemId?: number;
-  pageIndex?: number;
-  pageLabel?: string;
-};
-
 export interface Message {
   role: "user" | "assistant";
   text: string;
@@ -60,6 +56,7 @@ export interface Message {
   agentRunId?: string;
   selectedText?: string;
   selectedTextExpanded?: boolean;
+  selectedTextContexts?: SelectedTextContext[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -429,6 +426,8 @@ export type SendQuestionOptions = {
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
   displayQuestion?: string;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -468,6 +467,8 @@ export type EditRetryOptions = {
   /** Resolved panel/source context selected by compose UI. */
   contextSource?: ResolvedContextSource | null;
   displayQuestion: string;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];

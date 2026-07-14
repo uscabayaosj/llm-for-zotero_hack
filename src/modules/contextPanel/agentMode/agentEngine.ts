@@ -86,6 +86,8 @@ import type {
   NoteContextRef,
   PaperContextRef,
   QuoteCitation,
+  ResolvedSelectedTextAnchor,
+  SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
 } from "../../../shared/types";
@@ -102,6 +104,8 @@ import {
   extractQuoteCitationsFromToolContent,
   mergeQuoteCitations,
 } from "../quoteCitations";
+import { synthesizeSelectedTextContexts } from "../normalizers";
+import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
 
 function readUsageNumber(record: Record<string, unknown>, key: string): number {
   const value = record[key];
@@ -360,6 +364,8 @@ type BuildAgentRuntimeRequestParamsShape = {
   conversationKey: number;
   item: Zotero.Item;
   userText: string;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -670,6 +676,8 @@ export async function sendAgentTurn(
     reasoning?: LLMReasoningConfig;
     advanced?: AdvancedModelParams;
     displayQuestion?: string;
+    selectedTextContexts?: SelectedTextContext[];
+    resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
     selectedTexts?: string[];
     selectedTextSources?: SelectedTextSource[];
     selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -700,6 +708,8 @@ export async function sendAgentTurn(
     reasoning,
     advanced,
     displayQuestion,
+    selectedTextContexts,
+    resolvedSelectedTextAnchors,
     selectedTexts,
     selectedTextSources,
     selectedTextPaperContexts,
@@ -718,21 +728,32 @@ export async function sendAgentTurn(
   deps.setPendingRequestId(conversationKey, thisRequestId);
   deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent...");
 
-  const selectedTextsForMessage = deps.normalizeSelectedTexts(selectedTexts);
-  const selectedTextSourcesForMessage = deps.normalizeSelectedTextSources(
+  const selectedTextContextsForMessage = synthesizeSelectedTextContexts({
+    selectedTextContexts,
+    selectedTexts,
     selectedTextSources,
-    selectedTextsForMessage.length,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    sanitizeText: deps.sanitizeText,
+  });
+  const selectedTextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.text,
+  );
+  const selectedTextSourcesForMessage = selectedTextContextsForMessage.map(
+    (context) => context.source,
   );
   const selectedTextPaperContextsForMessage =
-    deps.normalizeSelectedTextPaperContextsByIndex(
-      selectedTextPaperContexts,
-      selectedTextsForMessage.length,
-    );
-  const selectedTextNoteContextsForMessage =
-    deps.normalizeSelectedTextNoteContextsByIndex(
-      selectedTextNoteContexts,
-      selectedTextsForMessage.length,
-    );
+    selectedTextContextsForMessage.map((context) => context.paperContext);
+  const selectedTextNoteContextsForMessage = selectedTextContextsForMessage.map(
+    (context) => {
+      if (!context.noteContext) return undefined;
+      return Object.fromEntries(
+        Object.entries(context.noteContext).filter(
+          ([, value]) => value !== undefined,
+        ),
+      ) as NoteContextRef;
+    },
+  );
   const selectedTextQuoteCitationsForMessage = buildSelectedTextQuoteCitations(
     selectedTextsForMessage,
     selectedTextSourcesForMessage,
@@ -756,6 +777,9 @@ export async function sendAgentTurn(
     runMode: "agent",
     selectedText: selectedTextsForMessage[0] || undefined,
     selectedTextExpanded: false,
+    selectedTextContexts: selectedTextContextsForMessage.length
+      ? selectedTextContextsForMessage
+      : undefined,
     selectedTexts: selectedTextsForMessage.length
       ? selectedTextsForMessage
       : undefined,
@@ -802,6 +826,7 @@ export async function sendAgentTurn(
       timestamp: userMessage.timestamp,
       runMode: "agent",
       selectedText: userMessage.selectedText,
+      selectedTextContexts: userMessage.selectedTextContexts,
       selectedTexts: userMessage.selectedTexts,
       selectedTextSources: userMessage.selectedTextSources,
       selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
@@ -895,7 +920,12 @@ export async function sendAgentTurn(
   await deps.ensureConversationLoaded(item);
   const history = deps.chatHistory.get(conversationKey) || [];
   const llmHistory = deps.buildLLMHistoryMessages(history.slice(0, -2));
-  const normalizedPaperContexts = deps.normalizePaperContexts(paperContexts);
+  const normalizedPaperContexts = deps.normalizePaperContexts([
+    ...(paperContexts || []),
+    ...selectedTextPaperContextsForMessage.filter(
+      (paper): paper is PaperContextRef => Boolean(paper),
+    ),
+  ]);
   const normalizedFullTextPaperContexts = deps.normalizePaperContexts(
     fullTextPaperContexts,
   );
@@ -926,6 +956,7 @@ export async function sendAgentTurn(
       timestamp: userMessage.timestamp,
       runMode: "agent",
       selectedText: userMessage.selectedText,
+      selectedTextContexts: userMessage.selectedTextContexts,
       selectedTexts: userMessage.selectedTexts,
       selectedTextSources: userMessage.selectedTextSources,
       selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
@@ -948,6 +979,8 @@ export async function sendAgentTurn(
     conversationKey,
     item,
     userText: question,
+    selectedTextContexts: selectedTextContextsForMessage,
+    resolvedSelectedTextAnchors,
     selectedTexts: selectedTextsForMessage,
     selectedTextSources: selectedTextSourcesForMessage,
     selectedTextPaperContexts: selectedTextPaperContextsForMessage,
@@ -986,10 +1019,12 @@ export async function sendAgentTurn(
         reasoning,
         advanced,
         displayQuestion,
-        selectedTexts,
-        selectedTextSources,
-        selectedTextPaperContexts,
-        selectedTextNoteContexts,
+        selectedTextContexts: selectedTextContextsForMessage,
+        resolvedSelectedTextAnchors,
+        selectedTexts: selectedTextsForMessage,
+        selectedTextSources: selectedTextSourcesForMessage,
+        selectedTextPaperContexts: selectedTextPaperContextsForMessage,
+        selectedTextNoteContexts: selectedTextNoteContextsForMessage,
         paperContexts,
         fullTextPaperContexts,
         selectedCollectionContexts,
@@ -1070,6 +1105,7 @@ export async function sendAgentTurn(
             runMode: "agent",
             agentRunId: runId,
             selectedText: userMessage.selectedText,
+            selectedTextContexts: userMessage.selectedTextContexts,
             selectedTexts: userMessage.selectedTexts,
             selectedTextSources: userMessage.selectedTextSources,
             selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
@@ -1226,6 +1262,7 @@ export async function sendAgentTurn(
                 runMode: "agent",
                 agentRunId: userMessage.agentRunId,
                 selectedText: userMessage.selectedText,
+                selectedTextContexts: userMessage.selectedTextContexts,
                 selectedTexts: userMessage.selectedTexts,
                 selectedTextSources: userMessage.selectedTextSources,
                 selectedTextPaperContexts:
@@ -1614,20 +1651,37 @@ export async function retryAgentTurn(
     return;
   }
 
-  const selectedTextsRaw = Array.isArray(retryPair.userMessage.selectedTexts)
-    ? (retryPair.userMessage.selectedTexts.filter(Boolean) as string[])
-    : retryPair.userMessage.selectedText
-      ? [retryPair.userMessage.selectedText]
-      : [];
-  const selectedTextSourcesRaw = deps.normalizeSelectedTextSources(
-    retryPair.userMessage.selectedTextSources,
-    selectedTextsRaw.length,
+  const selectedTextContextsRaw = synthesizeSelectedTextContexts({
+    selectedTextContexts: retryPair.userMessage.selectedTextContexts,
+    selectedTexts: retryPair.userMessage.selectedTexts,
+    legacySelectedText: retryPair.userMessage.selectedText,
+    selectedTextSources: retryPair.userMessage.selectedTextSources,
+    selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
+    selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
+    sanitizeText: deps.sanitizeText,
+  });
+  retryPair.userMessage.selectedTextContexts = selectedTextContextsRaw.length
+    ? selectedTextContextsRaw
+    : undefined;
+  const selectedTextsRaw = selectedTextContextsRaw.map(
+    (context) => context.text,
   );
-  const selectedTextPaperContextsRaw =
-    deps.normalizeSelectedTextPaperContextsByIndex(
-      retryPair.userMessage.selectedTextPaperContexts,
-      selectedTextsRaw.length,
-    );
+  const selectedTextSourcesRaw = selectedTextContextsRaw.map(
+    (context) => context.source,
+  );
+  const selectedTextPaperContextsRaw = selectedTextContextsRaw.map(
+    (context) => context.paperContext,
+  );
+  const resolvedSelectedTextAnchors = await resolveSelectedTextAnchors({
+    selectedTextContexts: selectedTextContextsRaw,
+    paperContexts: deps.normalizePaperContexts([
+      ...paperContexts,
+      ...fullTextPaperContexts,
+      ...selectedTextPaperContextsRaw.filter(
+        (paper): paper is PaperContextRef => Boolean(paper),
+      ),
+    ]),
+  });
   assistantMessage.quoteCitations = buildSelectedTextQuoteCitations(
     selectedTextsRaw,
     selectedTextSourcesRaw,
@@ -1653,6 +1707,8 @@ export async function retryAgentTurn(
     conversationKey,
     item,
     userText: question,
+    selectedTextContexts: selectedTextContextsRaw,
+    resolvedSelectedTextAnchors,
     selectedTexts: selectedTextsRaw,
     selectedTextSources: selectedTextSourcesRaw,
     selectedTextPaperContexts: selectedTextPaperContextsRaw,
@@ -1732,6 +1788,7 @@ export async function retryAgentTurn(
           runMode: "agent",
           agentRunId: runId,
           selectedText: retryPair.userMessage.selectedText,
+          selectedTextContexts: retryPair.userMessage.selectedTextContexts,
           selectedTexts: retryPair.userMessage.selectedTexts,
           selectedTextSources: retryPair.userMessage.selectedTextSources,
           selectedTextPaperContexts:
@@ -1894,6 +1951,7 @@ export async function retryAgentTurn(
               runMode: "agent",
               agentRunId: retryPair.userMessage.agentRunId,
               selectedText: retryPair.userMessage.selectedText,
+              selectedTextContexts: retryPair.userMessage.selectedTextContexts,
               selectedTexts: retryPair.userMessage.selectedTexts,
               selectedTextSources: retryPair.userMessage.selectedTextSources,
               selectedTextPaperContexts:

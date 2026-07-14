@@ -111,6 +111,7 @@ import {
   getAttachmentTypeLabel,
   normalizeSelectedTextSource,
 } from "./textUtils";
+import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import {
   formatActionLabel,
   resolveActionCompletionStatusText,
@@ -6374,6 +6375,7 @@ export function setupHandlers(
     closeSlashMenu,
     closePaperPicker,
     getSelectedTextContextEntries,
+    resolveSelectedTextAnchors,
     getSelectedPaperContexts: (itemId) =>
       getManualPaperContextsForItem(
         itemId,
@@ -6430,8 +6432,8 @@ export function setupHandlers(
     sendQuestion: async (opts) => {
       const workflowTestSendInterceptor = getWorkflowTestSendInterceptor();
       if (workflowTestSendInterceptor) {
-        await workflowTestSendInterceptor(opts);
-        return;
+        const continueToModelBoundary = await workflowTestSendInterceptor(opts);
+        if (continueToModelBoundary !== true) return;
       }
       await sendQuestion(opts);
     },
@@ -6758,6 +6760,7 @@ export function setupHandlers(
           userTimestamp: editTarget.userTimestamp,
           assistantTimestamp: editTarget.assistantTimestamp,
           newText,
+          selectedTextContexts: selectedContexts,
           selectedTexts,
           selectedTextSources,
           selectedTextPaperContexts,

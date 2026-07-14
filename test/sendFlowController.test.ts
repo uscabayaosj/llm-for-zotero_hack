@@ -3,6 +3,7 @@ import type {
   ChatAttachment,
   CollectionContextRef,
   PaperContextRef,
+  ResolvedSelectedTextAnchor,
   ResolvedContextSource,
   SelectedTextContext,
   TagContextRef,
@@ -332,6 +333,62 @@ describe("sendFlowController", function () {
     assert.equal(counts.retainPaperStateCalled, 1);
     assert.equal(counts.retainFileCalled, 1);
     assert.equal(counts.retainTextCalled, 1);
+  });
+
+  it("resolves and forwards canonical selected-text anchors at send time", async function () {
+    const context: SelectedTextContext = {
+      text: "Late-page selected quote",
+      source: "pdf",
+      contextItemId: 34,
+      pageIndex: 587,
+      pageLabel: "588",
+      paperContext: selectedPaper,
+    };
+    const anchor: ResolvedSelectedTextAnchor = {
+      contextIndex: 0,
+      contextItemId: 34,
+      pageIndex: 587,
+      pageLabel: "588",
+      paperContext: selectedPaper,
+      resolution: "chunks",
+      primaryChunkIndex: 5,
+      preferredChunkIndexes: [4, 5, 6],
+      contextText: "Bounded local context",
+      injectedChars: 21,
+    };
+    let resolvedParams: unknown;
+    let builderOptions: any;
+    let sentOptions: any;
+    const { controller } = createBaseDeps({
+      getSelectedTextContextEntries: () => [context],
+      resolveSelectedTextAnchors: async (params: unknown) => {
+        resolvedParams = params;
+        return [anchor];
+      },
+      buildQuestionWithSelectedTextContexts: (
+        _texts: string[],
+        _sources: unknown,
+        prompt: string,
+        options: unknown,
+      ) => {
+        builderOptions = options;
+        return prompt;
+      },
+      sendQuestion: async (options: unknown) => {
+        sentOptions = options;
+      },
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(resolvedParams, {
+      selectedTextContexts: [context],
+      paperContexts: [selectedPaper],
+    });
+    assert.deepEqual(builderOptions.selectedTextContexts, [context]);
+    assert.deepEqual(builderOptions.resolvedSelectedTextAnchors, [anchor]);
+    assert.deepEqual(sentOptions.selectedTextContexts, [context]);
+    assert.deepEqual(sentOptions.resolvedSelectedTextAnchors, [anchor]);
   });
 
   it("passes input mode to the screenshot gate and omits images for text-only mode", async function () {

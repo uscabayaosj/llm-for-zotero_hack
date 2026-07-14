@@ -2136,6 +2136,8 @@ export async function buildPaperRetrievalCandidates(
     disableEmbeddings?: boolean;
     /** Shared retrieval query plan with bounded variants and lexical terms. */
     queryPlan?: RetrievalQueryPlan;
+    /** Chunk indexes that must remain available for locked retrieval selection. */
+    preferredChunkIndexes?: number[];
   },
   compatibilityOptions?: {
     topK?: number;
@@ -2146,6 +2148,8 @@ export async function buildPaperRetrievalCandidates(
     disableEmbeddings?: boolean;
     /** Shared retrieval query plan with bounded variants and lexical terms. */
     queryPlan?: RetrievalQueryPlan;
+    /** Chunk indexes that must remain available for locked retrieval selection. */
+    preferredChunkIndexes?: number[];
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
@@ -2154,7 +2158,8 @@ export async function buildPaperRetrievalCandidates(
     ("topK" in (apiOverridesOrOptions || {}) ||
     "mode" in (apiOverridesOrOptions || {}) ||
     "precomputedQueryEmbedding" in (apiOverridesOrOptions || {}) ||
-    "queryPlan" in (apiOverridesOrOptions || {})
+    "queryPlan" in (apiOverridesOrOptions || {}) ||
+    "preferredChunkIndexes" in (apiOverridesOrOptions || {})
       ? apiOverridesOrOptions
       : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
@@ -2306,6 +2311,17 @@ export async function buildPaperRetrievalCandidates(
   });
 
   const selected = scored.slice(0, topK);
+  const preferredChunkIndexes = new Set(
+    (options?.preferredChunkIndexes || [])
+      .map((index) => Number(index))
+      .filter((index) => Number.isFinite(index) && index >= 0)
+      .map((index) => Math.floor(index)),
+  );
+  for (const preferredEntry of scored.filter((entry) =>
+    preferredChunkIndexes.has(entry.candidate.chunkIndex),
+  )) {
+    if (!selected.includes(preferredEntry)) selected.push(preferredEntry);
+  }
   const requiredReferenceEntries = scored.filter(
     (entry) =>
       entry.candidate.referenceConfidence === "high" ||

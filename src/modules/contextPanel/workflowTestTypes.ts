@@ -88,11 +88,25 @@ export type WorkflowTestReaderSelectionTrackingDiagnostics = {
   elapsedMs: number;
 };
 
+export type WorkflowTestHighlightAwareRetrievalDiagnostics = {
+  readerItemId: number;
+  addTextButtonLabel: string;
+  selectedContext: NonNullable<
+    SendQuestionOptions["selectedTextContexts"]
+  >[number];
+  resolvedAnchor: NonNullable<
+    SendQuestionOptions["resolvedSelectedTextAnchors"]
+  >[number];
+  lastSend: SendQuestionOptions;
+  lastFinalRequest: WorkflowTestFinalRequestSnapshot;
+};
+
 export type WorkflowTestApi = {
   reset: () => Promise<void>;
   createPaperWithPdfFixture: (input: {
     title: string;
     pdfTitle: string;
+    pages?: string[];
   }) => Promise<WorkflowTestFixture>;
   createStandaloneAttachmentFixture: (input: {
     title: string;
@@ -147,6 +161,13 @@ export type WorkflowTestApi = {
   getLastSend: () => SendQuestionOptions | null;
   getDiagnostics: (panelId?: string) => Promise<WorkflowTestDiagnostics>;
   exerciseReaderSelectionTrackingRecovery: () => Promise<WorkflowTestReaderSelectionTrackingDiagnostics>;
+  exerciseHighlightAwareContextRetrieval: (input: {
+    panelId: string;
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    question: string;
+  }) => Promise<WorkflowTestHighlightAwareRetrievalDiagnostics>;
   cleanupFixture: (
     fixture:
       | WorkflowTestFixture

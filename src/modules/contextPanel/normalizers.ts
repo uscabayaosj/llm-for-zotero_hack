@@ -3,6 +3,7 @@ import type {
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
+  SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
 } from "./types";
@@ -91,6 +92,103 @@ export function normalizeSelectedTextSources(
     out.push(normalizeSelectedTextSource(raw[index]));
   }
   return out;
+}
+
+export function normalizeSelectedTextContexts(
+  value: unknown,
+  options?: {
+    sanitizeText?: TextSanitizer;
+  },
+): SelectedTextContext[] {
+  if (!Array.isArray(value)) return [];
+  const sanitize = options?.sanitizeText;
+  const out: SelectedTextContext[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      const text = normalizeText(entry, sanitize);
+      if (text) out.push({ text, source: "pdf" });
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const typed = entry as Record<string, unknown>;
+    const text = normalizeText(typed.text, sanitize);
+    if (!text) continue;
+    const source = normalizeSelectedTextSource(typed.source);
+    const paperContext = normalizePaperContextRefs(
+      typed.paperContext ? [typed.paperContext] : [],
+      options,
+    )[0];
+    const noteContext = normalizeNoteContextRef(typed.noteContext, options);
+    const contextItemId =
+      normalizePositiveInt(typed.contextItemId) ||
+      (source === "pdf" ? paperContext?.contextItemId : undefined);
+    const rawPageIndex = Number(typed.pageIndex);
+    const pageIndex =
+      Number.isFinite(rawPageIndex) && rawPageIndex >= 0
+        ? Math.floor(rawPageIndex)
+        : undefined;
+    const rawPageLabel = normalizeText(typed.pageLabel, sanitize);
+    out.push({
+      text,
+      source,
+      paperContext,
+      noteContext,
+      contextItemId,
+      pageIndex,
+      pageLabel:
+        rawPageLabel ||
+        (pageIndex !== undefined ? `${pageIndex + 1}` : undefined),
+    });
+  }
+  return out;
+}
+
+export function synthesizeSelectedTextContexts(params: {
+  selectedTextContexts?: unknown;
+  selectedTexts?: unknown;
+  legacySelectedText?: unknown;
+  selectedTextSources?: unknown;
+  selectedTextPaperContexts?: unknown;
+  selectedTextNoteContexts?: unknown;
+  sanitizeText?: TextSanitizer;
+}): SelectedTextContext[] {
+  const canonical = normalizeSelectedTextContexts(params.selectedTextContexts, {
+    sanitizeText: params.sanitizeText,
+  });
+  if (canonical.length) return canonical;
+
+  const sanitize = params.sanitizeText;
+  const rawTexts = Array.isArray(params.selectedTexts)
+    ? params.selectedTexts
+    : typeof params.legacySelectedText === "string"
+      ? [params.legacySelectedText]
+      : [];
+  const texts = rawTexts
+    .map((entry) => normalizeText(entry, sanitize))
+    .filter(Boolean);
+  if (!texts.length) return [];
+  const sources = normalizeSelectedTextSources(
+    params.selectedTextSources,
+    texts.length,
+  );
+  const papers = normalizeSelectedTextPaperContexts(
+    params.selectedTextPaperContexts,
+    texts.length,
+    { sanitizeText: sanitize },
+  );
+  const notes = normalizeSelectedTextNoteContexts(
+    params.selectedTextNoteContexts,
+    texts.length,
+    { sanitizeText: sanitize },
+  );
+  return texts.map((text, index) => ({
+    text,
+    source: sources[index],
+    paperContext: papers[index],
+    noteContext: notes[index],
+    contextItemId:
+      sources[index] === "pdf" ? papers[index]?.contextItemId : undefined,
+  }));
 }
 
 export function normalizeNoteContextRef(

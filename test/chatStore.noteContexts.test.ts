@@ -11,7 +11,11 @@ describe("chatStore note contexts", function () {
   const globalScope = globalThis as typeof globalThis & {
     Zotero?: Record<string, unknown>;
   };
-  const originalZotero = globalScope.Zotero;
+  let originalZotero: Record<string, unknown> | undefined;
+
+  before(function () {
+    originalZotero = globalScope.Zotero;
+  });
 
   afterEach(function () {
     globalScope.Zotero = originalZotero;
@@ -92,9 +96,9 @@ describe("chatStore note contexts", function () {
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 32);
-    assert.equal(insert.params[30], 1234);
-    assert.equal(insert.params[31], 200000);
+    assert.lengthOf(insert.params, 33);
+    assert.equal(insert.params[31], 1234);
+    assert.equal(insert.params[32], 200000);
   });
 
   it("persists forced skill ids when appending a user message", async function () {
@@ -189,7 +193,7 @@ describe("chatStore note contexts", function () {
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "generated_images_json");
     assert.equal(
-      insert.params[22],
+      insert.params[23],
       JSON.stringify([
         {
           id: "img-1",
@@ -200,7 +204,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[19],
+      insert.params[20],
       JSON.stringify(["data:image/png;base64,user-input"]),
     );
   });
@@ -300,7 +304,7 @@ describe("chatStore note contexts", function () {
     assert.include(insert.sql, "collection_contexts_json");
     assert.include(insert.sql, "tag_contexts_json");
     assert.equal(
-      insert.params[17],
+      insert.params[18],
       JSON.stringify([
         {
           collectionId: 55,
@@ -310,7 +314,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[18],
+      insert.params[19],
       JSON.stringify([
         {
           name: "Stability",
@@ -535,7 +539,9 @@ describe("chatStore note contexts", function () {
           ) {
             return [
               {
-                paperContextsJson: JSON.stringify([{ itemId: conversationKey }]),
+                paperContextsJson: JSON.stringify([
+                  { itemId: conversationKey },
+                ]),
               },
             ];
           }

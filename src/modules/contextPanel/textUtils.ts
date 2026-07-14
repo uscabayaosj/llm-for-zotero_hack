@@ -1,9 +1,11 @@
 import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
-import {
-  normalizeSelectedTextPaperContexts,
-  normalizeSelectedTextSource,
-} from "./normalizers";
-import type { PaperContextRef, SelectedTextSource } from "./types";
+import { synthesizeSelectedTextContexts } from "./normalizers";
+import type {
+  PaperContextRef,
+  ResolvedSelectedTextAnchor,
+  SelectedTextContext,
+  SelectedTextSource,
+} from "./types";
 import {
   buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
@@ -13,6 +15,10 @@ import {
   buildQuoteAnchorPromptBlock,
   buildSelectedTextQuoteCitations,
 } from "./quoteCitations";
+import {
+  formatSelectedTextLocator,
+  renderSelectedTextAnchorContext,
+} from "./selectedTextAnchorFormatting";
 export { normalizeSelectedTextSource } from "./normalizers";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
@@ -163,23 +169,33 @@ export function buildQuestionWithSelectedTextContexts(
   userPrompt: string,
   options?: {
     selectedTextPaperContexts?: (PaperContextRef | undefined)[];
+    selectedTextContexts?: SelectedTextContext[];
+    resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
+    includeAnchorContext?: boolean;
     includePaperAttribution?: boolean;
   },
 ): string {
   const normalizedPrompt = userPrompt.trim() || DEFAULT_SELECTED_TEXT_PROMPT;
-  const normalizedTexts = selectedTexts
-    .map((text) => sanitizeText(text).trim())
-    .filter(Boolean);
-  if (!normalizedTexts.length) {
+  const contexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: options?.selectedTextContexts,
+    selectedTexts,
+    selectedTextSources,
+    selectedTextPaperContexts: options?.selectedTextPaperContexts,
+    sanitizeText,
+  });
+  if (!contexts.length) {
     return `User question:\n${normalizedPrompt}`;
   }
-  const normalizedSources = normalizedTexts.map((_, index) =>
-    normalizeSelectedTextSource(selectedTextSources?.[index]),
+  const normalizedTexts = contexts.map((context) => context.text);
+  const normalizedSources = contexts.map((context) => context.source);
+  const selectedTextPaperContexts = contexts.map(
+    (context) => context.paperContext,
   );
-  const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
-    options?.selectedTextPaperContexts,
-    normalizedTexts.length,
-    { sanitizeText },
+  const anchorsByContextIndex = new Map(
+    (options?.resolvedSelectedTextAnchors || []).map((anchor) => [
+      anchor.contextIndex,
+      anchor,
+    ]),
   );
   const includePaperAttribution =
     options?.includePaperAttribution === true &&
@@ -187,7 +203,8 @@ export function buildQuestionWithSelectedTextContexts(
   if (
     normalizedTexts.length === 1 &&
     normalizedSources[0] === "pdf" &&
-    !includePaperAttribution
+    !includePaperAttribution &&
+    !formatSelectedTextLocator(contexts[0], anchorsByContextIndex.get(0))
   ) {
     return buildQuestionWithSelectedText(normalizedTexts[0], normalizedPrompt);
   }
@@ -225,7 +242,12 @@ export function buildQuestionWithSelectedTextContexts(
     const citationPart = sourceCitationLabel
       ? ` [source_label=${sourceCitationLabel}]`
       : "";
-    return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}${citationPart}:\n"""\n${text}\n"""`;
+    const locator = formatSelectedTextLocator(
+      contexts[index],
+      anchorsByContextIndex.get(index),
+    );
+    const locatorPart = locator ? ` ${locator}` : "";
+    return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}${citationPart}${locatorPart}:\n"""\n${text}\n"""`;
   });
   const selectedTextQuoteCitations = includePaperAttribution
     ? buildSelectedTextQuoteCitations(
@@ -234,7 +256,9 @@ export function buildQuestionWithSelectedTextContexts(
         selectedTextPaperContexts,
       )
     : [];
-  const anchorGuidance = buildQuoteAnchorPromptBlock(selectedTextQuoteCitations);
+  const anchorGuidance = buildQuoteAnchorPromptBlock(
+    selectedTextQuoteCitations,
+  );
   const guidanceLines =
     includePaperAttribution &&
     selectedTextPaperContexts.some((entry) => !!entry)
@@ -247,9 +271,16 @@ export function buildQuestionWithSelectedTextContexts(
   const guidance = guidanceLines.length
     ? `${guidanceLines.join("\n")}\n\n`
     : "";
-  return `Selected text contexts with explicit sources:\n${guidance}${contextBlocks.join(
+  const anchorContext = options?.includeAnchorContext
+    ? renderSelectedTextAnchorContext({
+        selectedTextContexts: contexts,
+        anchors: options.resolvedSelectedTextAnchors || [],
+      })
+    : "";
+  const question = `Selected text contexts with explicit sources:\n${guidance}${contextBlocks.join(
     "\n\n",
   )}\n\nUser question:\n${normalizedPrompt}`;
+  return anchorContext ? `${question}\n\n${anchorContext}` : question;
 }
 
 export function resolvePromptText(
@@ -415,9 +446,7 @@ export function setTokenUsage(
       typeof options.cacheReadTokens === "number" &&
       options.cacheReadTokens > 0
     ) {
-      const provider = options.cacheProvider
-        ? `${options.cacheProvider} `
-        : "";
+      const provider = options.cacheProvider ? `${options.cacheProvider} ` : "";
       cacheLines.push(
         `${provider}cache read: ${formatTokenCount(options.cacheReadTokens)} input tokens`,
       );

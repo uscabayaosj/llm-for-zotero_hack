@@ -5,6 +5,8 @@ import type {
   CollectionContextRef,
   NoteContextRef,
   PaperContextRef,
+  ResolvedSelectedTextAnchor,
+  SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
 } from "../../shared/types";
@@ -21,8 +23,10 @@ export type TurnContextEnvelopeInput = Pick<
   | "selectedCollectionContexts"
   | "selectedPaperContexts"
   | "selectedTagContexts"
+  | "selectedTextContexts"
   | "selectedTextNoteContexts"
   | "selectedTextPaperContexts"
+  | "resolvedSelectedTextAnchors"
   | "selectedTextSources"
   | "selectedTexts"
 > & {
@@ -48,6 +52,7 @@ export type TurnContextEnvelope = {
   selectedTextCount: number;
   selectedTextSources: SelectedTextSource[];
   selectedTextPaperTitles: string[];
+  selectedTextLocators: string[];
   selectedTextNotes: Array<{
     index: number;
     noteId?: number;
@@ -62,6 +67,29 @@ export type TurnContextEnvelope = {
     "noteId" | "noteKind" | "parentItemId" | "title"
   >;
 };
+
+function formatSelectionLocator(
+  context: SelectedTextContext,
+  anchor?: ResolvedSelectedTextAnchor,
+): string {
+  if (context.source !== "pdf") return "";
+  const contextItemId =
+    normalizeNumber(context.contextItemId) ||
+    normalizeNumber(context.paperContext?.contextItemId) ||
+    anchor?.contextItemId;
+  const pageIndex = Number.isFinite(context.pageIndex)
+    ? Math.max(0, Math.floor(context.pageIndex as number))
+    : anchor?.pageIndex;
+  const pageLabel =
+    normalizeText(context.pageLabel || anchor?.pageLabel) ||
+    (pageIndex !== undefined ? `${pageIndex + 1}` : "");
+  return renderFields([
+    ["attachmentId", contextItemId],
+    ["pageLabel", pageLabel],
+    ["pageIndex", pageIndex],
+    ["resolution", anchor?.resolution],
+  ]);
+}
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" && value.trim() ? value.trim() : "";
@@ -182,14 +210,35 @@ export function buildTurnContextEnvelope(
     pushPaper(papers, indexByKey, paper, "pinned");
   }
 
-  const selectedTexts = Array.isArray(input.selectedTexts)
-    ? input.selectedTexts
+  const selectedTextContexts = Array.isArray(input.selectedTextContexts)
+    ? input.selectedTextContexts
     : [];
-  const selectedTextSources = selectedTexts.map(
-    (_, index) => input.selectedTextSources?.[index] || "pdf",
-  );
-  const selectedTextPaperTitles = (input.selectedTextPaperContexts || [])
+  const selectedTexts = selectedTextContexts.length
+    ? selectedTextContexts.map((context) => context.text)
+    : Array.isArray(input.selectedTexts)
+      ? input.selectedTexts
+      : [];
+  const selectedTextSources = selectedTextContexts.length
+    ? selectedTextContexts.map((context) => context.source)
+    : selectedTexts.map(
+        (_, index) => input.selectedTextSources?.[index] || "pdf",
+      );
+  const selectedTextPaperContexts = selectedTextContexts.length
+    ? selectedTextContexts.map((context) => context.paperContext)
+    : input.selectedTextPaperContexts || [];
+  const selectedTextPaperTitles = selectedTextPaperContexts
     .map((paper) => normalizeText(paper?.title))
+    .filter(Boolean);
+  const anchorsByIndex = new Map(
+    (input.resolvedSelectedTextAnchors || []).map((anchor) => [
+      anchor.contextIndex,
+      anchor,
+    ]),
+  );
+  const selectedTextLocators = selectedTextContexts
+    .map((context, index) =>
+      formatSelectionLocator(context, anchorsByIndex.get(index)),
+    )
     .filter(Boolean);
   const selectedTextNotes: TurnContextEnvelope["selectedTextNotes"] = [];
   (input.selectedTextNoteContexts || []).forEach((note, index) => {
@@ -226,6 +275,7 @@ export function buildTurnContextEnvelope(
     selectedTextCount: selectedTexts.length,
     selectedTextSources,
     selectedTextPaperTitles,
+    selectedTextLocators,
     selectedTextNotes,
     screenshotCount: (input.screenshots || []).filter(Boolean).length,
     attachments: (input.attachments || []).filter(Boolean),
@@ -307,6 +357,11 @@ export function renderTurnContextEnvelopeForModel(
     if (envelope.selectedTextPaperTitles.length) {
       lines.push(
         `Selected text papers: ${envelope.selectedTextPaperTitles.join("; ")}`,
+      );
+    }
+    if (envelope.selectedTextLocators.length) {
+      lines.push(
+        `Selected text locators: ${envelope.selectedTextLocators.join(" | ")}`,
       );
     }
     if (envelope.selectedTextNotes.length) {

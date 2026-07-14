@@ -8,6 +8,8 @@ import type {
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
+  ResolvedSelectedTextAnchor,
+  SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
 } from "../shared/types";
@@ -27,6 +29,8 @@ export type AgentRequest = {
   scopeId?: string;
   scopeLabel?: string;
   activeItemId?: number;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];

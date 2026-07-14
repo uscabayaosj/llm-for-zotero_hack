@@ -3,6 +3,8 @@ import type {
   CollectionContextRef,
   NoteContextRef,
   PaperContextRef,
+  ResolvedSelectedTextAnchor,
+  SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
 } from "../shared/types";
@@ -47,6 +49,8 @@ export type CodexNativeSkillScope = {
 
 export type CodexNativeSkillContext = {
   forcedSkillIds?: string[];
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -293,6 +297,10 @@ export function buildCodexNativeSkillRequest(
     userText: params.userText,
     activeItemId: scope.activeItemId || scope.paperItemID,
     libraryID: scope.libraryID,
+    selectedTextContexts: normalizeList(skillContext?.selectedTextContexts),
+    resolvedSelectedTextAnchors: normalizeList(
+      skillContext?.resolvedSelectedTextAnchors,
+    ),
     selectedTexts: normalizeList(skillContext?.selectedTexts),
     selectedTextSources: normalizeList(skillContext?.selectedTextSources),
     selectedTextPaperContexts: normalizeList(

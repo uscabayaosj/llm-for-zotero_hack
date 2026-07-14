@@ -55,7 +55,11 @@ import type {
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
+  ResolvedSelectedTextAnchor,
+  SelectedTextContext,
 } from "../shared/types";
+import { synthesizeSelectedTextContexts } from "../modules/contextPanel/normalizers";
+import { formatSelectedTextLocator } from "../modules/contextPanel/selectedTextAnchorFormatting";
 import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,
@@ -218,6 +222,8 @@ type ContextEnvelope = {
   selectedTexts: Array<{
     source: string;
     text: string;
+    locator?: string;
+    localContext?: string;
     noteContext?: {
       noteItemId?: number;
       title: string;
@@ -374,6 +380,8 @@ type BridgeRuntimeRequest = {
   apiBase?: string;
   authMode?: string;
   providerProtocol?: string;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: unknown[];
   selectedTextNoteContexts?: NoteContextRef[];
@@ -1385,29 +1393,41 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
   const turnContextEnvelope = buildTurnContextEnvelope(request);
   const visibleContext =
     renderTurnContextEnvelopeForModel(turnContextEnvelope) || undefined;
-  const selectedTexts = Array.isArray(request.selectedTexts)
-    ? request.selectedTexts
-    : [];
-  const selectedSources = Array.isArray(request.selectedTextSources)
-    ? request.selectedTextSources
-    : [];
-  const selectedNoteContexts = Array.isArray(request.selectedTextNoteContexts)
-    ? request.selectedTextNoteContexts
-    : [];
+  const selectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: request.selectedTextContexts,
+    selectedTexts: request.selectedTexts,
+    selectedTextSources: request.selectedTextSources,
+    selectedTextPaperContexts: request.selectedTextPaperContexts,
+    selectedTextNoteContexts: request.selectedTextNoteContexts,
+  });
+  const selectedTexts = selectedTextContexts.map((context) => context.text);
+  const anchorsByIndex = new Map(
+    (request.resolvedSelectedTextAnchors || []).map((anchor) => [
+      anchor.contextIndex,
+      anchor,
+    ]),
+  );
   const selectedTextRows = selectedTexts
     .slice(0, 6)
     .map((text, index) => ({
-      source:
-        typeof selectedSources[index] === "string"
-          ? selectedSources[index]
-          : "unknown",
+      source: selectedTextContexts[index]?.source || "unknown",
       text: trimText(text, 280),
-      noteContext: selectedNoteContexts[index]
+      locator:
+        formatSelectedTextLocator(
+          selectedTextContexts[index],
+          anchorsByIndex.get(index),
+        ) || undefined,
+      localContext: anchorsByIndex.get(index)?.contextText,
+      noteContext: selectedTextContexts[index]?.noteContext
         ? {
-            noteItemId: selectedNoteContexts[index]?.noteItemId,
-            title: trimText(selectedNoteContexts[index]?.title, 120),
-            noteKind: selectedNoteContexts[index]?.noteKind || "",
-            parentItemId: selectedNoteContexts[index]?.parentItemId,
+            noteItemId: selectedTextContexts[index]?.noteContext?.noteItemId,
+            title: trimText(
+              selectedTextContexts[index]?.noteContext?.title,
+              120,
+            ),
+            noteKind: selectedTextContexts[index]?.noteContext?.noteKind || "",
+            parentItemId:
+              selectedTextContexts[index]?.noteContext?.parentItemId,
           }
         : undefined,
     }))
@@ -1701,6 +1721,14 @@ async function buildBridgeRuntimeRequest(
     apiBase: request.apiBase,
     authMode: request.authMode,
     providerProtocol: request.providerProtocol,
+    selectedTextContexts: Array.isArray(request.selectedTextContexts)
+      ? request.selectedTextContexts
+      : undefined,
+    resolvedSelectedTextAnchors: Array.isArray(
+      request.resolvedSelectedTextAnchors,
+    )
+      ? request.resolvedSelectedTextAnchors
+      : undefined,
     selectedTexts: Array.isArray(request.selectedTexts)
       ? request.selectedTexts
       : undefined,

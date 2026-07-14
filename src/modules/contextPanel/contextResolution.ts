@@ -9,6 +9,7 @@ import {
   normalizeNoteContextRef,
   normalizePaperContextRefs,
   normalizePositiveInt,
+  normalizeSelectedTextContexts,
   normalizeSelectedTextSource,
 } from "./normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
@@ -851,68 +852,6 @@ export function getActiveReaderSelectionText(
   return "";
 }
 
-function normalizeSelectedTextContexts(value: unknown): SelectedTextContext[] {
-  if (Array.isArray(value)) {
-    const out: SelectedTextContext[] = [];
-    for (const entry of value) {
-      if (typeof entry === "string") {
-        const normalizedText = normalizeSelectedText(entry);
-        if (!normalizedText) continue;
-        out.push({ text: normalizedText, source: "pdf" });
-        continue;
-      }
-      if (!entry || typeof entry !== "object") continue;
-      const typed = entry as {
-        text?: unknown;
-        source?: unknown;
-        paperContext?: unknown;
-        noteContext?: unknown;
-        contextItemId?: unknown;
-        pageIndex?: unknown;
-        pageLabel?: unknown;
-      };
-      const normalizedText = normalizeSelectedText(
-        typeof typed.text === "string" ? typed.text : "",
-      );
-      if (!normalizedText) continue;
-      const normalizedPaperContext = normalizePaperContextRefs([
-        typed.paperContext,
-      ])[0];
-      const normalizedNoteContext = normalizeNoteContextRef(typed.noteContext, {
-        sanitizeText,
-      });
-      const contextItemId =
-        normalizePositiveInt(typed.contextItemId) || undefined;
-      const rawPageIndex = Number(typed.pageIndex);
-      const pageIndex =
-        Number.isFinite(rawPageIndex) && rawPageIndex >= 0
-          ? Math.floor(rawPageIndex)
-          : undefined;
-      const pageLabel =
-        typeof typed.pageLabel === "string" && typed.pageLabel.trim()
-          ? typed.pageLabel.trim()
-          : pageIndex !== undefined
-            ? `${pageIndex + 1}`
-            : undefined;
-      out.push({
-        text: normalizedText,
-        source: normalizeSelectedTextSource(typed.source),
-        paperContext: normalizedPaperContext,
-        noteContext: normalizedNoteContext,
-        contextItemId,
-        pageIndex,
-        pageLabel,
-      });
-    }
-    return out;
-  }
-  if (typeof value === "string") {
-    const normalized = normalizeSelectedText(value);
-    return normalized ? [{ text: normalized, source: "pdf" }] : [];
-  }
-  return [];
-}
-
 export function getSelectedTextContexts(itemId: number): string[] {
   return getSelectedTextContextEntries(itemId).map((entry) => entry.text);
 }
@@ -921,7 +860,7 @@ export function getSelectedTextContextEntries(
   itemId: number,
 ): SelectedTextContext[] {
   const raw = selectedTextCache.get(itemId);
-  const normalized = normalizeSelectedTextContexts(raw);
+  const normalized = normalizeSelectedTextContexts(raw, { sanitizeText });
   const synced = syncNoteBackedSelectedTextContexts(normalized);
   const deduped = dedupeNoteBackedSelectedTextContexts(synced.contexts);
   if (synced.changed || deduped.changed) {

@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   assembleFullMultiPaperContext,
   assembleRetrievedMultiPaperContext,
+  buildLockedChunkIndexesByContextItem,
   resolveMultiContextPlan,
   selectContextAssemblyMode,
 } from "../src/modules/contextPanel/multiContextPlanner";
@@ -276,6 +277,69 @@ describe("multiContextPlanner", function () {
     assert.isAbove(full.estimatedTokens, 0);
   });
 
+  it("locks highlight chunks before coverage and MMR without duplication", async function () {
+    const paper: PaperContextRef = {
+      itemId: 4,
+      contextItemId: 44,
+      title: "Locked Highlight Paper",
+    };
+    const pdfContext = buildPdfContext("Locked Highlight Paper", [
+      "Highly relevant query terms about calibration recall.",
+      "Unrelated middle material.",
+      "LOCKED-HIGHLIGHT surrounding evidence from the selected page.",
+    ]);
+    const retrieved = await assembleRetrievedMultiPaperContext({
+      papers: [
+        {
+          order: 1,
+          paperKey: buildPaperKey(paper),
+          paperContext: paper,
+          contextItem: null,
+          pdfContext,
+          isActive: false,
+          pinKind: "none",
+        },
+      ] as any,
+      question: "What improves calibration recall?",
+      contextBudgetTokens: 2_000,
+      minChunksByPaper: new Map(),
+      options: {
+        maxChunks: 1,
+        lockedChunkIndexesByContextItem: new Map([[44, [2]]]),
+      },
+    });
+
+    assert.equal(retrieved.selectedChunkCount, 1);
+    assert.include(retrieved.contextText, "LOCKED-HIGHLIGHT");
+    assert.notInclude(
+      retrieved.contextText,
+      "Highly relevant query terms about calibration recall.",
+    );
+  });
+
+  it("orders every selected primary before allocating highlight neighbors", function () {
+    const locked = buildLockedChunkIndexesByContextItem([
+      {
+        contextIndex: 0,
+        contextItemId: 44,
+        resolution: "chunks",
+        primaryChunkIndex: 3,
+        preferredChunkIndexes: [2, 3, 4],
+        injectedChars: 100,
+      },
+      {
+        contextIndex: 1,
+        contextItemId: 44,
+        resolution: "chunks",
+        primaryChunkIndex: 9,
+        preferredChunkIndexes: [8, 9, 10],
+        injectedChars: 100,
+      },
+    ]);
+
+    assert.deepEqual(locked.get(44), [3, 9, 2, 8, 4, 10]);
+  });
+
   it("reserves context budget for an existing prefix block", async function () {
     const withoutPrefix = await resolveMultiContextPlan({
       conversationMode: "open",
@@ -304,6 +368,81 @@ describe("multiContextPlanner", function () {
       withPrefix.contextBudget.contextBudgetTokens,
       withoutPrefix.contextBudget.contextBudgetTokens,
     );
+  });
+
+  it("injects a verified page fallback when chunk mapping is inconclusive", async function () {
+    const pageText =
+      "Page 588 introduction. The selected result is surrounded by this verified page text.";
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "Explain the highlighted result.",
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      resolvedSelectedTextAnchors: [
+        {
+          contextIndex: 0,
+          contextItemId: 44,
+          pageIndex: 587,
+          pageLabel: "588",
+          resolution: "page",
+          preferredChunkIndexes: [],
+          contextText: pageText,
+          sourceType: "zotero-page-cache",
+          injectedChars: pageText.length,
+        },
+      ],
+    });
+
+    assert.include(plan.contextText, "Highlight-aware page fallback context:");
+    assert.include(plan.contextText, "attachment_id=44");
+    assert.include(plan.contextText, "page_label=588");
+    assert.include(plan.contextText, "page_index=587");
+    assert.include(plan.contextText, pageText);
+  });
+
+  it("omits duplicate page fallback text when the same paper is included in full", async function () {
+    const paper = registerMockPaper({
+      itemId: 8,
+      contextItemId: 88,
+      title: "Full Highlight Paper",
+      pdfContext: buildPdfContext("Full Highlight Paper", [
+        "Complete paper text already contains the highlighted page.",
+      ]),
+    });
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "paper",
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
+      question: "Explain the highlighted result.",
+      paperContexts: [],
+      fullTextPaperContexts: [paper],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      resolvedSelectedTextAnchors: [
+        {
+          contextIndex: 0,
+          contextItemId: paper.contextItemId,
+          pageIndex: 0,
+          pageLabel: "1",
+          resolution: "page",
+          preferredChunkIndexes: [],
+          contextText: "DUPLICATE-PAGE-FALLBACK",
+          sourceType: "zotero-page-cache",
+          injectedChars: 23,
+        },
+      ],
+    });
+
+    assert.equal(plan.mode, "full");
+    assert.include(plan.contextText, "Complete paper text");
+    assert.notInclude(plan.contextText, "DUPLICATE-PAGE-FALLBACK");
   });
 
   it("uses full paper context in paper mode when the active paper is marked for full text", async function () {

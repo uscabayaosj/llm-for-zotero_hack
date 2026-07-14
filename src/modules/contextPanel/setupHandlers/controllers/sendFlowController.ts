@@ -8,6 +8,7 @@ import type {
   ChatRuntimeMode,
   CollectionContextRef,
   PaperContextRef,
+  ResolvedSelectedTextAnchor,
   ResolvedContextSource,
   SelectedTextContext,
   TagContextRef,
@@ -70,6 +71,10 @@ type SendFlowControllerDeps = {
   closeSlashMenu: () => void;
   closePaperPicker: () => void;
   getSelectedTextContextEntries: (itemId: number) => SelectedTextContext[];
+  resolveSelectedTextAnchors?: (params: {
+    selectedTextContexts: SelectedTextContext[];
+    paperContexts?: PaperContextRef[];
+  }) => Promise<ResolvedSelectedTextAnchor[]>;
   getSelectedPaperContexts: (itemId: number) => PaperContextRef[];
   getSelectedCollectionContexts: (itemId: number) => CollectionContextRef[];
   getSelectedTagContexts: (itemId: number) => TagContextRef[];
@@ -117,6 +122,9 @@ type SendFlowControllerDeps = {
     promptText: string,
     options?: {
       selectedTextPaperContexts?: (PaperContextRef | undefined)[];
+      selectedTextContexts?: SelectedTextContext[];
+      resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
+      includeAnchorContext?: boolean;
       includePaperAttribution?: boolean;
     },
   ) => string;
@@ -263,6 +271,12 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         item,
         selectedPaperContexts,
       );
+      const resolvedSelectedTextAnchors = deps.resolveSelectedTextAnchors
+        ? await deps.resolveSelectedTextAnchors({
+            selectedTextContexts: selectedContexts,
+            paperContexts: allSelectedPaperContexts,
+          })
+        : [];
       // Resolve PDFs based on model capability. The visible chip/attachment state
       // stays unchanged; these variables are the provider-specific model inputs.
       const isWebChat = earlyProfile?.authMode === "webchat";
@@ -409,7 +423,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             selectedTextSources,
             resolvedPromptText,
             {
+              selectedTextContexts: selectedContexts,
               selectedTextPaperContexts,
+              resolvedSelectedTextAnchors,
+              includeAnchorContext: isWebChat,
               includePaperAttribution: deps.isGlobalMode(),
             },
           )
@@ -508,6 +525,12 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           item,
           contextSource,
           displayQuestion,
+          selectedTextContexts: selectedContexts.length
+            ? selectedContexts
+            : undefined,
+          resolvedSelectedTextAnchors: resolvedSelectedTextAnchors.length
+            ? resolvedSelectedTextAnchors
+            : undefined,
           selectedTexts: selectedTexts.length ? selectedTexts : undefined,
           selectedTextSources: selectedTexts.length
             ? selectedTextSources
@@ -646,6 +669,12 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         reasoning: selectedReasoning,
         advanced: advancedParams,
         displayQuestion,
+        selectedTextContexts: selectedContexts.length
+          ? selectedContexts
+          : undefined,
+        resolvedSelectedTextAnchors: resolvedSelectedTextAnchors.length
+          ? resolvedSelectedTextAnchors
+          : undefined,
         selectedTexts: selectedTexts.length ? selectedTexts : undefined,
         selectedTextSources: selectedTexts.length
           ? selectedTextSources

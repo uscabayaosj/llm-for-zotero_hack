@@ -34,6 +34,11 @@ import {
   normalizeAgentContentInputs,
 } from "./contentCapabilities";
 import { detectExplicitFullReadIntent } from "../../modules/contextPanel/retrievalQueryPlan";
+import { synthesizeSelectedTextContexts } from "../../modules/contextPanel/normalizers";
+import {
+  formatSelectedTextLocator,
+  renderSelectedTextAnchorContext,
+} from "../../modules/contextPanel/selectedTextAnchorFormatting";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
@@ -141,18 +146,38 @@ function buildFullUserMessage(
       contextLines.push(`Original note HTML:\n"""\n${note.noteHtml}\n"""`);
     }
   }
-  if (Array.isArray(request.selectedTexts) && request.selectedTexts.length) {
+  const selectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: request.selectedTextContexts,
+    selectedTexts: request.selectedTexts,
+    selectedTextSources: request.selectedTextSources,
+    selectedTextPaperContexts: request.selectedTextPaperContexts,
+    selectedTextNoteContexts: request.selectedTextNoteContexts,
+  });
+  const selectedTexts = selectedTextContexts.map((context) => context.text);
+  const selectedTextSources = selectedTextContexts.map(
+    (context) => context.source,
+  );
+  const selectedTextPaperContexts = selectedTextContexts.map(
+    (context) => context.paperContext,
+  );
+  const anchorsByIndex = new Map(
+    (request.resolvedSelectedTextAnchors || []).map((anchor) => [
+      anchor.contextIndex,
+      anchor,
+    ]),
+  );
+  if (selectedTexts.length) {
     const selectedTextQuoteAnchors = buildQuoteAnchorPromptBlock(
       buildSelectedTextQuoteCitations(
-        request.selectedTexts,
-        request.selectedTextSources,
-        request.selectedTextPaperContexts,
+        selectedTexts,
+        selectedTextSources,
+        selectedTextPaperContexts,
       ),
     );
-    const selectedTextBlock = request.selectedTexts
+    const selectedTextBlock = selectedTexts
       .map((entry, index) => {
-        const source = request.selectedTextSources?.[index];
-        const paperContext = request.selectedTextPaperContexts?.[index];
+        const source = selectedTextSources[index];
+        const paperContext = selectedTextPaperContexts[index];
         const sourceLabel =
           source === "model"
             ? "model response"
@@ -161,7 +186,7 @@ function buildFullUserMessage(
               : source === "note-edit"
                 ? "active note editing focus"
                 : "PDF reader";
-        const noteContext = request.selectedTextNoteContexts?.[index];
+        const noteContext = selectedTextContexts[index]?.noteContext;
         const sourceMeta =
           source === "pdf" && paperContext
             ? `, paper=${paperContext.title}, source_label=${formatPaperSourceLabel(paperContext)}`
@@ -179,7 +204,11 @@ function buildFullUserMessage(
                   .filter(Boolean)
                   .join(", ")
               : "";
-        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]:\n"""\n${entry}\n"""`;
+        const locator = formatSelectedTextLocator(
+          selectedTextContexts[index],
+          anchorsByIndex.get(index),
+        );
+        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]${locator ? ` ${locator}` : ""}:\n"""\n${entry}\n"""`;
       })
       .join("\n\n");
     contextLines.push(
@@ -187,6 +216,11 @@ function buildFullUserMessage(
         .filter(Boolean)
         .join("\n\n"),
     );
+    const anchorContext = renderSelectedTextAnchorContext({
+      selectedTextContexts,
+      anchors: request.resolvedSelectedTextAnchors || [],
+    });
+    if (anchorContext) contextLines.push(anchorContext);
   }
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>

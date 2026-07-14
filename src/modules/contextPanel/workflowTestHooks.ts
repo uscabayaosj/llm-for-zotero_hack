@@ -4,9 +4,10 @@ import type { ContextAssemblyStrategy, MultiContextPlan } from "./types";
 
 export type WorkflowTestSendInterceptor = (
   opts: SendQuestionOptions,
-) => Promise<void> | void;
+) => Promise<boolean | void> | boolean | void;
 
 export type WorkflowTestFinalRequestSnapshot = {
+  prompt: string;
   combinedContext: string;
   strategy: ContextAssemblyStrategy;
   systemMessages: string[];
@@ -18,7 +19,7 @@ export type WorkflowTestFinalRequestSnapshot = {
 
 export type WorkflowTestFinalRequestInterceptor = (
   snapshot: WorkflowTestFinalRequestSnapshot,
-) => Promise<void> | void;
+) => Promise<boolean | void> | boolean | void;
 
 let sendInterceptor: WorkflowTestSendInterceptor | null = null;
 let finalRequestInterceptor: WorkflowTestFinalRequestInterceptor | null = null;

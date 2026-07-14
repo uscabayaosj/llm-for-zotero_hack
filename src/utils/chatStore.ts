@@ -1,6 +1,7 @@
 import type {
   CollectionContextRef,
   NoteContextRef,
+  SelectedTextContext,
   SelectedTextSource,
   PaperContextRef,
   QuoteCitation,
@@ -58,6 +59,7 @@ import {
   normalizeSelectedTextNoteContexts,
   normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
+  synthesizeSelectedTextContexts,
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
@@ -83,6 +85,7 @@ export type StoredChatMessage = {
   runMode?: "chat" | "agent";
   agentRunId?: string;
   selectedText?: string;
+  selectedTextContexts?: SelectedTextContext[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -150,6 +153,7 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             run_mode AS runMode,
             agent_run_id AS agentRunId,
             selected_text AS selectedText,
+            selected_text_contexts_json AS selectedTextContextsJson,
             selected_texts_json AS selectedTextsJson,
             selected_text_sources_json AS selectedTextSourcesJson,
             selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
@@ -176,7 +180,7 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             context_window AS contextWindow`;
 
 async function tableExists(tableName: string): Promise<boolean> {
-  let rows = (await Zotero.DB.queryAsync(
+  const rows = (await Zotero.DB.queryAsync(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
     [tableName],
   )) as Array<{ name?: unknown }> | undefined;
@@ -184,7 +188,7 @@ async function tableExists(tableName: string): Promise<boolean> {
 }
 
 async function countRows(tableName: string): Promise<number> {
-  let rows = (await Zotero.DB.queryAsync(
+  const rows = (await Zotero.DB.queryAsync(
     `SELECT COUNT(*) AS count FROM ${tableName}`,
   )) as Array<{ count?: unknown }> | undefined;
   const count = Number(rows?.[0]?.count);
@@ -254,6 +258,7 @@ function normalizeSessionVersion(sessionVersion: number): number | null {
 function normalizeConversationTitleSeed(value: string): string {
   if (typeof value !== "string") return "";
   const normalized = value
+    // eslint-disable-next-line no-control-regex -- Conversation titles must drop stored control bytes.
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -398,6 +403,7 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "run_mode",
   "agent_run_id",
   "selected_text",
+  "selected_text_contexts_json",
   "selected_texts_json",
   "selected_text_sources_json",
   "selected_text_paper_contexts_json",
@@ -1099,6 +1105,7 @@ export async function initChatStore(): Promise<void> {
         run_mode TEXT CHECK(run_mode IN ('chat', 'agent')),
         agent_run_id TEXT,
         selected_text TEXT,
+        selected_text_contexts_json TEXT,
         selected_texts_json TEXT,
         selected_text_sources_json TEXT,
         selected_text_paper_contexts_json TEXT,
@@ -1234,6 +1241,15 @@ export async function initChatStore(): Promise<void> {
       await Zotero.DB.queryAsync(
         `ALTER TABLE ${CHAT_MESSAGES_TABLE}
          ADD COLUMN selected_text TEXT`,
+      );
+    }
+    const hasSelectedTextContextsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "selected_text_contexts_json"),
+    );
+    if (!hasSelectedTextContextsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CHAT_MESSAGES_TABLE}
+         ADD COLUMN selected_text_contexts_json TEXT`,
       );
     }
     const hasSelectedTextsJsonColumn = Boolean(
@@ -1521,7 +1537,7 @@ export async function loadConversation(
   const normalizedLimit = normalizeLimit(limit, 200);
   const selector =
     await resolveRepairingMessageConversationSelector(normalizedKey);
-  let rows = (await Zotero.DB.queryAsync(
+  const rows = (await Zotero.DB.queryAsync(
     buildLatestStoredMessagesQuery({
       tableName: CHAT_MESSAGES_TABLE,
       selectColumnsSql: CHAT_MESSAGE_SELECT_COLUMNS_SQL,
@@ -1536,6 +1552,7 @@ export async function loadConversation(
         selectedText?: unknown;
         runMode?: unknown;
         agentRunId?: unknown;
+        selectedTextContextsJson?: unknown;
         selectedTextsJson?: unknown;
         selectedTextSourcesJson?: unknown;
         selectedTextPaperContextsJson?: unknown;
@@ -1650,6 +1667,25 @@ export async function loadConversation(
         selectedTextNoteContexts = undefined;
       }
     }
+    let selectedTextContextsJson: unknown;
+    if (
+      typeof row.selectedTextContextsJson === "string" &&
+      row.selectedTextContextsJson
+    ) {
+      try {
+        selectedTextContextsJson = JSON.parse(row.selectedTextContextsJson);
+      } catch (_err) {
+        selectedTextContextsJson = undefined;
+      }
+    }
+    const selectedTextContexts = synthesizeSelectedTextContexts({
+      selectedTextContexts: selectedTextContextsJson,
+      selectedTexts: normalizedTexts,
+      legacySelectedText: row.selectedText,
+      selectedTextSources,
+      selectedTextPaperContexts,
+      selectedTextNoteContexts,
+    });
     let paperContexts: PaperContextRef[] | undefined;
     if (typeof row.paperContextsJson === "string" && row.paperContextsJson) {
       try {
@@ -1793,16 +1829,23 @@ export async function loadConversation(
           ? row.agentRunId.trim()
           : undefined,
       selectedText:
-        typeof row.selectedText === "string" ? row.selectedText : undefined,
-      selectedTexts: normalizedTexts.length ? normalizedTexts : undefined,
-      selectedTextSources: (() => {
-        if (!normalizedTexts.length) return undefined;
-        return normalizedTexts.map((_, index) =>
-          normalizeSelectedTextSource(selectedTextSources?.[index]),
-        );
-      })(),
-      selectedTextPaperContexts,
-      selectedTextNoteContexts,
+        selectedTextContexts[0]?.text ||
+        (typeof row.selectedText === "string" ? row.selectedText : undefined),
+      selectedTextContexts: selectedTextContexts.length
+        ? selectedTextContexts
+        : undefined,
+      selectedTexts: selectedTextContexts.length
+        ? selectedTextContexts.map((context) => context.text)
+        : undefined,
+      selectedTextSources: selectedTextContexts.length
+        ? selectedTextContexts.map((context) => context.source)
+        : undefined,
+      selectedTextPaperContexts: selectedTextContexts.length
+        ? selectedTextContexts.map((context) => context.paperContext)
+        : undefined,
+      selectedTextNoteContexts: selectedTextContexts.length
+        ? selectedTextContexts.map((context) => context.noteContext)
+        : undefined,
       forcedSkillIds:
         role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
       paperContexts,
@@ -1861,15 +1904,18 @@ export async function forkUpstreamConversationMessages(params: {
   throughAssistantTimestamp: number;
   timestampBase?: number;
 }): Promise<ForkConversationMessagesResult> {
-  return copyConversationMessagesThroughAssistantAnchor({
-    tableName: CHAT_MESSAGES_TABLE,
-    copyColumns: CHAT_MESSAGE_COPY_COLUMNS,
-    isValidConversationKey: isUpstreamStoreConversationKey,
-    resolveSourceSelector: resolveRepairingMessageConversationSelector,
-    resolveTargetConversationID: resolveRegisteredConversationID,
-    refreshCatalogSummary: refreshUpstreamConversationCatalogSummary,
-    refreshSearchIndex: refreshUpstreamConversationSearchIndex,
-  }, params);
+  return copyConversationMessagesThroughAssistantAnchor(
+    {
+      tableName: CHAT_MESSAGES_TABLE,
+      copyColumns: CHAT_MESSAGE_COPY_COLUMNS,
+      isValidConversationKey: isUpstreamStoreConversationKey,
+      resolveSourceSelector: resolveRepairingMessageConversationSelector,
+      resolveTargetConversationID: resolveRegisteredConversationID,
+      refreshCatalogSummary: refreshUpstreamConversationCatalogSummary,
+      refreshSearchIndex: refreshUpstreamConversationSearchIndex,
+    },
+    params,
+  );
 }
 
 export async function appendMessage(
@@ -1880,24 +1926,23 @@ export async function appendMessage(
   if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
 
   const timestamp = Number(message.timestamp);
-  const selectedTexts = Array.isArray(message.selectedTexts)
-    ? message.selectedTexts
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    : typeof message.selectedText === "string" && message.selectedText.trim()
-      ? [message.selectedText.trim()]
-      : [];
-  const selectedTextSources = selectedTexts.map((_, index) =>
-    normalizeSelectedTextSource(message.selectedTextSources?.[index]),
+  const selectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: message.selectedTextContexts,
+    selectedTexts: message.selectedTexts,
+    legacySelectedText: message.selectedText,
+    selectedTextSources: message.selectedTextSources,
+    selectedTextPaperContexts: message.selectedTextPaperContexts,
+    selectedTextNoteContexts: message.selectedTextNoteContexts,
+  });
+  const selectedTexts = selectedTextContexts.map((context) => context.text);
+  const selectedTextSources = selectedTextContexts.map(
+    (context) => context.source,
   );
-  const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
-    message.selectedTextPaperContexts,
-    selectedTexts.length,
+  const selectedTextPaperContexts = selectedTextContexts.map(
+    (context) => context.paperContext,
   );
-  const selectedTextNoteContexts = normalizeSelectedTextNoteContexts(
-    message.selectedTextNoteContexts,
-    selectedTexts.length,
+  const selectedTextNoteContexts = selectedTextContexts.map(
+    (context) => context.noteContext,
   );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
   const fullTextPaperContexts = normalizePaperContextRefs(
@@ -1927,8 +1972,8 @@ export async function appendMessage(
   await Zotero.DB.executeTransaction(async () => {
     await Zotero.DB.queryAsync(
       `INSERT INTO ${CHAT_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conversationID,
         normalizedKey,
@@ -1938,6 +1983,9 @@ export async function appendMessage(
         message.runMode || null,
         message.agentRunId || null,
         selectedTexts[0] || message.selectedText || null,
+        selectedTextContexts.length
+          ? JSON.stringify(selectedTextContexts)
+          : null,
         selectedTexts.length ? JSON.stringify(selectedTexts) : null,
         selectedTextSources.length ? JSON.stringify(selectedTextSources) : null,
         selectedTextPaperContexts.some((entry) => Boolean(entry))
@@ -1994,6 +2042,7 @@ export async function updateLatestUserMessage(
     | "runMode"
     | "agentRunId"
     | "selectedText"
+    | "selectedTextContexts"
     | "selectedTexts"
     | "selectedTextSources"
     | "selectedTextPaperContexts"
@@ -2017,24 +2066,23 @@ export async function updateLatestUserMessage(
   if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey)) return;
 
   const timestamp = Number(message.timestamp);
-  const selectedTexts = Array.isArray(message.selectedTexts)
-    ? message.selectedTexts
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    : typeof message.selectedText === "string" && message.selectedText.trim()
-      ? [message.selectedText.trim()]
-      : [];
-  const selectedTextSources = selectedTexts.map((_, index) =>
-    normalizeSelectedTextSource(message.selectedTextSources?.[index]),
+  const selectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: message.selectedTextContexts,
+    selectedTexts: message.selectedTexts,
+    legacySelectedText: message.selectedText,
+    selectedTextSources: message.selectedTextSources,
+    selectedTextPaperContexts: message.selectedTextPaperContexts,
+    selectedTextNoteContexts: message.selectedTextNoteContexts,
+  });
+  const selectedTexts = selectedTextContexts.map((context) => context.text);
+  const selectedTextSources = selectedTextContexts.map(
+    (context) => context.source,
   );
-  const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
-    message.selectedTextPaperContexts,
-    selectedTexts.length,
+  const selectedTextPaperContexts = selectedTextContexts.map(
+    (context) => context.paperContext,
   );
-  const selectedTextNoteContexts = normalizeSelectedTextNoteContexts(
-    message.selectedTextNoteContexts,
-    selectedTexts.length,
+  const selectedTextNoteContexts = selectedTextContexts.map(
+    (context) => context.noteContext,
   );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
   const fullTextPaperContexts = normalizePaperContextRefs(
@@ -2070,6 +2118,7 @@ export async function updateLatestUserMessage(
            run_mode = ?,
            agent_run_id = ?,
            selected_text = ?,
+           selected_text_contexts_json = ?,
            selected_texts_json = ?,
            selected_text_sources_json = ?,
            selected_text_paper_contexts_json = ?,
@@ -2100,6 +2149,9 @@ export async function updateLatestUserMessage(
         message.runMode || null,
         message.agentRunId || null,
         selectedTexts[0] || message.selectedText || null,
+        selectedTextContexts.length
+          ? JSON.stringify(selectedTextContexts)
+          : null,
         selectedTexts.length ? JSON.stringify(selectedTexts) : null,
         selectedTextSources.length ? JSON.stringify(selectedTextSources) : null,
         selectedTextPaperContexts.some((entry) => Boolean(entry))

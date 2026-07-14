@@ -102,6 +102,40 @@ export type NoteContextRef = {
   title: string;
 };
 
+/** Stable user-selected text state persisted with a conversation turn. */
+export type SelectedTextContext = {
+  text: string;
+  source: SelectedTextSource;
+  paperContext?: PaperContextRef;
+  noteContext?: NoteContextRef;
+  /** Zotero attachment or note item that owns the selected text. */
+  contextItemId?: number;
+  /** Zero-based PDF page index used for machine operations. */
+  pageIndex?: number;
+  /** User-facing PDF page label, which may be non-numeric. */
+  pageLabel?: string;
+};
+
+export type SelectedTextAnchorResolution = "chunks" | "page" | "locator-only";
+
+/**
+ * Ephemeral model-facing context resolved from a stable selected-text context.
+ * Chunk indexes and expanded text are intentionally recomputed for every send.
+ */
+export type ResolvedSelectedTextAnchor = {
+  contextIndex: number;
+  contextItemId: number;
+  pageIndex?: number;
+  pageLabel?: string;
+  paperContext?: PaperContextRef;
+  resolution: SelectedTextAnchorResolution;
+  primaryChunkIndex?: number;
+  preferredChunkIndexes: number[];
+  contextText?: string;
+  sourceType?: string;
+  injectedChars: number;
+};
+
 /** A non-PDF, non-note file attachment (image/figure or other file) selected as reference context. */
 export type OtherContextRef = {
   contextItemId: number;

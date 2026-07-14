@@ -13,6 +13,7 @@ import type {
   WorkflowTestAttachmentFixture,
   WorkflowTestDiagnostics,
   WorkflowTestFixture,
+  WorkflowTestHighlightAwareRetrievalDiagnostics,
   WorkflowTestNoteFixture,
   WorkflowTestPanel,
   WorkflowTestReaderSelectionTrackingDiagnostics,
@@ -28,6 +29,7 @@ import {
 } from "./chat";
 import {
   applySelectedTextPreview,
+  getSelectedTextContextEntries,
   resolveContextSourceItemAsync,
 } from "./contextResolution";
 import { syncNoteEditingSelectedText } from "./noteEditing/selectionController";
@@ -54,6 +56,7 @@ import {
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
 import { config } from "./constants";
+import { collectReaderSelectionDocuments } from "./readerSelection";
 
 type PanelRecord = {
   id: string;
@@ -112,28 +115,81 @@ function sanitizeTempFilename(filename: string): string {
   return sanitized || "attachment.dat";
 }
 
-function minimalPdfBytes(title: string): Uint8Array {
-  const safeTitle = title.replace(/[()\\]/gu, " ").slice(0, 80);
-  const pdf = [
-    "%PDF-1.4",
-    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
-    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
-    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R >> endobj",
-    `4 0 obj << /Length ${safeTitle.length + 64} >> stream`,
-    "BT /F1 12 Tf 32 96 Td",
-    `(${safeTitle}) Tj`,
-    "ET",
-    "endstream endobj",
-    "xref",
-    "0 5",
-    "0000000000 65535 f ",
-    "trailer << /Root 1 0 R /Size 5 >>",
-    "startxref",
-    "0",
-    "%%EOF",
-    "",
-  ].join("\n");
+function escapePdfText(value: string): string {
+  return value
+    .replace(/\\/gu, "\\\\")
+    .replace(/\(/gu, "\\(")
+    .replace(/\)/gu, "\\)");
+}
+
+function wrapPdfPageText(value: string): string[] {
+  const words = value
+    .replace(/[^\x20-\x7E\n]+/gu, " ")
+    .split(/\s+/u)
+    .filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= 82) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = word;
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function buildPdfBytes(pageTexts: string[]): Uint8Array {
+  const pages = pageTexts.length ? pageTexts : ["Workflow PDF fixture"];
+  const fontObjectId = 3 + pages.length * 2;
+  const pageObjectIds = pages.map((_, index) => 3 + index * 2);
+  const objects: string[] = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${pageObjectIds
+      .map((id) => `${id} 0 R`)
+      .join(" ")}] /Count ${pages.length} >>`,
+  ];
+  for (const [index, pageText] of pages.entries()) {
+    const pageObjectId = pageObjectIds[index];
+    const contentObjectId = pageObjectId + 1;
+    const lines = wrapPdfPageText(pageText).slice(0, 58);
+    const stream = [
+      "BT",
+      "/F1 10 Tf",
+      "40 760 Td",
+      "12 TL",
+      ...lines.flatMap((line) => [`(${escapePdfText(line)}) Tj`, "T*"]),
+      "ET",
+    ].join("\n");
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontObjectId} 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
+      `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    );
+  }
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n`;
+  pdf += `startxref\n${xrefOffset}\n%%EOF\n`;
   return new TextEncoder().encode(pdf);
+}
+
+function minimalPdfBytes(title: string): Uint8Array {
+  return buildPdfBytes([title]);
 }
 
 async function writeTempFile(
@@ -155,8 +211,8 @@ async function writeTempFile(
   return path;
 }
 
-async function writeTempPdf(title: string): Promise<string> {
-  return writeTempFile("paper.pdf", minimalPdfBytes(title));
+async function writeTempPdf(title: string, pages?: string[]): Promise<string> {
+  return writeTempFile("paper.pdf", buildPdfBytes(pages || [title]));
 }
 
 async function removePathIfPossible(path: string): Promise<void> {
@@ -201,6 +257,7 @@ function getPanel(panelId: string): PanelRecord {
 async function createPaperWithPdfFixture(input: {
   title: string;
   pdfTitle: string;
+  pages?: string[];
 }): Promise<WorkflowTestFixture> {
   assertWorkflowTestEnabled();
   const libraryID = Zotero.Libraries.userLibraryID;
@@ -212,7 +269,7 @@ async function createPaperWithPdfFixture(input: {
   if (!Number.isFinite(parentItemId) || parentItemId <= 0) {
     throw new Error("Failed to save workflow test parent item");
   }
-  const tempPdfPath = await writeTempPdf(input.pdfTitle);
+  const tempPdfPath = await writeTempPdf(input.pdfTitle, input.pages);
   const attachment = await Zotero.Attachments.importFromFile({
     file: tempPdfPath,
     parentItemID: parentItemId,
@@ -892,6 +949,281 @@ async function exerciseReaderSelectionTrackingRecovery(): Promise<WorkflowTestRe
   };
 }
 
+function findReaderForAttachment(
+  readerApi: { _readers?: _ZoteroTypes.ReaderInstance[] },
+  attachmentItemId: number,
+): _ZoteroTypes.ReaderInstance | null {
+  return (
+    (readerApi._readers || []).find(
+      (reader) =>
+        Number(reader?._item?.id || reader?.itemID || 0) === attachmentItemId,
+    ) || null
+  );
+}
+
+async function openWorkflowPdfReader(
+  attachmentItemId: number,
+  pageIndex: number,
+): Promise<_ZoteroTypes.ReaderInstance> {
+  const readerApi = Zotero.Reader as unknown as {
+    _readers?: _ZoteroTypes.ReaderInstance[];
+    open?: (
+      itemId: number,
+      location?: _ZoteroTypes.Reader.Location,
+    ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+  };
+  if (typeof readerApi.open !== "function") {
+    throw new Error("Zotero.Reader.open is unavailable");
+  }
+  const opened = await readerApi.open(attachmentItemId, { pageIndex });
+  const startedAt = Date.now();
+  let reader =
+    opened &&
+    Number(opened?._item?.id || opened?.itemID || 0) === attachmentItemId
+      ? opened
+      : findReaderForAttachment(readerApi, attachmentItemId);
+  while (!reader && Date.now() - startedAt < 10_000) {
+    await Zotero.Promise.delay(25);
+    reader = findReaderForAttachment(readerApi, attachmentItemId);
+  }
+  if (!reader) {
+    throw new Error(
+      `Timed out opening workflow PDF reader ${attachmentItemId}`,
+    );
+  }
+  await reader._initPromise;
+  if (typeof reader.navigate === "function") {
+    await reader.navigate({ pageIndex });
+  }
+  return reader;
+}
+
+function findSelectionRangeOnPage(params: {
+  reader: _ZoteroTypes.ReaderInstance;
+  pageIndex: number;
+  selectedText: string;
+}): { doc: Document; range: Range } | null {
+  const pageNumber = params.pageIndex + 1;
+  for (const doc of collectReaderSelectionDocuments(params.reader)) {
+    const pages = Array.from(
+      doc.querySelectorAll(
+        `.page[data-page-number="${pageNumber}"], .page[data-page-index="${params.pageIndex}"], [data-page-number="${pageNumber}"], [data-page-index="${params.pageIndex}"]`,
+      ),
+    ) as Element[];
+    for (const page of pages) {
+      if (!page.textContent?.includes(params.selectedText)) continue;
+      const walker = doc.createTreeWalker(page, 4);
+      let node = walker.nextNode();
+      while (node) {
+        const value = node.nodeValue || "";
+        const start = value.indexOf(params.selectedText);
+        if (start >= 0) {
+          const range = doc.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, start + params.selectedText.length);
+          return { doc, range };
+        }
+        node = walker.nextNode();
+      }
+    }
+  }
+  return null;
+}
+
+async function selectWorkflowPdfText(params: {
+  reader: _ZoteroTypes.ReaderInstance;
+  pageIndex: number;
+  selectedText: string;
+}): Promise<{ doc: Document; range: Range }> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10_000) {
+    const match = findSelectionRangeOnPage(params);
+    if (match) {
+      const selection = match.doc.defaultView?.getSelection?.();
+      selection?.removeAllRanges();
+      selection?.addRange(match.range);
+      if (selection?.toString().includes(params.selectedText)) return match;
+    }
+    await Zotero.Promise.delay(50);
+  }
+  const documents = collectReaderSelectionDocuments(params.reader).map(
+    (doc) => ({
+      url: doc.URL,
+      textLength: doc.body?.textContent?.length || 0,
+      containsSelection: Boolean(
+        doc.body?.textContent?.includes(params.selectedText),
+      ),
+      pageNumbers: (
+        Array.from(doc.querySelectorAll("[data-page-number]")) as Element[]
+      )
+        .slice(0, 10)
+        .map((node) => node.getAttribute("data-page-number")),
+      pageIndexes: (
+        Array.from(doc.querySelectorAll("[data-page-index]")) as Element[]
+      )
+        .slice(0, 10)
+        .map((node) => node.getAttribute("data-page-index")),
+    }),
+  );
+  throw new Error(
+    `Timed out selecting workflow PDF text on page ${params.pageIndex + 1}: ${JSON.stringify(
+      documents,
+    )}`,
+  );
+}
+
+async function waitForSelectedContext(params: {
+  conversationKey: number;
+  selectedText: string;
+  pageIndex: number;
+}): Promise<ReturnType<typeof getSelectedTextContextEntries>[number]> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5000) {
+    const match = getSelectedTextContextEntries(params.conversationKey).find(
+      (context) =>
+        context.text === params.selectedText &&
+        context.pageIndex === params.pageIndex,
+    );
+    if (match) return match;
+    await Zotero.Promise.delay(25);
+  }
+  throw new Error(
+    "Timed out waiting for Add Text to preserve the page locator",
+  );
+}
+
+async function waitForFinalRequest(
+  body: HTMLElement,
+): Promise<WorkflowTestFinalRequestSnapshot> {
+  const startedAt = Date.now();
+  while (!lastFinalRequest) {
+    if (Date.now() - startedAt > 15_000) {
+      const status = body.querySelector("#llm-status")?.textContent?.trim();
+      throw new Error(
+        `Timed out waiting for final workflow model request; status=${status || "<empty>"}`,
+      );
+    }
+    await Zotero.Promise.delay(25);
+  }
+  return lastFinalRequest;
+}
+
+async function closeWorkflowReader(
+  reader: _ZoteroTypes.ReaderInstance,
+): Promise<void> {
+  try {
+    const tabs = (
+      Zotero as unknown as {
+        Tabs?: { close?: (tabId: string) => Promise<unknown> | unknown };
+      }
+    ).Tabs;
+    if (reader.tabID && typeof tabs?.close === "function") {
+      await tabs.close(reader.tabID);
+    }
+  } catch (_error) {
+    void _error;
+  }
+}
+
+async function exerciseHighlightAwareContextRetrieval(input: {
+  panelId: string;
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+  question: string;
+}): Promise<WorkflowTestHighlightAwareRetrievalDiagnostics> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(input.panelId);
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  let popupHost: HTMLElement | null = null;
+  let selectionDoc: Document | null = null;
+  try {
+    const selected = await selectWorkflowPdfText({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    selectionDoc = selected.doc;
+    popupHost = selected.doc.createElement("div");
+    popupHost.dataset.workflowAddTextPopup = "true";
+    (selected.doc.body || selected.doc.documentElement).appendChild(popupHost);
+
+    const readerApi = Zotero.Reader as unknown as ReaderSelectionTrackingReader<
+      _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">
+    >;
+    const handler = readerApi.__llmSelectionTracking?.handler;
+    if (!handler) {
+      throw new Error("Add Text reader selection handler is unavailable");
+    }
+    await handler({
+      reader,
+      doc: selected.doc,
+      params: {
+        annotation: { text: input.selectedText } as any,
+      },
+      append: (node: Node | string) => popupHost?.append(node),
+      type: READER_TEXT_SELECTION_POPUP_EVENT,
+    });
+    const addTextButton = (
+      Array.from(popupHost.querySelectorAll("button")) as HTMLButtonElement[]
+    ).find((button) => button.textContent?.trim() === "Add Text");
+    if (!addTextButton) {
+      throw new Error("Add Text button was not rendered in the reader popup");
+    }
+    addTextButton.click();
+
+    const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+    const selectedContext = await waitForSelectedContext({
+      conversationKey: getConversationKey(mountedItem),
+      selectedText: input.selectedText,
+      pageIndex: input.pageIndex,
+    });
+
+    lastSend = null;
+    lastFinalRequest = null;
+    setWorkflowTestSendInterceptor((opts) => {
+      opts.apiBase = "http://127.0.0.1:9/v1";
+      opts.apiKey = "workflow-test-key";
+      opts.authMode = "api_key";
+      lastSend = opts;
+      return true;
+    });
+    setWorkflowTestFinalRequestInterceptor((snapshot) => {
+      lastFinalRequest = snapshot;
+      return true;
+    });
+    const capturedSend = await ask(input.panelId, input.question);
+    const finalRequest = await waitForFinalRequest(panel.body);
+    const resolvedAnchor = capturedSend.resolvedSelectedTextAnchors?.find(
+      (anchor) => anchor.contextItemId === input.attachmentItemId,
+    );
+    if (!resolvedAnchor) {
+      throw new Error("Final send did not include a resolved highlight anchor");
+    }
+    return {
+      readerItemId: Number(reader._item?.id || reader.itemID || 0),
+      addTextButtonLabel: addTextButton.textContent?.trim() || "",
+      selectedContext,
+      resolvedAnchor,
+      lastSend: capturedSend,
+      lastFinalRequest: finalRequest,
+    };
+  } finally {
+    setWorkflowTestSendInterceptor((opts) => {
+      lastSend = opts;
+    });
+    setWorkflowTestFinalRequestInterceptor((snapshot) => {
+      lastFinalRequest = snapshot;
+    });
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    popupHost?.remove();
+    await closeWorkflowReader(reader);
+  }
+}
+
 async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
   workflowFreshStartupConversation.begin();
@@ -969,6 +1301,7 @@ export function installWorkflowTestHarness(targetAddon: {
     getLastSend: () => lastSend,
     getDiagnostics,
     exerciseReaderSelectionTrackingRecovery,
+    exerciseHighlightAwareContextRetrieval,
     cleanupFixture,
   };
 }

@@ -147,6 +147,7 @@ import type {
   NoteContextRef,
   TagContextRef,
   SelectedTextContext,
+  ResolvedSelectedTextAnchor,
   SelectedTextSource,
   PaperContextRef,
   PaperContextSendMode,
@@ -220,6 +221,7 @@ import {
   normalizeSelectedTextNoteContexts,
   normalizeSelectedTextPaperContexts as normalizeSelectedTextPaperContextEntries,
   normalizeSelectedTextSources,
+  synthesizeSelectedTextContexts,
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
@@ -271,6 +273,7 @@ import { readNoteSnapshot } from "./noteSnapshot";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
+import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
 import {
@@ -1677,21 +1680,24 @@ function toPanelMessage(message: StoredChatMessage): Message {
       )
     : undefined;
   const generatedImages = normalizeGeneratedChatImages(message.generatedImages);
-  const selectedTexts = normalizeSelectedTexts(
-    message.selectedTexts,
-    message.selectedText,
+  const selectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: message.selectedTextContexts,
+    selectedTexts: message.selectedTexts,
+    legacySelectedText: message.selectedText,
+    selectedTextSources: message.selectedTextSources,
+    selectedTextPaperContexts: message.selectedTextPaperContexts,
+    selectedTextNoteContexts: message.selectedTextNoteContexts,
+    sanitizeText,
+  });
+  const selectedTexts = selectedTextContexts.map((context) => context.text);
+  const selectedTextSources = selectedTextContexts.map(
+    (context) => context.source,
   );
-  const selectedTextSources = normalizeSelectedTextSources(
-    message.selectedTextSources,
-    selectedTexts.length,
+  const selectedTextPaperContexts = selectedTextContexts.map(
+    (context) => context.paperContext,
   );
-  const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
-    message.selectedTextPaperContexts,
-    selectedTexts.length,
-  );
-  const selectedTextNoteContexts = normalizeSelectedTextNoteContextsByIndex(
-    (message as Message).selectedTextNoteContexts,
-    selectedTexts.length,
+  const selectedTextNoteContexts = selectedTextContexts.map(
+    (context) => context.noteContext,
   );
   const forcedSkillIds = normalizeForcedSkillIds(message.forcedSkillIds);
   const paperContexts = normalizePaperContexts(message.paperContexts);
@@ -1710,6 +1716,9 @@ function toPanelMessage(message: StoredChatMessage): Message {
     agentRunId: message.agentRunId,
     selectedText: selectedTexts[0] || message.selectedText,
     selectedTextExpanded: false,
+    selectedTextContexts: selectedTextContexts.length
+      ? selectedTextContexts
+      : undefined,
     selectedTexts: selectedTexts.length ? selectedTexts : undefined,
     selectedTextSources: selectedTextSources.length
       ? selectedTextSources
@@ -2892,6 +2901,8 @@ function formatCodexNativeDiagnosticsStatus(
 
 function buildCodexNativeSkillContext(params: {
   forcedSkillIds?: string[];
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -2907,6 +2918,12 @@ function buildCodexNativeSkillContext(params: {
   return {
     forcedSkillIds: params.forcedSkillIds?.length
       ? params.forcedSkillIds
+      : undefined,
+    selectedTextContexts: params.selectedTextContexts?.length
+      ? params.selectedTextContexts
+      : undefined,
+    resolvedSelectedTextAnchors: params.resolvedSelectedTextAnchors?.length
+      ? params.resolvedSelectedTextAnchors
       : undefined,
     selectedTexts: params.selectedTexts?.length
       ? params.selectedTexts
@@ -2960,6 +2977,7 @@ type PreparedContextPlanChatRequest = {
   finalPrepared: PreparedChatRequest;
   systemMessages: string[];
   inputCapEffects: PreparedChatRequest["inputCap"]["effects"];
+  workflowTestIntercepted: boolean;
 };
 
 async function prepareFinalContextPlanChatRequest(params: {
@@ -2992,21 +3010,25 @@ async function prepareFinalContextPlanChatRequest(params: {
   });
   const workflowTestFinalRequestInterceptor =
     getWorkflowTestFinalRequestInterceptor();
+  let workflowTestIntercepted = false;
   if (workflowTestFinalRequestInterceptor) {
-    await workflowTestFinalRequestInterceptor({
-      combinedContext: params.combinedContext,
-      strategy: params.contextPlan.strategy,
-      systemMessages,
-      inputCapEffects: preview.inputCap.effects,
-      readStrategy: params.contextPlan.readStrategy,
-      coverageReceipt: params.contextPlan.coverageReceipt,
-      fullReadReceipt: params.contextPlan.fullReadReceipt,
-    });
+    workflowTestIntercepted =
+      (await workflowTestFinalRequestInterceptor({
+        prompt: params.requestParams.prompt,
+        combinedContext: params.combinedContext,
+        strategy: params.contextPlan.strategy,
+        systemMessages,
+        inputCapEffects: preview.inputCap.effects,
+        readStrategy: params.contextPlan.readStrategy,
+        coverageReceipt: params.contextPlan.coverageReceipt,
+        fullReadReceipt: params.contextPlan.fullReadReceipt,
+      })) === true;
   }
   return {
     finalPrepared,
     systemMessages,
     inputCapEffects: preview.inputCap.effects,
+    workflowTestIntercepted,
   };
 }
 
@@ -3049,6 +3071,7 @@ async function buildContextPlanForRequest(params: {
   question: string;
   images?: string[];
   selectedTextSources?: SelectedTextSource[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -3132,6 +3155,7 @@ async function buildContextPlanForRequest(params: {
     apiKey: params.effectiveRequestConfig.apiKey,
     authMode: params.effectiveRequestConfig.authMode,
     providerProtocol: params.effectiveRequestConfig.providerProtocol,
+    resolvedSelectedTextAnchors: params.resolvedSelectedTextAnchors,
     systemPrompt,
     signal: params.signal,
   });
@@ -4756,7 +4780,13 @@ function getWebChatRunStateLabel(message: Message): string | null {
   return null;
 }
 
-function reconstructRetryPayload(userMessage: Message): {
+function reconstructRetryPayload(
+  userMessage: Message,
+  options?: {
+    resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
+    includeAnchorContext?: boolean;
+  },
+): {
   question: string;
   screenshotImages: string[];
   attachments: ChatAttachment[];
@@ -4765,14 +4795,21 @@ function reconstructRetryPayload(userMessage: Message): {
   selectedCollectionContexts: CollectionContextRef[];
   selectedTagContexts: TagContextRef[];
 } {
-  const selectedTexts = getMessageSelectedTexts(userMessage);
-  const selectedTextSources = normalizeSelectedTextSources(
-    userMessage.selectedTextSources,
-    selectedTexts.length,
+  const selectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: userMessage.selectedTextContexts,
+    selectedTexts: userMessage.selectedTexts,
+    legacySelectedText: userMessage.selectedText,
+    selectedTextSources: userMessage.selectedTextSources,
+    selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+    selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+    sanitizeText,
+  });
+  const selectedTexts = selectedTextContexts.map((context) => context.text);
+  const selectedTextSources = selectedTextContexts.map(
+    (context) => context.source,
   );
-  const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
-    userMessage.selectedTextPaperContexts,
-    selectedTexts.length,
+  const selectedTextPaperContexts = selectedTextContexts.map(
+    (context) => context.paperContext,
   );
   const primarySelectedText = selectedTexts[0] || "";
   const fileAttachments = normalizeEditableAttachments(userMessage.attachments);
@@ -4787,7 +4824,10 @@ function reconstructRetryPayload(userMessage: Message): {
         selectedTextSources,
         promptText,
         {
+          selectedTextContexts,
           selectedTextPaperContexts,
+          resolvedSelectedTextAnchors: options?.resolvedSelectedTextAnchors,
+          includeAnchorContext: options?.includeAnchorContext,
           includePaperAttribution: selectedTextPaperContexts.some((entry) =>
             Boolean(entry),
           ),
@@ -5313,27 +5353,15 @@ function syncComposeContextForInlineEdit(
   userMessage: Message,
 ): void {
   const conversationKey = getConversationKey(item);
-  const selectedTexts = getMessageSelectedTexts(userMessage);
-  const selectedTextSources = normalizeSelectedTextSources(
-    userMessage.selectedTextSources,
-    selectedTexts.length,
-  );
-  const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
-    userMessage.selectedTextPaperContexts,
-    selectedTexts.length,
-  );
-  const selectedTextNoteContexts = normalizeSelectedTextNoteContextsByIndex(
-    userMessage.selectedTextNoteContexts,
-    selectedTexts.length,
-  );
-  const selectedTextEntries: SelectedTextContext[] = selectedTexts.map(
-    (text, index) => ({
-      text,
-      source: selectedTextSources[index] || "pdf",
-      paperContext: selectedTextPaperContexts[index],
-      noteContext: selectedTextNoteContexts[index],
-    }),
-  );
+  const selectedTextEntries = synthesizeSelectedTextContexts({
+    selectedTextContexts: userMessage.selectedTextContexts,
+    selectedTexts: userMessage.selectedTexts,
+    legacySelectedText: userMessage.selectedText,
+    selectedTextSources: userMessage.selectedTextSources,
+    selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+    selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+    sanitizeText,
+  });
   setSelectedTextContextEntries(conversationKey, selectedTextEntries);
 
   const screenshotImages = Array.isArray(userMessage.screenshotImages)
@@ -5414,6 +5442,7 @@ export async function editLatestUserMessageAndRetry(
     item,
     contextSource,
     displayQuestion,
+    selectedTextContexts,
     selectedTexts,
     selectedTextSources,
     selectedTextPaperContexts,
@@ -5481,26 +5510,30 @@ export async function editLatestUserMessageAndRetry(
     return "stale";
   }
 
-  const selectedTextsForMessage = normalizeSelectedTexts(selectedTexts);
-  const selectedTextSourcesForMessage = normalizeSelectedTextSources(
+  const selectedTextContextsForMessage = synthesizeSelectedTextContexts({
+    selectedTextContexts,
+    selectedTexts,
     selectedTextSources,
-    selectedTextsForMessage.length,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    sanitizeText,
+  });
+  const selectedTextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.text,
+  );
+  const selectedTextSourcesForMessage = selectedTextContextsForMessage.map(
+    (context) => context.source,
   );
   const selectedTextPaperContextsForMessage =
-    normalizeSelectedTextPaperContextsByIndex(
-      selectedTextPaperContexts,
-      selectedTextsForMessage.length,
-    );
+    selectedTextContextsForMessage.map((context) => context.paperContext);
   const selectedTextQuoteCitationsForMessage = buildSelectedTextQuoteCitations(
     selectedTextsForMessage,
     selectedTextSourcesForMessage,
     selectedTextPaperContextsForMessage,
   );
-  const selectedTextNoteContextsForMessage =
-    normalizeSelectedTextNoteContextsByIndex(
-      selectedTextNoteContexts,
-      selectedTextsForMessage.length,
-    );
+  const selectedTextNoteContextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.noteContext,
+  );
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
@@ -5509,7 +5542,12 @@ export async function editLatestUserMessageAndRetry(
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
+  const normalizedPaperContexts = normalizeEditablePaperContexts([
+    ...(paperContexts || []),
+    ...selectedTextPaperContextsForMessage.filter(
+      (paper): paper is PaperContextRef => Boolean(paper),
+    ),
+  ]);
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
@@ -5557,6 +5595,10 @@ export async function editLatestUserMessageAndRetry(
   retryPair.userMessage.agentRunId = undefined;
   retryPair.userMessage.selectedText = selectedTextForMessage || undefined;
   retryPair.userMessage.selectedTextExpanded = false;
+  retryPair.userMessage.selectedTextContexts =
+    selectedTextContextsForMessage.length
+      ? selectedTextContextsForMessage
+      : undefined;
   retryPair.userMessage.selectedTexts = selectedTextsForMessage.length
     ? selectedTextsForMessage
     : undefined;
@@ -5625,6 +5667,7 @@ export async function editLatestUserMessageAndRetry(
         runMode: retryPair.userMessage.runMode,
         agentRunId: retryPair.userMessage.agentRunId,
         selectedText: retryPair.userMessage.selectedText,
+        selectedTextContexts: retryPair.userMessage.selectedTextContexts,
         selectedTexts: retryPair.userMessage.selectedTexts,
         selectedTextSources: retryPair.userMessage.selectedTextSources,
         selectedTextPaperContexts:
@@ -5793,6 +5836,25 @@ export async function retryLatestAssistantResponse(
   );
 
   const historyForLLM = history.slice(0, retryPair.userIndex);
+  const retrySelectedTextContexts = synthesizeSelectedTextContexts({
+    selectedTextContexts: retryPair.userMessage.selectedTextContexts,
+    selectedTexts: retryPair.userMessage.selectedTexts,
+    legacySelectedText: retryPair.userMessage.selectedText,
+    selectedTextSources: retryPair.userMessage.selectedTextSources,
+    selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
+    selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
+    sanitizeText,
+  });
+  const retryResolvedSelectedTextAnchors = await resolveSelectedTextAnchors({
+    selectedTextContexts: retrySelectedTextContexts,
+    paperContexts: normalizePaperContexts([
+      ...(retryPair.userMessage.paperContexts || []),
+      ...(retryPair.userMessage.fullTextPaperContexts || []),
+      ...retrySelectedTextContexts
+        .map((context) => context.paperContext)
+        .filter((paper): paper is PaperContextRef => Boolean(paper)),
+    ]),
+  });
   const {
     question,
     screenshotImages,
@@ -5801,7 +5863,12 @@ export async function retryLatestAssistantResponse(
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
-  } = reconstructRetryPayload(retryPair.userMessage);
+  } = reconstructRetryPayload(retryPair.userMessage, {
+    resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
+    includeAnchorContext:
+      effectiveRequestConfig.authMode === "webchat" ||
+      effectiveRequestConfig.providerProtocol === "web_sync",
+  });
   let retryPaperContexts = paperContexts;
   let retryFullTextPaperContexts = fullTextPaperContexts;
   if (shouldUseCodexNativeLightContext({ isCodexNativeTurn })) {
@@ -5956,6 +6023,7 @@ export async function retryLatestAssistantResponse(
           question,
           images: retryScreenshotImages,
           selectedTextSources: retryPair.userMessage.selectedTextSources,
+          resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
           paperContexts: retryPaperContexts,
           fullTextPaperContexts: retryFullTextPaperContexts,
           selectedCollectionContexts,
@@ -5997,6 +6065,7 @@ export async function retryLatestAssistantResponse(
         runMode: retryPair.userMessage.runMode,
         agentRunId: retryPair.userMessage.agentRunId,
         selectedText: retryPair.userMessage.selectedText,
+        selectedTextContexts: retryPair.userMessage.selectedTextContexts,
         selectedTexts: retryPair.userMessage.selectedTexts,
         selectedTextSources: retryPair.userMessage.selectedTextSources,
         selectedTextPaperContexts:
@@ -6058,12 +6127,19 @@ export async function retryLatestAssistantResponse(
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
-    const { finalPrepared, systemMessages } =
+    const { finalPrepared, systemMessages, workflowTestIntercepted } =
       await prepareFinalContextPlanChatRequest({
         requestParams,
         contextPlan,
         combinedContext,
       });
+    if (workflowTestIntercepted) {
+      assistantMessage.text = "Workflow request intercepted before dispatch.";
+      assistantMessage.streaming = false;
+      refreshChatSafely();
+      setStatusSafely("Workflow request captured", "ready");
+      return;
+    }
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
@@ -6145,6 +6221,8 @@ export async function retryLatestAssistantResponse(
             ),
             skillContext: buildCodexNativeSkillContext({
               forcedSkillIds: retryPair.userMessage.forcedSkillIds,
+              selectedTextContexts: retrySelectedTextContexts,
+              resolvedSelectedTextAnchors: retryResolvedSelectedTextAnchors,
               selectedTexts: retryPair.userMessage.selectedTexts,
               selectedTextSources: retryPair.userMessage.selectedTextSources,
               selectedTextPaperContexts:
@@ -6372,6 +6450,7 @@ export async function editUserTurnAndRetry(opts: {
   userTimestamp: number;
   assistantTimestamp: number;
   newText: string;
+  selectedTextContexts?: SelectedTextContext[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -6407,6 +6486,7 @@ export async function editUserTurnAndRetry(opts: {
     userTimestamp,
     assistantTimestamp,
     newText,
+    selectedTextContexts,
     selectedTexts,
     selectedTextSources,
     selectedTextPaperContexts,
@@ -6525,21 +6605,25 @@ export async function editUserTurnAndRetry(opts: {
   userMsg.timestamp = Date.now();
   userMsg.runMode = retryRuntimeMode;
   userMsg.agentRunId = undefined;
-  const selectedTextsForMessage = normalizeSelectedTexts(selectedTexts);
-  const selectedTextSourcesForMessage = normalizeSelectedTextSources(
+  const selectedTextContextsForMessage = synthesizeSelectedTextContexts({
+    selectedTextContexts,
+    selectedTexts,
     selectedTextSources,
-    selectedTextsForMessage.length,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    sanitizeText,
+  });
+  const selectedTextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.text,
+  );
+  const selectedTextSourcesForMessage = selectedTextContextsForMessage.map(
+    (context) => context.source,
   );
   const selectedTextPaperContextsForMessage =
-    normalizeSelectedTextPaperContextsByIndex(
-      selectedTextPaperContexts,
-      selectedTextsForMessage.length,
-    );
-  const selectedTextNoteContextsForMessage =
-    normalizeSelectedTextNoteContextsByIndex(
-      selectedTextNoteContexts,
-      selectedTextsForMessage.length,
-    );
+    selectedTextContextsForMessage.map((context) => context.paperContext);
+  const selectedTextNoteContextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.noteContext,
+  );
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
@@ -6548,7 +6632,12 @@ export async function editUserTurnAndRetry(opts: {
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
+  const normalizedPaperContexts = normalizeEditablePaperContexts([
+    ...(paperContexts || []),
+    ...selectedTextPaperContextsForMessage.filter(
+      (paper): paper is PaperContextRef => Boolean(paper),
+    ),
+  ]);
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
@@ -6574,6 +6663,9 @@ export async function editUserTurnAndRetry(opts: {
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
   userMsg.selectedText = selectedTextForMessage || undefined;
   userMsg.selectedTextExpanded = false;
+  userMsg.selectedTextContexts = selectedTextContextsForMessage.length
+    ? selectedTextContextsForMessage
+    : undefined;
   userMsg.selectedTexts = selectedTextsForMessage.length
     ? selectedTextsForMessage
     : undefined;
@@ -6636,6 +6728,7 @@ export async function editUserTurnAndRetry(opts: {
         runMode: userMsg.runMode,
         agentRunId: userMsg.agentRunId,
         selectedText: userMsg.selectedText,
+        selectedTextContexts: userMsg.selectedTextContexts,
         selectedTexts: userMsg.selectedTexts,
         selectedTextSources: userMsg.selectedTextSources,
         selectedTextPaperContexts: userMsg.selectedTextPaperContexts,
@@ -6700,6 +6793,8 @@ export type BuildAgentRuntimeRequestParams = {
   conversationKey: number;
   item: Zotero.Item;
   userText: string;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -7028,6 +7123,8 @@ async function buildAgentRuntimeRequest(
     userText: params.userText,
     conversationKind,
     activeItemId: activeNoteSession?.noteId || params.item.id,
+    selectedTextContexts: params.selectedTextContexts,
+    resolvedSelectedTextAnchors: params.resolvedSelectedTextAnchors,
     selectedTexts: params.selectedTexts,
     selectedTextSources: params.selectedTextSources,
     selectedTextPaperContexts: params.selectedTextPaperContexts,
@@ -7307,6 +7404,8 @@ async function sendAgentQuestion(opts: {
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
   displayQuestion?: string;
+  selectedTextContexts?: SelectedTextContext[];
+  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
@@ -7364,6 +7463,8 @@ export async function sendQuestion(
     reasoning,
     advanced,
     displayQuestion,
+    selectedTextContexts,
+    resolvedSelectedTextAnchors,
     selectedTexts,
     selectedTextSources,
     selectedTextPaperContexts,
@@ -7413,6 +7514,8 @@ export async function sendQuestion(
       reasoning,
       advanced,
       displayQuestion,
+      selectedTextContexts,
+      resolvedSelectedTextAnchors,
       selectedTexts,
       selectedTextSources,
       selectedTextPaperContexts,
@@ -7698,23 +7801,32 @@ export async function sendQuestion(
       runtimeMode: effectiveRuntimeMode,
     },
   );
-  const selectedTextsForMessage = normalizeSelectedTexts(selectedTexts);
-  const selectedTextSourcesForMessage = normalizeSelectedTextSources(
+  const selectedTextContextsForMessage = synthesizeSelectedTextContexts({
+    selectedTextContexts,
+    selectedTexts,
     selectedTextSources,
-    selectedTextsForMessage.length,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    sanitizeText,
+  });
+  const selectedTextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.text,
+  );
+  const selectedTextSourcesForMessage = selectedTextContextsForMessage.map(
+    (context) => context.source,
   );
   const selectedTextPaperContextsForMessage =
-    normalizeSelectedTextPaperContextsByIndex(
-      selectedTextPaperContexts,
-      selectedTextsForMessage.length,
-    );
-  const selectedTextNoteContextsForMessage =
-    normalizeSelectedTextNoteContextsByIndex(
-      selectedTextNoteContexts,
-      selectedTextsForMessage.length,
-    );
+    selectedTextContextsForMessage.map((context) => context.paperContext);
+  const selectedTextNoteContextsForMessage = selectedTextContextsForMessage.map(
+    (context) => context.noteContext,
+  );
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
-  const normalizedPaperContexts = normalizePaperContexts(paperContexts);
+  const normalizedPaperContexts = normalizePaperContexts([
+    ...(paperContexts || []),
+    ...selectedTextPaperContextsForMessage.filter(
+      (paper): paper is PaperContextRef => Boolean(paper),
+    ),
+  ]);
   const normalizedFullTextPaperContexts = normalizePaperContexts(
     fullTextPaperContexts,
   );
@@ -7767,6 +7879,9 @@ export async function sendQuestion(
     agentRunId: agentRunId || undefined,
     selectedText: selectedTextForMessage || undefined,
     selectedTextExpanded: false,
+    selectedTextContexts: selectedTextContextsForMessage.length
+      ? selectedTextContextsForMessage
+      : undefined,
     selectedTexts: selectedTextsForMessage.length
       ? selectedTextsForMessage
       : undefined,
@@ -7831,6 +7946,7 @@ export async function sendQuestion(
         runMode: userMessage.runMode,
         agentRunId: userMessage.agentRunId,
         selectedText: userMessage.selectedText,
+        selectedTextContexts: userMessage.selectedTextContexts,
         selectedTexts: userMessage.selectedTexts,
         selectedTextSources: userMessage.selectedTextSources,
         selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
@@ -8075,6 +8191,7 @@ export async function sendQuestion(
           question,
           images,
           selectedTextSources: selectedTextSourcesForMessage,
+          resolvedSelectedTextAnchors,
           paperContexts: paperContextsForMessage,
           fullTextPaperContexts: fullTextPaperContextsForMessage,
           selectedCollectionContexts: selectedCollectionContextsForMessage,
@@ -8109,6 +8226,7 @@ export async function sendQuestion(
         runMode: userMessage.runMode,
         agentRunId: userMessage.agentRunId,
         selectedText: userMessage.selectedText,
+        selectedTextContexts: userMessage.selectedTextContexts,
         selectedTexts: userMessage.selectedTexts,
         selectedTextSources: userMessage.selectedTextSources,
         selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
@@ -8177,12 +8295,19 @@ export async function sendQuestion(
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
-    const { finalPrepared, systemMessages } =
+    const { finalPrepared, systemMessages, workflowTestIntercepted } =
       await prepareFinalContextPlanChatRequest({
         requestParams,
         contextPlan,
         combinedContext,
       });
+    if (workflowTestIntercepted) {
+      assistantMessage.text = "Workflow request intercepted before dispatch.";
+      assistantMessage.streaming = false;
+      refreshChatSafely();
+      setStatusSafely("Workflow request captured", "ready");
+      return;
+    }
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
@@ -8257,6 +8382,8 @@ export async function sendQuestion(
             ),
             skillContext: buildCodexNativeSkillContext({
               forcedSkillIds: opts.forcedSkillIds,
+              selectedTextContexts: selectedTextContextsForMessage,
+              resolvedSelectedTextAnchors,
               selectedTexts: selectedTextsForMessage,
               selectedTextSources: selectedTextSourcesForMessage,
               selectedTextPaperContexts: selectedTextPaperContextsForMessage,

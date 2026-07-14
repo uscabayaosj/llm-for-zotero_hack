@@ -78,6 +78,7 @@ import {
 } from "./nativeContextLedger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
 import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
+import { renderSelectedTextAnchorContext } from "../modules/contextPanel/selectedTextAnchorFormatting";
 import { getUserSkillsRuntimeRootDir } from "../agent/skills/userSkills";
 
 export const CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
@@ -1111,7 +1112,7 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
   skillContext?: CodexNativeSkillContext;
 }): string {
   const { scope, skillContext } = params;
-  return buildVisibleTurnContextBlock({
+  const visibleContext = buildVisibleTurnContextBlock({
     conversationKind: scope.kind === "paper" ? "paper" : "global",
     libraryID: scope.libraryID,
     libraryName: scope.libraryName,
@@ -1123,6 +1124,8 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
     pinnedPaperContexts: skillContext?.pinnedPaperContexts,
     selectedCollectionContexts: skillContext?.selectedCollectionContexts,
     selectedTagContexts: skillContext?.selectedTagContexts,
+    selectedTextContexts: skillContext?.selectedTextContexts,
+    resolvedSelectedTextAnchors: skillContext?.resolvedSelectedTextAnchors,
     selectedTexts: skillContext?.selectedTexts,
     selectedTextSources: skillContext?.selectedTextSources,
     selectedTextPaperContexts: skillContext?.selectedTextPaperContexts,
@@ -1140,6 +1143,11 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
         }
       : undefined,
   });
+  const anchorContext = renderSelectedTextAnchorContext({
+    selectedTextContexts: skillContext?.selectedTextContexts || [],
+    anchors: skillContext?.resolvedSelectedTextAnchors || [],
+  });
+  return [visibleContext, anchorContext].filter(Boolean).join("\n\n");
 }
 
 export function buildCodexNativeVisibleTurnContextBlockForTests(params: {

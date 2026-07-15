@@ -9,6 +9,7 @@ import type {
   TagContextRef,
 } from "../src/modules/contextPanel/types";
 import {
+  buildAgentRuntimeRequestForTests,
   includeAutoLoadedPaperContextForTests,
   normalizeStoredPaperContextRoutesForTests,
 } from "../src/modules/contextPanel/chat";
@@ -164,6 +165,64 @@ describe("sendFlowController", function () {
     assert.deepEqual(normalized.fullTextPaperContexts, []);
     assert.lengthOf(normalized.pdfPaperContexts, 1);
     assert.deepInclude(normalized.pdfPaperContexts[0], pdfContext);
+  });
+
+  it("keeps native-provider PDFs on the attachment transport in Agent mode", async function () {
+    const pdfContext: PaperContextRef = {
+      itemId: 707,
+      contextItemId: 808,
+      title: "Native provider PDF",
+      contentSourceMode: "pdf",
+    };
+    const pdfAttachment: ChatAttachment = {
+      id: "pdf-paper-808-1",
+      name: "native-provider.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 128,
+      category: "pdf",
+      storedPath: "/tmp/native-provider.pdf",
+    };
+    const previousZotero = globalThis.Zotero;
+    globalThis.Zotero = {
+      Items: { get: () => null },
+      Prefs: { get: () => undefined },
+    } as unknown as typeof Zotero;
+    let runtimeRequest;
+    try {
+      runtimeRequest = await buildAgentRuntimeRequestForTests({
+        conversationKey: 707,
+        item: {
+          id: 707,
+          libraryID: 1,
+          isAttachment: () => false,
+          isRegularItem: () => true,
+          isNote: () => false,
+        } as unknown as Zotero.Item,
+        userText: "Analyze the selected PDF.",
+        selectedTexts: [],
+        paperContexts: [],
+        pdfPaperContexts: [pdfContext],
+        fullTextPaperContexts: [],
+        attachments: [pdfAttachment],
+        screenshots: undefined,
+        effectiveRequestConfig: {
+          model: "gpt-5",
+          apiBase: "https://api.openai.com/v1",
+          apiKey: "test",
+          authMode: "api_key",
+          providerProtocol: "responses_api",
+          modelEntryId: "openai:gpt-5",
+          modelProviderLabel: "OpenAI",
+        },
+        history: [],
+      });
+    } finally {
+      globalThis.Zotero = previousZotero;
+    }
+
+    assert.deepEqual(runtimeRequest.attachments, [pdfAttachment]);
+    assert.isUndefined(runtimeRequest.localDocuments);
+    assert.isUndefined(runtimeRequest.pdfPaperContexts);
   });
 
   it("splits mixed retry identities into exactly one ordinary, PDF, or full-text lane", function () {

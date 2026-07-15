@@ -1594,11 +1594,28 @@ export async function retryAgentTurn(
   const reconstructedRetryPayload = deps.reconstructRetryPayload(
     retryPair.userMessage,
   );
+  const effectiveRequestConfig = deps.resolveEffectiveRequestConfig({
+    item,
+    model,
+    apiBase,
+    apiKey,
+    authMode,
+    providerProtocol,
+    modelEntryId,
+    modelProviderLabel,
+    reasoning,
+    advanced,
+  });
+  const conversationSystem = deps.getConversationSystem();
+  const usesLocalPdfTransport =
+    conversationSystem === "claude_code" ||
+    (conversationSystem === "codex" &&
+      effectiveRequestConfig.authMode === "codex_app_server");
 
   let retryLocalDocuments: readonly LocalDocumentResource[] | undefined;
   try {
     const pdfPaperContexts = reconstructedRetryPayload.pdfPaperContexts;
-    if (pdfPaperContexts.length) {
+    if (usesLocalPdfTransport && pdfPaperContexts.length) {
       retryLocalDocuments =
         await deps.resolveLocalPdfResources(pdfPaperContexts);
       if (retryLocalDocuments.length !== pdfPaperContexts.length) {
@@ -1621,19 +1638,6 @@ export async function retryAgentTurn(
   deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent retry...");
 
   const assistantMessage = retryPair.assistantMessage;
-
-  const effectiveRequestConfig = deps.resolveEffectiveRequestConfig({
-    item,
-    model,
-    apiBase,
-    apiKey,
-    authMode,
-    providerProtocol,
-    modelEntryId,
-    modelProviderLabel,
-    reasoning,
-    advanced,
-  });
 
   // Clear the previous agent run so the trace and text reset immediately.
   assistantMessage.text = "";

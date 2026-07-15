@@ -62,6 +62,7 @@ import {
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
 import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
+import { validateLocalPdfDocumentBatch } from "../../agent/context/localDocumentBatch";
 import {
   callLLMStream,
   type ChatParams,
@@ -6077,9 +6078,12 @@ export async function retryLatestAssistantResponse(
   }
 
   try {
-    const retryLocalDocuments = pdfPaperContexts.length
-      ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)
-      : undefined;
+    const usesLocalPdfTransport =
+      effectiveConversationSystem === "claude_code" || isCodexNativeTurn;
+    const retryLocalDocuments =
+      usesLocalPdfTransport && pdfPaperContexts.length
+        ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)
+        : undefined;
     if (
       retryLocalDocuments?.length &&
       effectiveConversationSystem === "claude_code"
@@ -7209,21 +7213,15 @@ async function buildAgentRuntimeRequest(
   const normalizedPdfPaperContexts = normalizePaperContexts(
     params.pdfPaperContexts,
   );
-  const localDocuments = params.localDocuments;
-  if (normalizedPdfPaperContexts.length !== (localDocuments?.length || 0)) {
-    throw new Error("Raw PDF identities and local resources do not match.");
-  }
-  for (let index = 0; index < normalizedPdfPaperContexts.length; index += 1) {
-    const paper = normalizedPdfPaperContexts[index];
-    const document = localDocuments?.[index];
-    if (
-      !document ||
-      document.itemId !== paper.itemId ||
-      document.contextItemId !== paper.contextItemId ||
-      document.sourceKey !== `zotero-pdf:${paper.itemId}:${paper.contextItemId}`
-    ) {
-      throw new Error("Raw PDF identities and local resources do not match.");
-    }
+  const localDocuments = params.localDocuments?.length
+    ? params.localDocuments
+    : undefined;
+  const rawPdfPaperContexts = localDocuments ? normalizedPdfPaperContexts : [];
+  if (localDocuments) {
+    validateLocalPdfDocumentBatch({
+      pdfPaperContexts: rawPdfPaperContexts,
+      localDocuments,
+    });
   }
   const [enrichedPaperContexts, enrichedFullTextPapers] = await Promise.all([
     enrichPaperContextsWithMineruCache(params.paperContexts),
@@ -7252,10 +7250,12 @@ async function buildAgentRuntimeRequest(
     selectedTextPaperContexts: params.selectedTextPaperContexts,
     selectedTextNoteContexts: params.selectedTextNoteContexts,
     selectedPaperContexts: enrichedPaperContexts,
-    pdfPaperContexts: normalizedPdfPaperContexts.map((paper) => ({
-      ...paper,
-      contentSourceMode: "pdf" as const,
-    })),
+    pdfPaperContexts: rawPdfPaperContexts.length
+      ? rawPdfPaperContexts.map((paper) => ({
+          ...paper,
+          contentSourceMode: "pdf" as const,
+        }))
+      : undefined,
     localDocuments,
     fullTextPaperContexts: enrichedFullTextPapers,
     citationPaperContexts: normalizePaperContexts(params.citationPaperContexts),
@@ -7308,6 +7308,8 @@ async function buildAgentRuntimeRequest(
     },
   };
 }
+
+export const buildAgentRuntimeRequestForTests = buildAgentRuntimeRequest;
 
 function buildAgentEngineDeps(
   currentItem?: Zotero.Item,

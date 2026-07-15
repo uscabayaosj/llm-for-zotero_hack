@@ -322,6 +322,31 @@ describe("local raw PDF path redaction", function () {
     );
   });
 
+  it("keeps a completed turn's paths protected until conversation cleanup", function () {
+    const conversationKey = 7125;
+    usedConversationKeys.add(conversationKey);
+    const rawPath = "/private/cross-turn/selected.pdf";
+    const lease = acquireLocalDocumentPathLease(conversationKey, [
+      documentAt(rawPath),
+    ]);
+
+    lease.release();
+
+    assert.notInclude(
+      redactRememberedLocalDocumentPathsFromText(conversationKey, rawPath),
+      rawPath,
+    );
+    assert.isAbove(
+      getRememberedLocalDocumentPathCountForTests(conversationKey),
+      0,
+    );
+    clearRememberedLocalDocumentPaths(conversationKey);
+    assert.equal(
+      getRememberedLocalDocumentPathCountForTests(conversationKey),
+      0,
+    );
+  });
+
   it("does not let an old lease release erase a newly registered path", function () {
     const conversationKey = 7124;
     usedConversationKeys.add(conversationKey);

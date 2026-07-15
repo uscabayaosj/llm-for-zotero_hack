@@ -113,6 +113,7 @@ function createDeps(params: {
       pdfPaperContexts: requestParams.pdfPaperContexts,
       fullTextPaperContexts: requestParams.fullTextPaperContexts,
       localDocuments: requestParams.localDocuments,
+      attachments: requestParams.attachments,
       history: requestParams.history,
     }),
     resolveLocalPdfResources: async () => [],
@@ -425,6 +426,7 @@ describe("agent engine final UI release", function () {
         absolutePath: "/papers/retry.pdf",
       },
     ];
+    deps.getConversationSystem = () => "claude_code";
     deps.updateStoredLatestUserMessage = async (_key, update) => {
       storedUpdates.push(update as unknown as Record<string, unknown>);
     };
@@ -455,6 +457,101 @@ describe("agent engine final UI release", function () {
       (capturedRuntimeRequest?.localDocuments as unknown[]) || [],
       1,
     );
+  });
+
+  it("keeps native-provider PDF retries on their stored model attachments", async function () {
+    const conversationKey = 4703;
+    const pdfContext = {
+      itemId: 30,
+      contextItemId: 32,
+      title: "Native retry PDF",
+      contentSourceMode: "pdf" as const,
+    };
+    const pdfAttachment = {
+      id: "pdf-paper-32-1",
+      name: "native-retry.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 128,
+      category: "pdf" as const,
+      storedPath: "/tmp/native-retry.pdf",
+    };
+    const userMessage = {
+      role: "user" as const,
+      text: "Analyze the selected PDF.",
+      timestamp: 100,
+      runMode: "agent" as const,
+      pdfPaperContexts: [pdfContext],
+      modelAttachments: [pdfAttachment],
+    };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "Old answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+    };
+    let localResolutionCount = 0;
+    let capturedRuntimeRequest: AgentRuntimeRequest | undefined;
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: true,
+      }),
+      runTurn: async (params: { request: AgentRuntimeRequest }) => {
+        capturedRuntimeRequest = params.request;
+        return {
+          kind: "completed",
+          runId: "run-native-pdf-retry",
+          text: "New answer.",
+          usedFallback: false,
+        } as AgentRuntimeOutcome;
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: userMessage.pdfPaperContexts,
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+    deps.resolveLocalPdfResources = async () => {
+      localResolutionCount += 1;
+      throw new Error("Native attachment retries must not resolve raw paths.");
+    };
+
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.equal(localResolutionCount, 0);
+    assert.isUndefined(capturedRuntimeRequest?.localDocuments);
+    assert.deepEqual(capturedRuntimeRequest?.attachments, [pdfAttachment]);
   });
 
   it("preserves the previous assistant response when raw PDF retry preflight fails", async function () {
@@ -501,6 +598,7 @@ describe("agent engine final UI release", function () {
       selectedCollectionContexts: [],
       selectedTagContexts: [],
     });
+    deps.getConversationSystem = () => "claude_code";
     deps.resolveLocalPdfResources = async () => {
       throw new Error("Selected PDF file is missing or unreadable.");
     };

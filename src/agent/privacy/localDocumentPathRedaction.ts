@@ -485,6 +485,10 @@ export function acquireLocalDocumentPathLease(
         rememberDirectory(parentPath, sourceKey);
       }
     }
+    // Provider sessions can retain and repeat an exact path on later turns.
+    // Keep the path registered after this turn's lease ends; conversation
+    // cleanup clears the persistent registration.
+    rememberLocalDocumentPaths(conversationKey, documents);
   };
   rememberDocuments(localDocuments);
   return Object.freeze({

@@ -3,12 +3,14 @@ import {
   getReaderContextPanelForTab,
   isPanelInReaderContextForTab,
   resolveReaderPopupPanelTarget,
+  resolveStandalonePopupPanelTarget,
 } from "../src/modules/contextPanel/readerPopupPanelRouting";
 
 class FakeElement {
   readonly nodeType = 1;
   readonly children: FakeElement[] = [];
   readonly attributes = new Map<string, string>();
+  isConnected = true;
   ownerDocument!: FakeDocument;
   parentElement: FakeElement | null = null;
   selectedPanel?: FakeElement | null;
@@ -80,6 +82,22 @@ function buildReaderDeck() {
     staleRoot: staleRoot as unknown as Element,
     activePanel: activePanel as unknown as Element,
     activeRoot: activeRoot as unknown as Element,
+  };
+}
+
+function buildStandalonePanel() {
+  const deck = new FakeElement();
+  const doc = new FakeDocument(deck);
+  deck.ownerDocument = doc;
+  const body = new FakeElement();
+  const root = new FakeElement();
+  body.ownerDocument = doc;
+  root.setAttribute("id", "llm-main");
+  root.setAttribute("data-standalone", "true");
+  body.append(root);
+  return {
+    body: body as unknown as Element,
+    root: root as unknown as Element,
   };
 }
 
@@ -182,5 +200,32 @@ describe("reader popup panel routing", function () {
         tabID: null,
       }),
     );
+  });
+
+  it("returns the standalone chat target outside the reader deck", function () {
+    const reader = buildReaderDeck();
+    const standalone = buildStandalonePanel();
+
+    const target = resolveStandalonePopupPanelTarget([
+      reader.activePanel,
+      standalone.body,
+    ]);
+
+    assert.strictEqual(target?.body, standalone.body);
+    assert.strictEqual(target?.root, standalone.root);
+  });
+
+  it("ignores a disconnected standalone chat target", function () {
+    const standalone = buildStandalonePanel();
+    (standalone.body as unknown as FakeElement).isConnected = false;
+
+    assert.isNull(resolveStandalonePopupPanelTarget([standalone.body]));
+  });
+
+  it("refuses multiple live standalone chat targets", function () {
+    const first = buildStandalonePanel();
+    const second = buildStandalonePanel();
+
+    assert.isNull(resolveStandalonePopupPanelTarget([first.body, second.body]));
   });
 });

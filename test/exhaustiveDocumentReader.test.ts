@@ -143,6 +143,20 @@ describe("exhaustiveDocumentReader", function () {
     );
     assert.equal(result.receipt.completePaperCount, 1);
     assert.equal(result.receipt.paperCount, 2);
+    assert.deepEqual(result.papers[1].missingChunkRanges, [
+      "no extractable text",
+    ]);
+    assert.deepEqual(result.receipt.missingChunkRanges, [
+      "Unreadable Paper: no extractable text",
+    ]);
+    assert.include(
+      result.receipt.text,
+      "Missing coverage: Unreadable Paper: no extractable text",
+    );
+    assert.include(
+      result.contextText,
+      "Missing coverage: Unreadable Paper: no extractable text",
+    );
   });
 
   it("stops immediately when exhaustive reading is cancelled", async function () {

@@ -17,6 +17,7 @@ import type {
   WorkflowTestNoteFixture,
   WorkflowTestPanel,
   WorkflowTestReaderPopupRoutingDiagnostics,
+  WorkflowTestReaderPopupStandaloneRoutingDiagnostics,
   WorkflowTestReaderSelectionTrackingDiagnostics,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestStandaloneDiagnostics,
@@ -1127,6 +1128,66 @@ async function closeWorkflowReader(
   }
 }
 
+async function dispatchWorkflowReaderAddTextPopup(input: {
+  reader: _ZoteroTypes.ReaderInstance;
+  pageIndex: number;
+  selectedText: string;
+}): Promise<{
+  addTextButtonLabel: string;
+  popupHost: HTMLElement;
+  selectionDoc: Document;
+}> {
+  const selected = await selectWorkflowPdfText(input);
+  const popupHost = selected.doc.createElement("div");
+  popupHost.dataset.workflowAddTextPopup = "true";
+  (selected.doc.body || selected.doc.documentElement).appendChild(popupHost);
+
+  const readerApi = Zotero.Reader as unknown as ReaderSelectionTrackingReader<
+    _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">
+  >;
+  const handler = readerApi.__llmSelectionTracking?.handler;
+  if (!handler) {
+    popupHost.remove();
+    throw new Error("Add Text reader selection handler is unavailable");
+  }
+  await handler({
+    reader: input.reader,
+    doc: selected.doc,
+    params: {
+      annotation: {
+        text: input.selectedText,
+        position: { pageIndex: input.pageIndex },
+      } as any,
+    },
+    append: (node: Node | string) => popupHost.append(node),
+    type: READER_TEXT_SELECTION_POPUP_EVENT,
+  });
+  const addTextButton = (
+    Array.from(popupHost.querySelectorAll("button")) as HTMLButtonElement[]
+  ).find((button) => button.textContent?.trim() === "Add Text");
+  if (!addTextButton) {
+    popupHost.remove();
+    throw new Error("Add Text button was not rendered in the reader popup");
+  }
+  const PointerEventCtor = selected.doc.defaultView?.MouseEvent;
+  if (!PointerEventCtor) {
+    popupHost.remove();
+    throw new Error("Workflow reader window does not expose MouseEvent");
+  }
+  addTextButton.dispatchEvent(
+    new PointerEventCtor("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    }),
+  );
+  return {
+    addTextButtonLabel: addTextButton.textContent?.trim() || "",
+    popupHost,
+    selectionDoc: selected.doc,
+  };
+}
+
 async function exerciseReaderPopupActiveTabRouting(input: {
   firstPanelId: string;
   firstAttachmentItemId: number;
@@ -1163,52 +1224,13 @@ async function exerciseReaderPopupActiveTabRouting(input: {
     firstReaderPanel.appendChild(firstPanel.body);
     secondReaderPanel.appendChild(secondPanel.body);
 
-    const selected = await selectWorkflowPdfText({
+    const popupAction = await dispatchWorkflowReaderAddTextPopup({
       reader: secondReader,
       pageIndex: input.pageIndex,
       selectedText: input.selectedText,
     });
-    selectionDoc = selected.doc;
-    popupHost = selected.doc.createElement("div");
-    popupHost.dataset.workflowAddTextPopup = "true";
-    (selected.doc.body || selected.doc.documentElement).appendChild(popupHost);
-
-    const readerApi = Zotero.Reader as unknown as ReaderSelectionTrackingReader<
-      _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">
-    >;
-    const handler = readerApi.__llmSelectionTracking?.handler;
-    if (!handler) {
-      throw new Error("Add Text reader selection handler is unavailable");
-    }
-    await handler({
-      reader: secondReader,
-      doc: selected.doc,
-      params: {
-        annotation: {
-          text: input.selectedText,
-          position: { pageIndex: input.pageIndex },
-        } as any,
-      },
-      append: (node: Node | string) => popupHost?.append(node),
-      type: READER_TEXT_SELECTION_POPUP_EVENT,
-    });
-    const addTextButton = (
-      Array.from(popupHost.querySelectorAll("button")) as HTMLButtonElement[]
-    ).find((button) => button.textContent?.trim() === "Add Text");
-    if (!addTextButton) {
-      throw new Error("Add Text button was not rendered in the reader popup");
-    }
-    const PointerEventCtor = selected.doc.defaultView?.MouseEvent;
-    if (!PointerEventCtor) {
-      throw new Error("Workflow reader window does not expose MouseEvent");
-    }
-    addTextButton.dispatchEvent(
-      new PointerEventCtor("pointerdown", {
-        bubbles: true,
-        cancelable: true,
-        button: 0,
-      }),
-    );
+    selectionDoc = popupAction.selectionDoc;
+    popupHost = popupAction.popupHost;
 
     const secondItem =
       activeContextPanels.get(secondPanel.body)?.() || secondPanel.item;
@@ -1222,7 +1244,7 @@ async function exerciseReaderPopupActiveTabRouting(input: {
     return {
       firstReaderTabId: `${firstReader.tabID || ""}`,
       secondReaderTabId: `${secondReader.tabID || ""}`,
-      addTextButtonLabel: addTextButton.textContent?.trim() || "",
+      addTextButtonLabel: popupAction.addTextButtonLabel,
       firstConversationHasText: getSelectedTextContextEntries(
         getConversationKey(firstItem),
       ).some((context) => context.text === input.selectedText),
@@ -1235,6 +1257,62 @@ async function exerciseReaderPopupActiveTabRouting(input: {
     popupHost?.remove();
     if (secondReader) await closeWorkflowReader(secondReader);
     await closeWorkflowReader(firstReader);
+  }
+}
+
+async function exerciseReaderPopupStandaloneRouting(input: {
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+}): Promise<WorkflowTestReaderPopupStandaloneRoutingDiagnostics> {
+  assertWorkflowTestEnabled();
+  const standaloneDoc = await waitForStandaloneReady();
+  const standaloneBody = standaloneDoc.querySelector(
+    ".llm-standalone-content",
+  ) as HTMLElement | null;
+  const standaloneItem = standaloneBody
+    ? activeContextPanels.get(standaloneBody)?.() || null
+    : null;
+  if (!standaloneBody || !standaloneItem) {
+    throw new Error("Standalone workflow chat panel is not mounted");
+  }
+  const standaloneConversationKey = getConversationKey(standaloneItem);
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  let popupHost: HTMLElement | null = null;
+  let selectionDoc: Document | null = null;
+  try {
+    const popupAction = await dispatchWorkflowReaderAddTextPopup({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    popupHost = popupAction.popupHost;
+    selectionDoc = popupAction.selectionDoc;
+    await waitForSelectedContext({
+      conversationKey: standaloneConversationKey,
+      selectedText: input.selectedText,
+      pageIndex: input.pageIndex,
+    });
+    await Zotero.Promise.delay(25);
+
+    return {
+      readerTabId: `${reader.tabID || ""}`,
+      addTextButtonLabel: popupAction.addTextButtonLabel,
+      standaloneConversationKey,
+      standaloneConversationHasText: getSelectedTextContextEntries(
+        standaloneConversationKey,
+      ).some((context) => context.text === input.selectedText),
+      standalonePreviewHasText: Array.from(
+        standaloneBody.querySelectorAll(".llm-selected-context-text"),
+      ).some((node) => node?.textContent?.trim() === input.selectedText),
+    };
+  } finally {
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    popupHost?.remove();
+    await closeWorkflowReader(reader);
   }
 }
 
@@ -1477,6 +1555,7 @@ export function installWorkflowTestHarness(targetAddon: {
     getDiagnostics,
     exerciseReaderSelectionTrackingRecovery,
     exerciseReaderPopupActiveTabRouting,
+    exerciseReaderPopupStandaloneRouting,
     exerciseHighlightAwareContextRetrieval,
     cleanupFixture,
   };

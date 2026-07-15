@@ -95,6 +95,35 @@ function getPanelTarget(
   };
 }
 
+function getStandalonePanelTarget(
+  body: Element,
+): ReaderPopupPanelTarget | null {
+  if (!body.isConnected) return null;
+  const root = (
+    body.matches?.("#llm-main") ? body : body.querySelector?.("#llm-main")
+  ) as HTMLDivElement | null;
+  if (!root || root.getAttribute("data-standalone") !== "true") return null;
+  return {
+    body: root.parentElement || root,
+    root,
+  };
+}
+
+/**
+ * Resolve the one live chat panel owned by the standalone window.
+ * Embedded reader placeholders remain panel-tracked while standalone chat is
+ * open, so the explicit standalone marker is required for disambiguation.
+ */
+export function resolveStandalonePopupPanelTarget(
+  panelBodies: Iterable<Element>,
+): ReaderPopupPanelTarget | null {
+  const matches = Array.from(panelBodies)
+    .map((body) => getStandalonePanelTarget(body))
+    .filter((target): target is ReaderPopupPanelTarget => Boolean(target));
+  const uniqueRoots = new Set(matches.map((target) => target.root));
+  return uniqueRoots.size === 1 ? matches[0] : null;
+}
+
 function dedupeDocuments(
   documents: Iterable<Document>,
   preferredDocument?: Document | null,

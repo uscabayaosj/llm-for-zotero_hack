@@ -13,6 +13,7 @@ import {
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
+import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 
 type EndpointReply = [number, string, string];
 
@@ -1085,6 +1086,7 @@ describe("Zotero MCP server", function () {
         libraryName: "Development Library",
         model: "gpt-5.5",
         codexPath: "/tmp/codex-native",
+        exhaustiveReadBackend: "codex_responses",
         reasoning: { provider: "openai", level: "high" },
       },
       { token: "scoped-test-token" },
@@ -1118,6 +1120,82 @@ describe("Zotero MCP server", function () {
     } finally {
       scoped.clear();
       clearLegacyScope();
+    }
+  });
+
+  it("rejects full reads from Claude-only MCP scopes before loading the PDF", async function () {
+    const paperContext = {
+      itemId: 91,
+      contextItemId: 92,
+      title: "Claude-only paper",
+    };
+    let ensurePaperContextCount = 0;
+    const registry = new AgentToolRegistry();
+    registry.register(
+      createPaperReadTool(
+        {
+          ensurePaperContext: async () => {
+            ensurePaperContextCount += 1;
+            throw new Error("the PDF must not be loaded");
+          },
+        } as never,
+        {} as never,
+        {} as never,
+        {
+          resolvePaperContextTarget: () => paperContext,
+          listPaperContexts: () => [paperContext],
+        } as never,
+      ),
+    );
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "claude-profile",
+        conversationKey: 457,
+        libraryID: 1,
+        kind: "paper",
+        paperContext,
+        selectedPaperContexts: [paperContext],
+      },
+      { token: "claude-only-full-read" },
+    );
+
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              mode: "full",
+              target: {
+                itemId: paperContext.itemId,
+                contextItemId: paperContext.contextItemId,
+              },
+              query: "Read the complete paper.",
+            },
+          },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      const content = JSON.parse(payload.result.content[0].text);
+
+      assert.equal(payload.result.isError, true);
+      assert.equal(content.ok, false);
+      assert.include(
+        content.result.error,
+        "tool-free full-read backend is unavailable",
+      );
+      assert.equal(ensurePaperContextCount, 0);
+    } finally {
+      scoped.clear();
     }
   });
 

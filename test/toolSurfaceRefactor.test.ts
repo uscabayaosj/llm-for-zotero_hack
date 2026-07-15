@@ -1645,7 +1645,13 @@ describe("semantic tool surface", function () {
     const validated = tool.validate({ mode: "overview" });
     assert.equal(validated.ok, true);
     if (!validated.ok) return;
-    const output = (await tool.execute(validated.value, baseContext)) as {
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Read the complete text.",
+      },
+    })) as {
       results?: Array<{ quoteAnchors?: string[] }>;
       quoteCitations?: Array<{ quoteText: string }>;
     };
@@ -1823,7 +1829,13 @@ describe("semantic tool surface", function () {
     });
     assert.equal(validated.ok, true);
     if (!validated.ok) return;
-    const output = (await tool.execute(validated.value, baseContext)) as {
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Read the complete text.",
+      },
+    })) as {
       mode: string;
       status: string;
       coverageReceipt: {
@@ -1844,80 +1856,68 @@ describe("semantic tool surface", function () {
     );
   });
 
-  it("paper_read full uses an isolated native Codex worker in the production registry", async function () {
+  it("paper_read full uses a tool-free native Codex completion in the production registry", async function () {
     const originalSpawn = CodexAppServerProcess.spawn;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: unknown }
+    ).ztoolkit;
+    const originalZotero = globalThis.Zotero;
     const paperContext = {
       itemId: 53,
       contextItemId: 54,
       title: "Native Full Read Paper",
     };
     const chunks = ["Native evidence zero.", "Native evidence one."];
-    let threadStartParams: Record<string, unknown> | undefined;
-    let turnStartParams: Record<string, unknown> | undefined;
-    const proc = CodexAppServerProcess.forTest({
-      stdin: {
-        write: (chunk: string) => {
-          const request = JSON.parse(chunk) as {
-            id: number;
-            method: string;
-            params?: Record<string, unknown>;
+    let appServerSpawnCount = 0;
+    let requestBody: Record<string, unknown> | null = null;
+    CodexAppServerProcess.spawn = async () => {
+      appServerSpawnCount += 1;
+      throw new Error("paper_read full must not launch an agent thread");
+    };
+    (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
+      Prefs: { get: () => "" },
+    } as typeof Zotero;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown; log: () => void };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name === "process") return { env: { HOME: "/home/tester" } };
+        if (name === "IOUtils") {
+          return {
+            exists: async () => true,
+            read: async () =>
+              new TextEncoder().encode(
+                JSON.stringify({
+                  tokens: { access_token: "test-access-token" },
+                }),
+              ),
           };
-          const handleMessage = (
-            proc as unknown as {
-              handleMessage: (message: Record<string, unknown>) => void;
-            }
-          ).handleMessage.bind(proc);
-          if (request.method === "thread/start") {
-            threadStartParams = request.params;
-            setTimeout(
-              () =>
-                handleMessage({
-                  id: request.id,
-                  result: { thread: { id: "thread-full-reader" } },
-                }),
-              0,
-            );
-            return;
-          }
-          if (request.method === "turn/start") {
-            turnStartParams = request.params;
-            setTimeout(
-              () =>
-                handleMessage({
-                  id: request.id,
-                  result: { turn: { id: "turn-full-reader" } },
-                }),
-              0,
-            );
-            setTimeout(
-              () =>
-                handleMessage({
-                  method: "item/agentMessage/delta",
-                  params: {
-                    turnId: "turn-full-reader",
-                    itemId: "message-full-reader",
-                    delta:
-                      '{"digest":"Read every native chunk","relevantChunkIds":[0,1]}',
-                  },
-                }),
-              5,
-            );
-            setTimeout(
-              () =>
-                handleMessage({
-                  method: "turn/completed",
-                  params: {
-                    turn: { id: "turn-full-reader", status: "completed" },
-                  },
-                }),
-              10,
-            );
-          }
-        },
+        }
+        if (name === "fetch") {
+          return async (_url: string, init?: RequestInit) => {
+            requestBody = JSON.parse(String(init?.body || "{}")) as Record<
+              string,
+              unknown
+            >;
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              body: undefined,
+              json: async () => ({
+                output_text:
+                  '{"digest":"Read every native chunk","relevantChunkIds":[0,1]}',
+              }),
+              text: async () => "",
+            };
+          };
+        }
+        return undefined;
       },
-      kill: () => undefined,
-    });
-    CodexAppServerProcess.spawn = async () => proc;
+      log: () => undefined,
+    };
 
     try {
       const registry = createBuiltInToolRegistry({
@@ -1958,6 +1958,7 @@ describe("semantic tool surface", function () {
         ...baseContext,
         request: {
           ...baseContext.request,
+          userText: "Read the complete text.",
           authMode: "codex_app_server",
           model: "gpt-5.5",
           apiBase: "/tmp/codex",
@@ -1971,21 +1972,29 @@ describe("semantic tool surface", function () {
         };
       };
 
-      assert.equal(output.status, "complete");
+      assert.equal(output.status, "complete", JSON.stringify(output));
       assert.isTrue(output.coverageReceipt.complete);
       assert.equal(output.coverageReceipt.processedChunks, 2);
       assert.equal(output.coverageReceipt.totalChunks, 2);
-      assert.equal(threadStartParams?.model, "gpt-5.5");
-      assert.equal(threadStartParams?.ephemeral, true);
-      assert.equal(threadStartParams?.approvalPolicy, "never");
-      assert.include(JSON.stringify(turnStartParams?.input), chunks[0]);
-      assert.include(JSON.stringify(turnStartParams?.input), chunks[1]);
+      assert.equal(appServerSpawnCount, 0);
+      assert.equal(requestBody?.model, "gpt-5.5");
+      assert.notProperty(requestBody || {}, "tools");
+      assert.notProperty(requestBody || {}, "tool_choice");
+      assert.include(JSON.stringify(requestBody?.input), chunks[0]);
+      assert.include(JSON.stringify(requestBody?.input), chunks[1]);
     } finally {
       CodexAppServerProcess.spawn = originalSpawn;
+      (
+        globalThis as typeof globalThis & {
+          ztoolkit?: typeof originalToolkit;
+        }
+      ).ztoolkit = originalToolkit;
+      (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
+        originalZotero;
     }
   });
 
-  it("paper_read full targets the active paper unless all selected papers are explicit", async function () {
+  it("paper_read full resolves active, ordinal, and all-selected targets", async function () {
     const firstPaper = {
       itemId: 61,
       contextItemId: 62,
@@ -2035,6 +2044,53 @@ describe("semantic tool surface", function () {
     assert.equal(validated.ok, true);
     if (!validated.ok) return;
 
+    const conflicting = tool.validate({
+      mode: "full",
+      target: { paperContext: activePaper },
+      query: "Read the complete paper.",
+    });
+    assert.equal(conflicting.ok, true);
+    if (!conflicting.ok) return;
+    try {
+      await tool.execute(conflicting.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          conversationKind: "paper",
+          activeItemId: activePaper.itemId,
+          selectedPaperContexts: [activePaper, firstPaper],
+          userText: "Read the complete second selected paper.",
+        },
+      });
+      assert.fail("Expected a conflicting model-supplied target to fail");
+    } catch (error) {
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /target conflicts with the user's requested paper scope/,
+      );
+    }
+    assert.deepEqual(prepared, []);
+
+    try {
+      await tool.execute(conflicting.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          conversationKind: "paper",
+          activeItemId: activePaper.itemId,
+          selectedPaperContexts: [activePaper, firstPaper],
+          userText: "Rather than read the full paper, summarize the abstract.",
+        },
+      });
+      assert.fail("Expected a negated full-read request to fail");
+    } catch (error) {
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /requires an explicit affirmative user request/,
+      );
+    }
+    assert.deepEqual(prepared, []);
+
     await tool.execute(validated.value, {
       ...baseContext,
       request: {
@@ -2046,6 +2102,19 @@ describe("semantic tool surface", function () {
       },
     });
     assert.deepEqual(prepared, [activePaper.title]);
+
+    prepared.length = 0;
+    await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "paper",
+        activeItemId: activePaper.itemId,
+        selectedPaperContexts: [activePaper, firstPaper],
+        userText: "Read the complete second selected paper.",
+      },
+    });
+    assert.deepEqual(prepared, [firstPaper.title]);
 
     prepared.length = 0;
     const allSelectedOutput = (await tool.execute(validated.value, {

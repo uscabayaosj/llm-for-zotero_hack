@@ -71,6 +71,7 @@ import {
   type ExhaustiveBatchAnalyzer,
   type FullReadCoverageReceipt,
 } from "../../shared/exhaustiveDocumentReader";
+import { resolveFullReadPaperTargets } from "../../shared/fullReadTargetResolver";
 import { resolveNormalChatFigureInputs } from "./normalChatFigureInputs";
 import { renderSelectedTextPageFallbackContext } from "./selectedTextAnchorFormatting";
 
@@ -1812,18 +1813,26 @@ export async function resolveMultiContextPlan(params: {
     ).length;
     const complete =
       targetPapers.length > 0 && completePaperCount === targetPapers.length;
+    const status = complete
+      ? "complete"
+      : targetPapers.length > 0 && completePaperCount === 0
+        ? "unreadable"
+        : "partial";
+    const missingCoverage = targetPapers
+      .filter((paper) => !paper.pdfContext?.chunks.length)
+      .map((paper) => `${paper.paperContext.title}: no extractable text`);
     return {
       text: [
         "Full-text reading receipt:",
-        `- Status: ${complete ? "complete" : "partial"}`,
+        `- Status: ${status}`,
         `- Papers complete: ${completePaperCount}/${targetPapers.length}`,
         `- Source coverage: ${totalChunks}/${totalChunks} chunks`,
-        `- Missing ranges: ${complete ? "none" : "unreadable paper text"}`,
+        `- Missing coverage: ${missingCoverage.length ? missingCoverage.join("; ") : "none"}`,
       ].join("\n"),
       complete,
       processedChunks: totalChunks,
       totalChunks,
-      missingChunkRanges: complete ? [] : ["unreadable paper text"],
+      missingChunkRanges: missingCoverage,
       paperCount: targetPapers.length,
       completePaperCount,
     };
@@ -1873,38 +1882,23 @@ export async function resolveMultiContextPlan(params: {
     (paper) => paper.pinKind === "explicit",
   );
   const unpinned = papers.filter((paper) => paper.pinKind === "none");
-  const activePaper =
-    papers.find((paper) => paper.isActive) || papers[0] || null;
+  const activePaper = papers.find((paper) => paper.isActive) || null;
   if (queryPlan.readIntent === "full-once" && papers.length) {
-    const allSelectedRequested =
-      /\b(?:all|every)\s+(?:selected\s+)?papers?\b/i.test(params.question) ||
-      /(?:所有|全部)(?:已选|选中)?(?:论文|文章)/u.test(params.question);
-    const selectedPaperKeys = new Set(
-      normalizePaperContextEntries(params.paperContexts || []).map((paper) =>
-        buildPaperKey(paper),
-      ),
-    );
-    const selectablePapers = selectedPaperKeys.size
-      ? papers.filter((paper) => selectedPaperKeys.has(paper.paperKey))
-      : papers;
-    const normalizedQuestion = params.question
-      .toLocaleLowerCase()
-      .replace(/\s+/g, " ")
-      .trim();
-    const explicitTitleMatches = selectablePapers.filter((paper) => {
-      const title = paper.paperContext.title
-        .toLocaleLowerCase()
-        .replace(/\s+/g, " ")
-        .trim();
-      return title.length >= 4 && normalizedQuestion.includes(title);
+    const targetResolution = resolveFullReadPaperTargets({
+      question: params.question,
+      availablePapers: papers.map((paper) => paper.paperContext),
+      selectedPapers: normalizePaperContextEntries(params.paperContexts || []),
+      activePaper: activePaper?.paperContext,
     });
-    const targetPapers = allSelectedRequested
-      ? selectablePapers
-      : explicitTitleMatches.length
-        ? explicitTitleMatches
-        : activePaper
-          ? [activePaper]
-          : papers;
+    const papersByKey = new Map(
+      papers.map((paper) => [paper.paperKey, paper] as const),
+    );
+    const targetPapers = targetResolution.papers
+      .map((paper) => papersByKey.get(buildPaperKey(paper)))
+      .filter((paper): paper is PlannerPaperEntry => Boolean(paper));
+    if (!targetPapers.length) {
+      throw new Error("The requested full-read paper is not available.");
+    }
     const full = assembleFullMultiPaperContext({ papers: targetPapers });
     const directFullReceipt = buildDirectFullReadReceipt(targetPapers);
     const directFullTokenEstimate =

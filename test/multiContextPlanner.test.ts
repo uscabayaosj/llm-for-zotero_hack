@@ -570,6 +570,126 @@ describe("multiContextPlanner", function () {
     assert.include(plan.contextText, "Full-text reading receipt:");
   });
 
+  it("reports an all-unreadable direct full read as unreadable", async function () {
+    const paper = registerMockPaper({
+      itemId: 126,
+      contextItemId: 127,
+      title: "Unreadable Direct Full Read",
+      pdfContext: buildPdfContext("Unreadable Direct Full Read", []),
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "paper",
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
+      question: "Read the complete paper.",
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: { inputTokenCap: 4096, maxTokens: 256 },
+      queryPlan: buildRetrievalQueryPlan({
+        query: "Read the complete paper.",
+        readIntent: "full-once",
+      }),
+    });
+
+    assert.equal(plan.strategy, "paper-exhaustive-full");
+    assert.isFalse(plan.fullReadReceipt?.complete);
+    assert.equal(plan.fullReadReceipt?.processedChunks, 0);
+    assert.equal(plan.fullReadReceipt?.totalChunks, 0);
+    assert.include(plan.fullReadReceipt?.text || "", "- Status: unreadable");
+    assert.include(
+      plan.fullReadReceipt?.text || "",
+      "Unreadable Direct Full Read: no extractable text",
+    );
+  });
+
+  it("targets the requested ordinal selected paper for a prompt-driven full read", async function () {
+    const activePaper = registerMockPaper({
+      itemId: 122,
+      contextItemId: 123,
+      title: "Active Selected Paper",
+      pdfContext: buildPdfContext("Active Selected Paper", [
+        "ACTIVE_PAPER_SENTINEL should not be read for this request.",
+      ]),
+    });
+    const secondPaper = registerMockPaper({
+      itemId: 124,
+      contextItemId: 125,
+      title: "Auditory Learning Across Sessions",
+      pdfContext: buildPdfContext("Auditory Learning Across Sessions", [
+        "SECOND_PAPER_SENTINEL is the requested source.",
+      ]),
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "paper",
+      activeContextItem: buildActiveAttachment(
+        activePaper.itemId,
+        activePaper.contextItemId,
+      ) as any,
+      question: "Read the complete second selected paper.",
+      paperContexts: [activePaper, secondPaper],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: { inputTokenCap: 4096, maxTokens: 256 },
+      queryPlan: buildRetrievalQueryPlan({
+        query: "Read the complete second selected paper.",
+        readIntent: "full-once",
+      }),
+    });
+
+    assert.equal(plan.strategy, "paper-exhaustive-full");
+    assert.equal(plan.selectedPaperCount, 1);
+    assert.include(plan.contextText, "SECOND_PAPER_SENTINEL");
+    assert.notInclude(plan.contextText, "ACTIVE_PAPER_SENTINEL");
+  });
+
+  it("does not fabricate an active paper for an untargeted library full read", async function () {
+    const first = registerMockPaper({
+      itemId: 128,
+      contextItemId: 129,
+      title: "First Library Selection",
+      pdfContext: buildPdfContext("First Library Selection", ["First text."]),
+    });
+    const second = registerMockPaper({
+      itemId: 130,
+      contextItemId: 131,
+      title: "Second Library Selection",
+      pdfContext: buildPdfContext("Second Library Selection", ["Second text."]),
+    });
+
+    let caught: unknown;
+    try {
+      await resolveMultiContextPlan({
+        conversationMode: "library",
+        activeContextItem: null,
+        question: "Read the full paper.",
+        paperContexts: [first, second],
+        fullTextPaperContexts: [],
+        historyPaperContexts: [],
+        history: [],
+        model: "gpt-4o-mini",
+        advanced: { inputTokenCap: 4096, maxTokens: 256 },
+        queryPlan: buildRetrievalQueryPlan({
+          query: "Read the full paper.",
+          readIntent: "full-once",
+        }),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.instanceOf(caught, Error);
+    assert.include((caught as Error).message, "ambiguous");
+  });
+
   it("uses focused retrieval on paper-mode follow-up turns even when full text would fit", async function () {
     const paper = registerMockPaper({
       itemId: 14,

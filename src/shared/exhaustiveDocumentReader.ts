@@ -5,6 +5,8 @@ import { callLLM, type ChatParams } from "../utils/llmClient";
 
 export type ExhaustiveReadStatus = "complete" | "partial" | "unreadable";
 
+const NO_EXTRACTABLE_TEXT_COVERAGE = "no extractable text";
+
 export type ExhaustiveSourceChunk = {
   paperKey: string;
   paperTitle: string;
@@ -342,7 +344,7 @@ export async function readDocumentsExhaustively(
         status: "unreadable",
         processedChunks: 0,
         totalChunks: 0,
-        missingChunkRanges: [],
+        missingChunkRanges: [NO_EXTRACTABLE_TEXT_COVERAGE],
         digests: [],
         exactEvidence: [],
         warnings: [warning],
@@ -458,7 +460,7 @@ export async function readDocumentsExhaustively(
       `- Status: ${status}`,
       `- Papers complete: ${completePaperCount}/${paperResults.length}`,
       `- Source coverage: ${processedChunks}/${totalChunks} chunks`,
-      `- Missing ranges: ${missingChunkRanges.length ? missingChunkRanges.join("; ") : "none"}`,
+      `- Missing coverage: ${missingChunkRanges.length ? missingChunkRanges.join("; ") : "none"}`,
     ].join("\n"),
     complete,
     processedChunks,

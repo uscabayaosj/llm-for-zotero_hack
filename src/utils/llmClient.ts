@@ -209,7 +209,7 @@ type NativePdfPart = {
 
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
-const DEFAULT_CODEX_API_BASE =
+export const DEFAULT_CODEX_API_BASE =
   "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_REFRESH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";

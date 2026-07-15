@@ -10,6 +10,12 @@ import {
   parseDocumentReferences,
   type QueryReference,
 } from "../../shared/documentReferences";
+import {
+  excludesEnglishFullRead,
+  hasJapaneseFullReadNegation,
+  hasKoreanFullReadNegation,
+  isAffirmativeFullReadCommandAt,
+} from "../../shared/fullReadIntentPolarity";
 
 export type DocumentReadIntent = "targeted" | "full-once";
 
@@ -215,22 +221,232 @@ function isLikelyExactLookupQuery(query: string): boolean {
  * Conservative local fallback for explicit full-reading commands.
  * The model planner remains the primary multilingual classifier when configured.
  */
+function selectorTreatsDocumentAsContainer(selector: string): boolean {
+  const trimmed = selector.trim();
+  if (
+    /\b(?:about|across|for|from|in|of|throughout)\s+(?:(?:the|this|that)\s*)?$/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+  return /\b(?:analysis|argument|assessment|comparison|critique|description|discussion|explanation|interpretation|list|overview|review|summary)\b[^;.!?。！？；\n]{0,48}\b(?:about|across|for|from|in|of|throughout)\s+(?:(?:a|an|the|this|that)\s+[\p{L}\p{N}'’ -]+|[\p{L}][\p{L}-]*['’]s)$/iu.test(
+    trimmed,
+  );
+}
+
+function hasCompoundNounAfterDocument(value: string): boolean {
+  if (/^\s*['’]s\b/u.test(value)) return true;
+  const firstWord = value.match(/^\s*([\p{L}\p{N}_-]+)/u)?.[1] || "";
+  if (!firstWord) return false;
+  if (
+    /^(?:after|again|and|before|beforehand|by|called|cover|first|focusing|focussing|for|from|in|next|now|of|once|please|then|titled|to|when|while|with)$/i.test(
+      firstWord,
+    )
+  ) {
+    return false;
+  }
+  return !/ly$/i.test(firstWord);
+}
+
+function hasEnglishFullDocumentModifierIntent(normalized: string): boolean {
+  const commandPattern =
+    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b[^;.!?。！？；\n]{0,64}?\b(?:the\s+)?(?:entire|whole|complete|full)\b/gi;
+  for (const match of normalized.matchAll(commandPattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    if (excludesEnglishFullRead(match[0])) continue;
+    const tail = normalized
+      .slice((match.index || 0) + match[0].length)
+      .split(/[;.!?。！？；\n]/, 1)[0]
+      .slice(0, 80);
+    const documentMatch = tail.match(
+      /\b(?:papers?|articles?|documents?|texts?|pdfs?)\b/i,
+    );
+    if (!documentMatch || documentMatch.index === undefined) continue;
+    const selector = tail.slice(0, documentMatch.index);
+    if (selectorTreatsDocumentAsContainer(selector)) continue;
+    const afterDocument = tail.slice(
+      documentMatch.index + documentMatch[0].length,
+    );
+    if (hasCompoundNounAfterDocument(afterDocument)) continue;
+    return true;
+  }
+  return false;
+}
+
+function hasEnglishDocumentSuffixIntent(normalized: string): boolean {
+  const commandPattern =
+    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b([^;.!?。！？；\n]{0,96}?)\b(papers?|articles?|documents?|texts?|pdfs?)\b/gi;
+  for (const match of normalized.matchAll(commandPattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    if (excludesEnglishFullRead(match[1] || "")) continue;
+    if (selectorTreatsDocumentAsContainer(match[1] || "")) continue;
+    const afterDocument = normalized
+      .slice((match.index || 0) + match[0].length)
+      .split(/[;.!?。！？；\n]/, 1)[0]
+      .slice(0, 64);
+    const completeness = afterDocument.match(
+      /\b(?:in\s+(?:its\s+)?entirety|in\s+full|completely|fully|cover\s+to\s+cover|from\s+start\s+to\s+finish)\b/i,
+    );
+    if (!completeness || completeness.index === undefined) continue;
+    const beforeCompleteness = afterDocument.slice(0, completeness.index);
+    if (/^\s*['’]s\b/u.test(beforeCompleteness)) continue;
+    const isNumberedPaperList =
+      /^\s*(?:numbers?\s+)?\d{1,2}(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+)\d{1,2})+\s*$/i.test(
+        beforeCompleteness,
+      );
+    if (
+      beforeCompleteness.trim() &&
+      !/^\s*(?:by|called|from|titled)\b/i.test(beforeCompleteness) &&
+      !isNumberedPaperList
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function hasEnglishEveryDocumentUnitIntent(normalized: string): boolean {
+  const pattern =
+    /\b(?:read|use|analy[sz]e|review|process)\b[^;.!?。！？；\n]{0,48}\bevery\s+(?:section|page)\b([^;.!?。！？；\n]*)/gi;
+  for (const match of normalized.matchAll(pattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    if (excludesEnglishFullRead(match[0])) continue;
+    const scope = (match[1] || "").trim();
+    if (!scope) return true;
+    if (
+      /^of\s+(?:(?:a|the|this|that)\s+)?(?:paper|article|document|pdf)\b/i.test(
+        scope,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasEnglishLeadingCompletenessIntent(normalized: string): boolean {
+  const leading = normalized.match(
+    /\b(?:completely|fully)\s+(?:read|use|analy[sz]e|review|process)\b[^;.!?。！？；\n]{0,48}\b(?:it|papers?|articles?|documents?|pdfs?)\b/i,
+  );
+  if (
+    leading &&
+    isAffirmativeFullReadCommandAt(normalized, leading.index || 0)
+  ) {
+    return !excludesEnglishFullRead(leading[0]);
+  }
+  const pronoun = normalized.match(
+    /\bread\s+it\s+(?:completely|fully|cover\s+to\s+cover|from\s+start\s+to\s+finish)\b/i,
+  );
+  return Boolean(
+    pronoun && isAffirmativeFullReadCommandAt(normalized, pronoun.index || 0),
+  );
+}
+
+function hasChineseFullDocumentIntent(normalized: string): boolean {
+  const pattern =
+    /(?:通读[^。！？；\n]{0,32}?(?:(?:整篇|完整|全部)(?:的)?)?(?:论文|文章|文档|全文)|(?:完整|全部)阅读[^。！？；\n]{0,32}?(?:论文|文章|文档|全文)|阅读(?:完整|全部)(?:的)?[^。！？；\n]{0,32}?(?:论文|文章|文档)|阅读(?:这|该|当前)?(?:篇)?(?:论文|文章|文档)(?:的)?(?:完整|全部)(?:内容|全文)|阅读(?:完整|全部)?全文|阅读全文|分析全文|使用全文|发送全文)/gu;
+  for (const match of normalized.matchAll(pattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    const tail = normalized.slice((match.index || 0) + match[0].length);
+    if (/^(?:的)?(?:摘要|结论|方法|讨论|引言|结果|部分|章节)/u.test(tail)) {
+      continue;
+    }
+    return true;
+  }
+  const startToFinishPattern =
+    /(?:从头到尾[^。！？；\n]{0,16}?(?:阅读|通读)|(?:阅读|通读)[^。！？；\n]{0,16}?从头到尾)/gu;
+  for (const match of normalized.matchAll(startToFinishPattern)) {
+    if (isAffirmativeFullReadCommandAt(normalized, match.index || 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasJapaneseFullDocumentIntent(normalized: string): boolean {
+  const pattern =
+    /(?:全文|(?:論文|記事|文書)[^。！？；\n]{0,16}(?:全文|全体))([^。！？；\n]{0,20}?)(?:読む|読んで|分析)/gu;
+  for (const match of normalized.matchAll(pattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    const clause = normalized.slice(
+      match.index || 0,
+      (match.index || 0) + match[0].length + 32,
+    );
+    if (hasJapaneseFullReadNegation(clause)) continue;
+    if (/(?:要約|概要|抄録|結論|方法|議論|序論|結果)/u.test(match[1] || "")) {
+      continue;
+    }
+    return true;
+  }
+  const startToFinishPattern =
+    /(?:最初から最後まで[^。！？\n]{0,12}(?:読む|読んで)|(?:読む|読んで)[^。！？\n]{0,12}最初から最後まで)/gu;
+  for (const match of normalized.matchAll(startToFinishPattern)) {
+    const clause = normalized.slice(
+      match.index || 0,
+      (match.index || 0) + match[0].length + 32,
+    );
+    if (
+      isAffirmativeFullReadCommandAt(normalized, match.index || 0) &&
+      !hasJapaneseFullReadNegation(clause)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasKoreanFullDocumentIntent(normalized: string): boolean {
+  const pattern =
+    /(?:전문|(?:논문|문서|기사)[^.!?\n]{0,16}(?:전문|전체))([^.!?\n]{0,20}?)(?:읽|분석)/gu;
+  for (const match of normalized.matchAll(pattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    if (/(?:요약|초록|결론|방법|토론|서론|결과)/u.test(match[1] || "")) {
+      continue;
+    }
+    const clause = normalized.slice(
+      match.index || 0,
+      (match.index || 0) + match[0].length + 24,
+    );
+    if (hasKoreanFullReadNegation(clause)) continue;
+    return true;
+  }
+  const startToFinishPattern =
+    /(?:처음부터\s*끝까지[^.!?\n]{0,12}읽|읽[^.!?\n]{0,12}처음부터\s*끝까지)/gu;
+  for (const match of normalized.matchAll(startToFinishPattern)) {
+    if (!isAffirmativeFullReadCommandAt(normalized, match.index || 0)) continue;
+    const clause = normalized.slice(
+      match.index || 0,
+      (match.index || 0) + match[0].length + 16,
+    );
+    if (hasKoreanFullReadNegation(clause)) continue;
+    return true;
+  }
+  return false;
+}
+
 export function detectExplicitFullReadIntent(query: string): boolean {
   const normalized = normalizeQueryText(query).toLocaleLowerCase();
   if (!normalized) return false;
   return (
-    /\b(?:read|use|analy[sz]e|review|process|send|provide)\b[^.!?\n]{0,48}\b(?:the\s+)?(?:full\s*[- ]?text|entire|whole|complete)\b(?:[^.!?\n]{0,32}\b(?:paper|article|document|text|pdf)\b)?/i.test(
-      normalized,
-    ) ||
-    /\b(?:cover\s+to\s+cover|every\s+(?:section|page)|from\s+start\s+to\s+finish)\b/i.test(
-      normalized,
-    ) ||
-    /(?:通读|阅读全文|完整阅读|阅读完整|阅读全部|分析全文|使用全文|发送全文|整篇(?:论文|文章)|全文(?:内容|阅读)?|从头到尾)/u.test(
-      normalized,
-    ) ||
-    /(?:全文を読む|論文全体|全体を読む|最初から最後まで)/u.test(normalized) ||
-    /(?:전문을?\s*읽|전체\s*(?:논문|문서)|처음부터\s*끝까지)/u.test(normalized)
+    hasEnglishFullDocumentModifierIntent(normalized) ||
+    hasEnglishDocumentSuffixIntent(normalized) ||
+    hasEnglishEveryDocumentUnitIntent(normalized) ||
+    hasEnglishLeadingCompletenessIntent(normalized) ||
+    hasChineseFullDocumentIntent(normalized) ||
+    hasJapaneseFullDocumentIntent(normalized) ||
+    hasKoreanFullDocumentIntent(normalized)
   );
+}
+
+export function reconcilePlannerReadIntent(
+  query: string,
+  plannedIntent: DocumentReadIntent,
+): DocumentReadIntent {
+  return plannedIntent === "full-once" && detectExplicitFullReadIntent(query)
+    ? "full-once"
+    : "targeted";
 }
 
 export function shouldAutoGenerateQueryVariants(params: {
@@ -293,6 +509,7 @@ export async function generateRetrievalQueryPlanWithModel(params: {
     "Generate search probes, not an answer.",
     "Preserve the user's intent.",
     'Use readIntent "full-once" only when the user explicitly asks to read, use, analyze, or send the complete document.',
+    "Keep readIntent targeted when complete, entire, or whole describes an explanation, mechanism, argument, figure, table, section, or other requested answer rather than the document itself.",
     "Generate variants in the language used by the supplied document samples, including translation when query and source languages differ.",
     "Include common acronyms, notation variants, and technical equivalents when useful.",
     "Preserve literal figure and table identifiers exactly.",
@@ -334,8 +551,10 @@ export async function generateRetrievalQueryPlanWithModel(params: {
       throw new Error("The retrieval planner returned malformed output");
     }
     const variants = Array.isArray(parsed?.variants) ? parsed.variants : [];
-    const readIntent =
-      parsed?.readIntent === "full-once" ? "full-once" : fallback.readIntent;
+    const readIntent = reconcilePlannerReadIntent(
+      params.query,
+      parsed.readIntent,
+    );
     return buildRetrievalQueryPlan({
       query: params.query,
       queryVariants: variants,

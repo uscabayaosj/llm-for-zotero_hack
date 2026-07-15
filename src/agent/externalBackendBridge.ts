@@ -1198,6 +1198,7 @@ function buildClaudeZoteroMcpScope(
     libraryName: resolveLibraryName(libraryID),
     title: selectedPaper?.title,
     userText: request.userText,
+    exhaustiveReadBackend: "unavailable",
     paperContext: selectedPaper,
     selectedPaperContexts: selectedPaperContexts.length
       ? selectedPaperContexts

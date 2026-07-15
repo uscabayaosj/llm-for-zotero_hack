@@ -88,6 +88,34 @@ describe("workflow: Add Text lifecycle", function () {
     assert.isTrue(diagnostics.secondConversationHasText, message);
   });
 
+  it("routes popup text to standalone chat while embedded reader panels are placeholders", async function () {
+    const selectedText = "STANDALONE_READER_POPUP_SELECTION";
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Standalone Add Text",
+      pdfTitle: "Workflow Standalone Add Text PDF",
+      pages: [`The standalone reader contains ${selectedText} for routing.`],
+    });
+    const standalone = await api.openStandaloneForItem(fixture.parentItemId);
+    assert.equal(standalone.activeTab, "paper", JSON.stringify(standalone));
+
+    const diagnostics = await api.exerciseReaderPopupStandaloneRouting({
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText,
+    });
+    const message = JSON.stringify({ standalone, diagnostics });
+
+    assert.isNotEmpty(diagnostics.readerTabId, message);
+    assert.equal(diagnostics.addTextButtonLabel, "Add Text", message);
+    assert.equal(
+      diagnostics.standaloneConversationKey,
+      standalone.conversationKey,
+      message,
+    );
+    assert.isTrue(diagnostics.standaloneConversationHasText, message);
+    assert.isTrue(diagnostics.standalonePreviewHasText, message);
+  });
+
   for (const trigger of ["popup", "action-bar"] as const) {
     it(`shows ${trigger} text immediately and preserves its page through the final request`, async function () {
       const filler = (label: string, count: number) =>

@@ -81,7 +81,10 @@ import {
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
-import { resolveReaderPopupPanelTarget } from "./readerPopupPanelRouting";
+import {
+  resolveReaderPopupPanelTarget,
+  resolveStandalonePopupPanelTarget,
+} from "./readerPopupPanelRouting";
 import {
   includeReaderSelectedText,
   type IncludeReaderSelectedTextResult,
@@ -642,11 +645,13 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               _tabID?: string | number | null;
             };
             const popupTopDoc = event.doc.defaultView?.top?.document || null;
-            const target = resolveReaderPopupPanelTarget({
-              preferredDocument: popupTopDoc,
-              documents: docs,
-              tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
-            });
+            const target = isStandaloneWindowActive()
+              ? resolveStandalonePopupPanelTarget(activeContextPanels.keys())
+              : resolveReaderPopupPanelTarget({
+                  preferredDocument: popupTopDoc,
+                  documents: docs,
+                  tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
+                });
             if (!target) {
               ztoolkit.log(
                 "LLM: Add Text popup action skipped (reader panel unavailable)",

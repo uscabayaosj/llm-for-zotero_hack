@@ -25,6 +25,7 @@ import type {
   AgentRuntimeRequest,
   AgentToolArtifact,
   AgentToolContext,
+  ExhaustiveReadBackend,
   PreparedToolExecution,
   ToolSpec,
 } from "../types";
@@ -129,6 +130,10 @@ export type ZoteroMcpActiveScope = {
   model?: string;
   codexPath?: string;
   reasoning?: ReasoningConfig;
+  exhaustiveReadBackend?: Extract<
+    ExhaustiveReadBackend,
+    "codex_responses" | "unavailable"
+  >;
   paperContext?: PaperContextRef;
   selectedPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
@@ -564,6 +569,10 @@ function normalizeActiveScope(
     model: normalizeText(scope.model, 256),
     codexPath: normalizeText(scope.codexPath, 4096),
     reasoning: normalizeReasoningConfig(scope.reasoning),
+    exhaustiveReadBackend:
+      scope.exhaustiveReadBackend === "codex_responses"
+        ? "codex_responses"
+        : "unavailable",
     paperContext,
     selectedPaperContexts: normalizePaperContexts(scope.selectedPaperContexts),
     fullTextPaperContexts: normalizePaperContexts(scope.fullTextPaperContexts),
@@ -1114,6 +1123,10 @@ function createToolContext(
     pinnedPaperContexts?.length,
   );
   const activeNoteContext = resolveScopeActiveNoteContext(scope);
+  const exhaustiveReadBackend =
+    scope?.exhaustiveReadBackend === "codex_responses"
+      ? "codex_responses"
+      : "unavailable";
   const request: AgentRuntimeRequest = {
     conversationKey: scope?.conversationKey || 0,
     mode: "agent",
@@ -1127,10 +1140,18 @@ function createToolContext(
     activeItemId,
     libraryID: scopeArgs.libraryID || scope?.libraryID || 0,
     conversationKind: scope?.kind,
-    model: scope?.model || "codex-app-server",
+    model: scope?.model,
     apiBase: scope?.codexPath,
-    authMode: "codex_app_server",
+    authMode:
+      exhaustiveReadBackend === "codex_responses"
+        ? "codex_app_server"
+        : undefined,
+    providerProtocol:
+      exhaustiveReadBackend === "codex_responses"
+        ? "codex_responses"
+        : undefined,
     reasoning: scope?.reasoning,
+    exhaustiveReadBackend,
     selectedPaperContexts:
       selectedPaperContexts ||
       (!hasExplicitPaperScope && paperContext ? [paperContext] : undefined),
@@ -1146,8 +1167,9 @@ function createToolContext(
     request,
     item,
     currentAnswerText: "",
-    modelName: "codex-app-server",
-    modelProviderLabel: "Codex",
+    modelName: scope?.model || "external-mcp",
+    modelProviderLabel:
+      exhaustiveReadBackend === "codex_responses" ? "Codex" : "External MCP",
   };
 }
 

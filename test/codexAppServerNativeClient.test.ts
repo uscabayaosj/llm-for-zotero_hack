@@ -1562,6 +1562,7 @@ describe("Codex app-server native client", function () {
     ]);
     assert.equal(scope.model, "gpt-5.5");
     assert.equal(scope.codexPath, "/tmp/codex-native");
+    assert.equal(scope.exhaustiveReadBackend, "codex_responses");
     assert.deepEqual(scope.reasoning, {
       provider: "openai",
       level: "high",

@@ -96,6 +96,14 @@ export type WorkflowTestReaderPopupRoutingDiagnostics = {
   secondConversationHasText: boolean;
 };
 
+export type WorkflowTestReaderPopupStandaloneRoutingDiagnostics = {
+  readerTabId: string;
+  addTextButtonLabel: string;
+  standaloneConversationKey: number;
+  standaloneConversationHasText: boolean;
+  standalonePreviewHasText: boolean;
+};
+
 export type WorkflowTestHighlightAwareRetrievalDiagnostics = {
   trigger: "popup" | "action-bar";
   readerItemId: number;
@@ -180,6 +188,11 @@ export type WorkflowTestApi = {
     pageIndex: number;
     selectedText: string;
   }) => Promise<WorkflowTestReaderPopupRoutingDiagnostics>;
+  exerciseReaderPopupStandaloneRouting: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+  }) => Promise<WorkflowTestReaderPopupStandaloneRoutingDiagnostics>;
   exerciseHighlightAwareContextRetrieval: (input: {
     panelId: string;
     attachmentItemId: number;

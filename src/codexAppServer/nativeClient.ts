@@ -1173,6 +1173,7 @@ function buildCodexNativeScopedMcpScope(params: {
     model: params.model,
     codexPath: params.codexPath,
     reasoning: params.reasoning,
+    exhaustiveReadBackend: "codex_responses",
     selectedPaperContexts: params.skillContext?.selectedPaperContexts,
     fullTextPaperContexts: params.skillContext?.fullTextPaperContexts,
     pinnedPaperContexts: params.skillContext?.pinnedPaperContexts,

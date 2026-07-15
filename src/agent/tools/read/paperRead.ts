@@ -43,6 +43,8 @@ import {
   type FullReadCoverageReceipt,
   type FullReadPaperResult,
 } from "../../../shared/exhaustiveDocumentReader";
+import { resolveFullReadPaperTargets } from "../../../shared/fullReadTargetResolver";
+import { detectExplicitFullReadIntent } from "../../../modules/contextPanel/retrievalQueryPlan";
 import { createCodexAppServerExhaustiveReaderSession } from "../../../codexAppServer/exhaustiveReader";
 
 type PaperReadMode =
@@ -142,70 +144,37 @@ function dedupePaperContexts(
   });
 }
 
-function normalizeTitleForMatching(value: string | undefined): string {
-  return `${value || ""}`.toLocaleLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function requestsAllSelectedPapers(value: string): boolean {
-  return (
-    /\b(?:all|every)\s+(?:of\s+the\s+)?selected\s+papers?\b/i.test(value) ||
-    /(?:所有|全部)(?:已选|选中)(?:论文|文章)/u.test(value)
-  );
-}
-
 function resolveFullReadTargets(params: {
   input: PaperReadInput;
   context: AgentToolContext;
   zoteroGateway: ZoteroGateway;
 }): NonNullable<PdfTarget["paperContext"]>[] {
-  if (params.input.target || params.input.targets?.length) {
-    return resolveDefaultTargets(
-      params.input.target,
-      params.input.targets,
-      params.context,
-      params.zoteroGateway,
-      MAX_FULL_TARGETS,
+  const explicitTargets =
+    params.input.target || params.input.targets?.length
+      ? resolveDefaultTargets(
+          params.input.target,
+          params.input.targets,
+          params.context,
+          params.zoteroGateway,
+          MAX_FULL_TARGETS,
+        )
+      : [];
+  const userText = (params.context.request.userText || "").trim();
+  if (userText && !detectExplicitFullReadIntent(userText)) {
+    throw new Error(
+      "paper_read mode:'full' requires an explicit affirmative user request to read the complete document.",
     );
   }
-  const requestText = [
-    params.context.request.userText || "",
-    params.input.query || "",
-  ]
-    .join(" ")
-    .trim();
-  if (requestsAllSelectedPapers(requestText)) {
-    return dedupePaperContexts(
-      params.context.request.selectedPaperContexts?.length
-        ? params.context.request.selectedPaperContexts
-        : params.zoteroGateway.listPaperContexts(params.context.request),
-    );
-  }
-
-  const available = dedupePaperContexts(
-    params.zoteroGateway.listPaperContexts(params.context.request),
+  const requestText = userText || params.input.query || "";
+  if (!requestText && explicitTargets.length) return explicitTargets;
+  const selected = dedupePaperContexts(
+    params.context.request.selectedPaperContexts || [],
   );
-  const normalizedRequest = normalizeTitleForMatching(requestText);
-  const titleMatches = available.filter((paperContext) => {
-    const title = normalizeTitleForMatching(paperContext.title);
-    return title.length >= 4 && normalizedRequest.includes(title);
-  });
-  if (titleMatches.length) {
-    const titleCounts = new Map<string, number>();
-    for (const paperContext of titleMatches) {
-      const title = normalizeTitleForMatching(paperContext.title);
-      titleCounts.set(title, (titleCounts.get(title) || 0) + 1);
-    }
-    const ambiguousTitles = Array.from(titleCounts.entries())
-      .filter(([, count]) => count > 1)
-      .map(([title]) => title);
-    if (ambiguousTitles.length) {
-      throw new Error(
-        `Ambiguous full-read title match: ${ambiguousTitles.join("; ")}. Pass explicit paper targets.`,
-      );
-    }
-    return titleMatches;
-  }
-
+  const available = dedupePaperContexts([
+    ...params.zoteroGateway.listPaperContexts(params.context.request),
+    ...selected,
+    ...explicitTargets,
+  ]);
   const activeItemId = Math.floor(
     Number(params.context.request.activeItemId || 0),
   );
@@ -214,7 +183,35 @@ function resolveFullReadTargets(params: {
       paperContext.itemId === activeItemId ||
       paperContext.contextItemId === activeItemId,
   );
-  return activePaper ? [activePaper] : available.slice(0, 1);
+  const intendedTargets = resolveFullReadPaperTargets({
+    question: requestText,
+    availablePapers: available,
+    selectedPapers: selected,
+    activePaper,
+  }).papers;
+  if (explicitTargets.length) {
+    const intendedKeys = new Set(
+      intendedTargets.map(
+        (paperContext) =>
+          `${paperContext.itemId}:${paperContext.contextItemId}`,
+      ),
+    );
+    const explicitKeys = new Set(
+      explicitTargets.map(
+        (paperContext) =>
+          `${paperContext.itemId}:${paperContext.contextItemId}`,
+      ),
+    );
+    const targetsAgree =
+      intendedKeys.size === explicitKeys.size &&
+      [...intendedKeys].every((key) => explicitKeys.has(key));
+    if (!targetsAgree) {
+      throw new Error(
+        `The explicit paper_read full target conflicts with the user's requested paper scope. Requested: ${intendedTargets.map((paperContext) => paperContext.title).join("; ")}. Tool supplied: ${explicitTargets.map((paperContext) => paperContext.title).join("; ")}. Omit target/targets or retry with the requested papers.`,
+      );
+    }
+  }
+  return intendedTargets;
 }
 
 function readTextFile(filePath: string): Promise<string> {
@@ -1123,6 +1120,24 @@ export function createPaperReadTool(
         return artifacts?.length ? { content, artifacts } : content;
       }
       if (input.mode === "full") {
+        if (
+          !fullReadAnalyzer &&
+          context.request.exhaustiveReadBackend === "unavailable"
+        ) {
+          throw new Error(
+            "Exhaustive paper reading cannot run because a tool-free full-read backend is unavailable for this MCP scope. Use mode:'targeted', or start the request from a provider-backed chat that supports exhaustive reading.",
+          );
+        }
+        const nativeFullReadModel = `${context.request.model || ""}`.trim();
+        if (
+          !fullReadAnalyzer &&
+          context.request.authMode === "codex_app_server" &&
+          (!nativeFullReadModel || nativeFullReadModel === "codex-app-server")
+        ) {
+          throw new Error(
+            "Exhaustive paper reading cannot run because the Codex tool-free full-read backend has no selected model.",
+          );
+        }
         const paperInputs = [];
         for (const paperContext of targets) {
           paperInputs.push({
@@ -1137,8 +1152,7 @@ export function createPaperReadTool(
         const nativeReaderSession =
           !fullReadAnalyzer && context.request.authMode === "codex_app_server"
             ? createCodexAppServerExhaustiveReaderSession({
-                model: context.request.model,
-                codexPath: context.request.apiBase,
+                model: nativeFullReadModel,
                 reasoning: context.request.reasoning,
               })
             : null;

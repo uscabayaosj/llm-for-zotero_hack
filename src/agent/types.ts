@@ -480,6 +480,11 @@ export type AgentModelStep =
       assistantMessage: AgentAssistantMessage;
     };
 
+export type ExhaustiveReadBackend =
+  | "request_provider"
+  | "codex_responses"
+  | "unavailable";
+
 export type AgentRuntimeRequest = AgentRequest & {
   item?: Zotero.Item | null;
   history?: ChatMessage[];
@@ -493,6 +498,11 @@ export type AgentRuntimeRequest = AgentRequest & {
   activeNoteContext?: ActiveNoteContext;
   metadata?: Record<string, unknown>;
   contextCache?: ContextCachePlan;
+  /**
+   * Completion boundary used for exhaustive document batches.
+   * Missing means the request's configured provider is the completion backend.
+   */
+  exhaustiveReadBackend?: ExhaustiveReadBackend;
 };
 
 export type AgentAttachmentReadableVia =

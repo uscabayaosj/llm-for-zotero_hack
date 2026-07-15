@@ -80,6 +80,9 @@ import {
   clearWebChatConversationForceNewChat,
   consumeWebChatConversationForceNewChat,
   hasWebChatPdfUploadedForConversation,
+  getWebChatUploadedPdfSourceKeysForConversation,
+  isWebChatPdfUploadStateUnknownForConversation,
+  markWebChatPdfUploadStateUnknownForConversation,
   markWebChatPdfUploadedForConversation,
   resetWebChatPdfUploadedForConversation,
   resetWebChatConversationSessionState,
@@ -402,6 +405,7 @@ import { attachAssistantSelectionPopup } from "./setupHandlers/controllers/assis
 import { attachMenuActionController } from "./setupHandlers/controllers/menuActionController";
 import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pdfPaperAttachmentResolver";
 import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
+import { isZoteroPdfAttachmentCandidate } from "./setupHandlers/controllers/pdfAttachmentPolicy";
 import { resolvePdfModeModelInputs } from "./setupHandlers/controllers/pdfPaperModelInputController";
 import { createWebChatHistoryController } from "./setupHandlers/controllers/webChatHistoryController";
 import { createHistoryLifecycleController } from "./setupHandlers/controllers/historyLifecycleController";
@@ -422,6 +426,7 @@ import {
   buildPaperSourceOptions as buildPaperSourceOptionsController,
   canRevealMineruCacheForSourceOption,
   resolvePaperPdfSupportForConversation,
+  shouldDowngradePdfSourceForConversation,
   type MineruSourceAction,
   type MineruSourceUiState,
   type PaperSourceOption,
@@ -2079,9 +2084,20 @@ export function setupHandlers(
     itemId: number,
     paperContext: PaperContextRef,
   ): PaperContentSourceMode => {
-    // [webchat] Always use PDF content source — webchat sends raw PDF via drag-and-drop
-    if (isWebChatMode()) return "pdf";
     const explicit = getPaperContentSourceOverride(itemId, paperContext);
+    // WebChat uploads only genuine PDF attachments. Retained Markdown, HTML,
+    // DOCX, and other text-like contexts must not be coerced into this lane.
+    if (isWebChatMode()) {
+      const attachment = Zotero.Items.get(paperContext.contextItemId);
+      if (isZoteroPdfAttachmentCandidate(attachment)) return "pdf";
+      return (
+        (explicit === "pdf" ? undefined : explicit) ||
+        (paperContext.contentSourceMode === "pdf"
+          ? undefined
+          : paperContext.contentSourceMode) ||
+        (isPaperContextMineru(paperContext) ? "mineru" : "text")
+      );
+    }
     return (
       explicit ||
       paperContext.contentSourceMode ||
@@ -2260,20 +2276,31 @@ export function setupHandlers(
     );
   };
 
-  /** [webchat] Check if any paper has PDF content source AND full-text send mode (purple chip). */
-  const hasActivePdfFullTextPapers = (
+  /** [webchat] Resolve PDF chips that are active for the next upload. */
+  const getActiveWebChatPdfPaperContexts = (
     currentItem: Zotero.Item,
     selectedPaperContexts?: PaperContextRef[],
-  ): boolean => {
+  ): PaperContextRef[] => {
     return getAllEffectivePaperContexts(
       currentItem,
       selectedPaperContexts,
-    ).some(
+    ).filter(
       (paperContext) =>
         resolvePaperContentSourceMode(currentItem.id, paperContext) === "pdf" &&
         isPaperContextFullTextMode(
           resolvePaperContextNextSendMode(currentItem.id, paperContext),
         ),
+    );
+  };
+
+  /** [webchat] Check if any paper has PDF content source AND full-text send mode (purple chip). */
+  const hasActivePdfFullTextPapers = (
+    currentItem: Zotero.Item,
+    selectedPaperContexts?: PaperContextRef[],
+  ): boolean => {
+    return (
+      getActiveWebChatPdfPaperContexts(currentItem, selectedPaperContexts)
+        .length > 0
     );
   };
 
@@ -4749,14 +4776,17 @@ export function setupHandlers(
           // Auto-correct PDF mode for models that don't support native full-PDF
           // input. Downgrade to text/mineru so the user doesn't end up with a
           // broken send.
-          const newPdfSupport = getModelPdfSupport(
-            entry.model,
-            entry.providerProtocol,
-            entry.authMode,
-            entry.apiBase,
-            entry.advanced.inputMode,
-          );
-          const shouldDowngrade = newPdfSupport !== "native";
+          const shouldDowngrade = shouldDowngradePdfSourceForConversation({
+            basePdfSupport: getModelPdfSupport(
+              entry.model,
+              entry.providerProtocol,
+              entry.authMode,
+              entry.apiBase,
+              entry.advanced.inputMode,
+            ),
+            isClaudeCode: isClaudeConversationSystem(),
+            isCodex: isCodexConversationSystem(),
+          });
           if (shouldDowngrade) {
             const papers = getManualPaperContextsForItem(
               item.id,
@@ -5218,14 +5248,37 @@ export function setupHandlers(
       ? hasWebChatPdfUploadedForConversation(getConversationKey(item))
       : false;
 
-  const markWebChatPdfUploadedForCurrentConversation = () => {
+  const getUploadedWebChatPdfSourceKeysForCurrentConversation = () =>
+    item
+      ? getWebChatUploadedPdfSourceKeysForConversation(getConversationKey(item))
+      : [];
+
+  const isWebChatPdfUploadStateUnknownForCurrentConversation = () =>
+    item
+      ? isWebChatPdfUploadStateUnknownForConversation(getConversationKey(item))
+      : false;
+
+  const markWebChatPdfUploadedForCurrentConversation = (
+    paperContexts: readonly PaperContextRef[],
+  ) => {
     if (!item) return;
-    markWebChatPdfUploadedForConversation(getConversationKey(item));
+    markWebChatPdfUploadedForConversation(
+      getConversationKey(item),
+      paperContexts.map(
+        (paperContext) =>
+          `zotero-pdf:${paperContext.itemId}:${paperContext.contextItemId}`,
+      ),
+    );
   };
 
   const resetWebChatPdfUploadedForCurrentConversation = () => {
     if (!item) return;
     resetWebChatPdfUploadedForConversation(getConversationKey(item));
+  };
+
+  const markWebChatPdfUploadStateUnknownForCurrentConversation = () => {
+    if (!item) return;
+    markWebChatPdfUploadStateUnknownForConversation(getConversationKey(item));
   };
 
   const resetCurrentWebChatConversation = () => {
@@ -5267,7 +5320,7 @@ export function setupHandlers(
   if (hooks) {
     hooks.clearWebChatNewChatIntent = () => {
       clearNextWebChatNewChatIntent();
-      resetWebChatPdfUploadedForCurrentConversation();
+      markWebChatPdfUploadStateUnknownForCurrentConversation();
     };
     hooks.getCurrentModelName = () =>
       getSelectedModelInfo().currentModel || null;
@@ -5636,7 +5689,7 @@ export function setupHandlers(
     },
     refreshChatPreservingScroll,
     isWebChatMode,
-    resetWebChatPdfUploadedForCurrentConversation,
+    markWebChatPdfUploadStateUnknownForCurrentConversation,
     clearNextWebChatNewChatIntent,
     setSelectedReasoningLevel: (itemId, level) => {
       selectedReasoningCache.set(itemId, level);
@@ -6400,7 +6453,17 @@ export function setupHandlers(
       currentItem: Zotero.Item,
       selectedPaperContexts?: any[],
     ) => hasActivePdfFullTextPapers(currentItem, selectedPaperContexts),
+    getActiveWebChatPdfPaperContexts: (
+      currentItem: Zotero.Item,
+      selectedPaperContexts?: PaperContextRef[],
+    ) => getActiveWebChatPdfPaperContexts(currentItem, selectedPaperContexts),
     hasUploadedPdfInCurrentWebChatConversation,
+    getUploadedWebChatPdfSourceKeys:
+      getUploadedWebChatPdfSourceKeysForCurrentConversation,
+    isWebChatPdfUploadStateUnknown:
+      isWebChatPdfUploadStateUnknownForCurrentConversation,
+    markWebChatPdfUploadStateUnknown:
+      markWebChatPdfUploadStateUnknownForCurrentConversation,
     markWebChatPdfUploadedForCurrentConversation,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
     resolveLocalPdfResources: localPdfResourceResolver.resolve,
@@ -6465,6 +6528,7 @@ export function setupHandlers(
     retainPaperState,
     consumePaperModeState,
     consumeWebChatForceNewChatIntent,
+    markWebChatForceNewChatIntent: () => markNextWebChatSendAsNewChat(),
     retainPinnedFileState,
     retainPinnedTextState,
     updatePaperPreviewPreservingScroll,
@@ -6808,12 +6872,8 @@ export function setupHandlers(
       setInlineEditSavedDraft("");
       setInlineEditTarget(null);
       if (newText) {
-        consumePaperModeState(currentItem.id, {
-          webchatGreyOut: isWebChatMode(),
-        });
-        retainPaperState(currentItem.id);
-        updatePaperPreviewPreservingScroll();
-        void editUserTurnAndRetry({
+        const webchatGreyOut = isWebChatMode();
+        const retrySucceeded = await editUserTurnAndRetry({
           body,
           item: currentItem,
           contextSource,
@@ -6844,6 +6904,11 @@ export function setupHandlers(
           reasoning: selectedReasoning,
           advanced: advancedParams,
         });
+        if (retrySucceeded) {
+          consumePaperModeState(currentItem.id, { webchatGreyOut });
+          retainPaperState(currentItem.id);
+          updatePaperPreviewPreservingScroll();
+        }
       } else {
         // Nothing to submit — refresh the chat to remove the stale inline
         // edit widget (the "Editing" header div) that cleanup left in chatBox.

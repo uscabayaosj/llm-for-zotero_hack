@@ -1,10 +1,12 @@
 import { assert } from "chai";
 import {
+  getLocalParentPath,
+  isUncPath,
   fileUrlToPath,
   pathToFileUrl,
   toFileUrl,
-} from "../src/utils/pathFileUrl";
-import { isAbsoluteLocalPath } from "../src/utils/localPath";
+  isAbsoluteLocalPath,
+} from "../src/utils/localPath";
 
 describe("pathFileUrl", function () {
   it("should recognize supported absolute local path forms", function () {
@@ -58,11 +60,78 @@ describe("pathFileUrl", function () {
     );
   });
 
+  it("treats leading double slashes as POSIX paths on POSIX hosts", function () {
+    const originalZotero = globalThis.Zotero;
+    (globalThis as typeof globalThis & { Zotero: { isWin: boolean } }).Zotero =
+      {
+        ...(originalZotero as unknown as Record<string, unknown>),
+        isWin: false,
+      } as typeof Zotero & { isWin: boolean };
+    try {
+      assert.isFalse(isUncPath("//server/share/paper.pdf"));
+      assert.equal(
+        getLocalParentPath("//server/share/paper.pdf"),
+        "//server/share",
+      );
+      assert.equal(
+        toFileUrl("//server/share/paper.pdf"),
+        "file:////server/share/paper.pdf",
+      );
+      assert.equal(
+        fileUrlToPath("file:////server/share/paper.pdf"),
+        "//server/share/paper.pdf",
+      );
+      assert.isTrue(isUncPath("\\\\server\\share\\paper.pdf"));
+    } finally {
+      globalThis.Zotero = originalZotero;
+    }
+  });
+
+  it("supports forward-slash UNC paths on Windows hosts", function () {
+    const originalZotero = globalThis.Zotero;
+    (globalThis as typeof globalThis & { Zotero: { isWin: boolean } }).Zotero =
+      {
+        ...(originalZotero as unknown as Record<string, unknown>),
+        isWin: true,
+      } as typeof Zotero & { isWin: boolean };
+    try {
+      assert.isTrue(isUncPath("//server/share/paper.pdf"));
+      assert.equal(
+        getLocalParentPath("//server/share/paper.pdf"),
+        "\\\\server\\share",
+      );
+      assert.equal(
+        toFileUrl("//server/share/paper.pdf"),
+        "file://server/share/paper.pdf",
+      );
+      assert.equal(
+        fileUrlToPath("file:////server/share/paper.pdf"),
+        "\\\\server\\share\\paper.pdf",
+      );
+      assert.equal(
+        fileUrlToPath(toFileUrl("//server/share/paper.pdf")),
+        "\\\\server\\share\\paper.pdf",
+      );
+    } finally {
+      globalThis.Zotero = originalZotero;
+    }
+  });
+
   it("should parse previously malformed UNC file URLs defensively", function () {
-    assert.equal(
-      fileUrlToPath("file:////server/share/folder/doc.txt"),
-      "\\\\server\\share\\folder\\doc.txt",
-    );
+    const originalZotero = globalThis.Zotero;
+    (globalThis as typeof globalThis & { Zotero: { isWin: boolean } }).Zotero =
+      {
+        ...(originalZotero as unknown as Record<string, unknown>),
+        isWin: true,
+      } as typeof Zotero & { isWin: boolean };
+    try {
+      assert.equal(
+        fileUrlToPath("file:////server/share/folder/doc.txt"),
+        "\\\\server\\share\\folder\\doc.txt",
+      );
+    } finally {
+      globalThis.Zotero = originalZotero;
+    }
   });
 
   it("should reject relative paths", function () {

@@ -5,7 +5,10 @@ import { assert } from "chai";
 import {
   clearAllState,
   consumeWebChatConversationForceNewChat,
+  getWebChatUploadedPdfSourceKeysForConversation,
   hasWebChatPdfUploadedForConversation,
+  isWebChatPdfUploadStateUnknownForConversation,
+  markWebChatPdfUploadStateUnknownForConversation,
   markWebChatConversationForceNewChat,
   markWebChatPdfUploadedForConversation,
   resetWebChatConversationSessionState,
@@ -339,18 +342,48 @@ describe("webchat isolation", function () {
   it("shares webchat send flags by conversation key", function () {
     const conversationKey = 4242;
 
-    markWebChatPdfUploadedForConversation(conversationKey);
+    markWebChatPdfUploadedForConversation(conversationKey, [
+      "zotero-pdf:10:101",
+    ]);
     assert.isTrue(hasWebChatPdfUploadedForConversation(conversationKey));
+    assert.deepEqual(
+      getWebChatUploadedPdfSourceKeysForConversation(conversationKey),
+      ["zotero-pdf:10:101"],
+    );
 
     markWebChatConversationForceNewChat(conversationKey);
     assert.isFalse(hasWebChatPdfUploadedForConversation(conversationKey));
     assert.isTrue(consumeWebChatConversationForceNewChat(conversationKey));
     assert.isFalse(consumeWebChatConversationForceNewChat(conversationKey));
 
-    markWebChatPdfUploadedForConversation(conversationKey);
+    markWebChatPdfUploadedForConversation(conversationKey, [
+      "zotero-pdf:10:102",
+    ]);
     resetWebChatConversationSessionState(conversationKey);
     assert.isFalse(hasWebChatPdfUploadedForConversation(conversationKey));
+    assert.deepEqual(
+      getWebChatUploadedPdfSourceKeysForConversation(conversationKey),
+      [],
+    );
     assert.isFalse(consumeWebChatConversationForceNewChat(conversationKey));
+  });
+
+  it("fails closed for restored WebChat sessions until a new chat is requested", function () {
+    const conversationKey = 5252;
+
+    markWebChatPdfUploadStateUnknownForConversation(conversationKey);
+    assert.isTrue(
+      isWebChatPdfUploadStateUnknownForConversation(conversationKey),
+    );
+    assert.deepEqual(
+      getWebChatUploadedPdfSourceKeysForConversation(conversationKey),
+      [],
+    );
+
+    markWebChatConversationForceNewChat(conversationKey);
+    assert.isFalse(
+      isWebChatPdfUploadStateUnknownForConversation(conversationKey),
+    );
   });
 
   it("does not restore normal paper history on webchat panel startup", function () {

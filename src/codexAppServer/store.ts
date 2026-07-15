@@ -410,6 +410,7 @@ async function migrateLegacyCodexConversationKeys(): Promise<void> {
         `UPDATE ${CODEX_CONVERSATIONS_TABLE}
          SET conversation_key = ?,
              provider_session_id = NULL,
+             provider_session_path_state = NULL,
              scoped_conversation_key = NULL,
              scope_type = NULL,
              scope_id = NULL,
@@ -592,6 +593,7 @@ async function ensureCodexConversationCatalogColumns(
     ["first_user_title", "first_user_title TEXT"],
     ["title", "title TEXT"],
     ["provider_session_id", "provider_session_id TEXT"],
+    ["provider_session_path_state", "provider_session_path_state TEXT"],
     ["scoped_conversation_key", "scoped_conversation_key TEXT"],
     ["scope_type", "scope_type TEXT"],
     ["scope_id", "scope_id TEXT"],
@@ -1213,6 +1215,7 @@ export async function initCodexAppServerStore(): Promise<void> {
         first_user_title TEXT,
         title TEXT,
         provider_session_id TEXT,
+        provider_session_path_state TEXT,
         scoped_conversation_key TEXT,
         scope_type TEXT,
         scope_id TEXT,
@@ -2800,6 +2803,7 @@ export async function clearCodexConversationSessionMetadata(
   await Zotero.DB.queryAsync(
     `UPDATE ${CODEX_CONVERSATIONS_TABLE}
      SET provider_session_id = NULL,
+         provider_session_path_state = NULL,
          scoped_conversation_key = NULL,
          scope_type = NULL,
          scope_id = NULL,

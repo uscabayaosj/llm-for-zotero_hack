@@ -26,6 +26,7 @@ import {
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_WRITE_TOOL_NAMES,
+  getZoteroMcpDirectPdfToolNames,
   registerScopedZoteroMcpScope,
   setActiveZoteroMcpScope,
   type ZoteroMcpActiveScope,
@@ -52,6 +53,7 @@ import {
   type CodexAppServerProcess,
 } from "../utils/codexAppServerProcess";
 import {
+  clearCodexConversationSessionMetadata,
   getCodexConversationSummary,
   upsertCodexConversationSummary,
 } from "./store";
@@ -69,6 +71,7 @@ import {
   type CodexNativeMcpSetupStatus,
 } from "./mcpSetup";
 import {
+  resolveExplicitCodexNativeSkillIds,
   resolveCodexNativeSkills,
   type CodexNativeSkillContext,
 } from "./nativeSkills";
@@ -79,8 +82,15 @@ import {
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
 import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
 import { renderSelectedTextAnchorContext } from "../modules/contextPanel/selectedTextAnchorFormatting";
-import { getLocalParentPath } from "../utils/localPath";
 import { getUserSkillsRuntimeRootDir } from "../agent/skills/userSkills";
+import { getCanonicalSkillFilePath } from "../agent/skills/nativeSkillPaths";
+import { areEquivalentLocalPaths } from "../utils/localPath";
+import {
+  acquireLocalDocumentPathLease,
+  clearRememberedLocalDocumentPaths,
+  LocalDocumentPathStreamRedactor,
+} from "../agent/privacy/localDocumentPathRedaction";
+import { validateLocalPdfDocumentBatch } from "../agent/context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "../agent/context/rawPdfTransportPolicy";
 
 export const CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
@@ -117,7 +127,18 @@ export type CodexNativeConversationScope = {
 export type CodexNativeStoreHooks = {
   loadProviderSessionId?: () => Promise<string | undefined>;
   persistProviderSessionId?: (threadId: string) => Promise<void>;
+  clearProviderSessionId?: () => Promise<void>;
 };
+
+type StoredCodexProviderSession = Readonly<{
+  threadId: string;
+}>;
+
+export function resetCodexNativePathSafetyStateForTests(
+  conversationKey?: number,
+): void {
+  if (conversationKey) clearRememberedLocalDocumentPaths(conversationKey);
+}
 
 export type CodexNativeTurnResult = {
   text: string;
@@ -511,10 +532,42 @@ function pathSegments(value: string): string[] {
   return value.split(/[\\/]+/).filter(Boolean);
 }
 
+function normalizeMacOsPrivatePathAlias(value: string): string {
+  const zoteroIsMac = (
+    globalThis as typeof globalThis & { Zotero?: { isMac?: unknown } }
+  ).Zotero?.isMac;
+  const processPlatform = (
+    globalThis as typeof globalThis & { process?: { platform?: unknown } }
+  ).process?.platform;
+  const isMacOs =
+    typeof zoteroIsMac === "boolean"
+      ? zoteroIsMac
+      : processPlatform === "darwin";
+  if (!isMacOs) return value;
+  return /^\/private\/(?:tmp|var|etc)(?:\/|$)/.test(value)
+    ? value.slice("/private".length)
+    : value;
+}
+
+function nativeSkillPathsAreEquivalent(
+  listedPath: string,
+  expectedPath: string,
+): boolean {
+  if (areEquivalentLocalPaths(listedPath, expectedPath)) return true;
+  return (
+    normalizeMacOsPrivatePathAlias(listedPath) ===
+    normalizeMacOsPrivatePathAlias(expectedPath)
+  );
+}
+
 function nativeSkillMetadataMatchesId(
   metadata: CodexNativeSkillInput,
   skillId: string,
+  exactPath?: string,
 ): boolean {
+  if (exactPath) {
+    return nativeSkillPathsAreEquivalent(metadata.path, exactPath);
+  }
   if (metadata.name === skillId) return true;
   const segments = pathSegments(metadata.path);
   const filename = segments[segments.length - 1] || "";
@@ -557,6 +610,7 @@ async function resolveCodexNativeSkillInputItems(params: {
   proc: CodexAppServerProcess;
   cwd?: string;
   skillIds: ReadonlyArray<string>;
+  exactSkillPaths?: Readonly<Record<string, string>>;
 }): Promise<CodexNativeSkillInputResolution> {
   const skillIds = Array.from(new Set(params.skillIds.filter(Boolean)));
   if (!skillIds.length) return { skillInputs: [], fallbackSkillIds: [] };
@@ -571,11 +625,17 @@ async function resolveCodexNativeSkillInputItems(params: {
     const fallbackSkillIds: string[] = [];
 
     for (const skillId of skillIds) {
-      const index = metadata.findIndex(
-        (entry, candidateIndex) =>
-          !used.has(candidateIndex) &&
-          nativeSkillMetadataMatchesId(entry, skillId),
+      const exactPath = params.exactSkillPaths?.[skillId];
+      const candidateIndices = metadata.flatMap((entry, candidateIndex) =>
+        !used.has(candidateIndex) &&
+        nativeSkillMetadataMatchesId(entry, skillId, exactPath)
+          ? [candidateIndex]
+          : [],
       );
+      const index =
+        exactPath && candidateIndices.length !== 1
+          ? -1
+          : (candidateIndices[0] ?? -1);
       if (index < 0) {
         fallbackSkillIds.push(skillId);
         continue;
@@ -594,55 +654,94 @@ async function resolveCodexNativeSkillInputItems(params: {
   }
 }
 
-function stripLeadingCodexNativeSkillMentions(
+const NATIVE_SKILL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+function normalizeNativeSkillIds(skillIds: ReadonlyArray<string>): string[] {
+  return Array.from(
+    new Set(
+      skillIds.filter(
+        (skillId) =>
+          typeof skillId === "string" && NATIVE_SKILL_ID_PATTERN.test(skillId),
+      ),
+    ),
+  );
+}
+
+function getMissingNativeSkillMentionIds(
+  text: string,
+  skillIds: ReadonlyArray<string>,
+): string[] {
+  const mentionedSkillIds = new Set<string>();
+  for (const match of text.matchAll(
+    /(?:^|\n)[\t ]*\$([A-Za-z0-9][A-Za-z0-9_-]*)(?=[\t \r\n]|$)/g,
+  )) {
+    mentionedSkillIds.add(match[1]);
+  }
+  return normalizeNativeSkillIds(skillIds).filter(
+    (skillId) => !mentionedSkillIds.has(skillId),
+  );
+}
+
+function prependNativeSkillMentions(
   text: string,
   skillIds: ReadonlyArray<string>,
 ): string {
-  const activeIds = new Set(skillIds);
-  if (!activeIds.size) return text;
-  let next = text;
-  for (;;) {
-    const match = next.match(/^\s*\$([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+|$)/);
-    if (!match || !activeIds.has(match[1])) return next;
-    next = next.slice(match[0].length).trimStart();
-  }
+  const normalizedSkillIds = normalizeNativeSkillIds(skillIds);
+  if (!normalizedSkillIds.length) return text;
+  const prefix = normalizedSkillIds.map((skillId) => `$${skillId}`).join("\n");
+  return text.trim() ? `${prefix}\n\n${text}` : prefix;
 }
 
-function stripLatestUserNativeSkillMentions(
+function ensureLatestUserNativeSkillMentions(
   messages: ChatMessage[],
   skillIds: ReadonlyArray<string>,
 ): ChatMessage[] {
-  if (!skillIds.length) return messages;
-  let stripped = false;
+  if (!normalizeNativeSkillIds(skillIds).length) return messages;
   const nextMessages = messages.slice();
   for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
     const message = nextMessages[index];
     if (message?.role !== "user") continue;
     if (typeof message.content === "string") {
-      const nextContent = stripLeadingCodexNativeSkillMentions(
+      const missingSkillIds = getMissingNativeSkillMentionIds(
         message.content,
         skillIds,
       );
-      if (nextContent !== message.content) {
-        nextMessages[index] = { ...message, content: nextContent };
+      if (missingSkillIds.length) {
+        nextMessages[index] = {
+          ...message,
+          content: prependNativeSkillMentions(message.content, missingSkillIds),
+        };
+        return nextMessages;
       }
-      return nextMessages;
+      return messages;
     }
+
+    const textParts = message.content.filter((part) => part.type === "text");
+    const missingSkillIds = getMissingNativeSkillMentionIds(
+      textParts.map((part) => part.text || "").join("\n"),
+      skillIds,
+    );
+    if (!missingSkillIds.length) return messages;
     const parts = message.content.slice();
-    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
-      const part = parts[partIndex];
-      if (part.type !== "text") continue;
-      const nextText = stripLeadingCodexNativeSkillMentions(
-        part.text || "",
-        skillIds,
-      );
-      if (nextText !== part.text) {
-        parts[partIndex] = { ...part, text: nextText };
-        stripped = true;
+    const textIndex = parts.findIndex((part) => part.type === "text");
+    if (textIndex < 0) {
+      parts.unshift({
+        type: "text",
+        text: prependNativeSkillMentions("", missingSkillIds),
+      });
+    } else {
+      const textPart = parts[textIndex];
+      if (textPart.type === "text") {
+        parts[textIndex] = {
+          ...textPart,
+          text: prependNativeSkillMentions(
+            textPart.text || "",
+            missingSkillIds,
+          ),
+        };
       }
-      break;
     }
-    if (stripped) nextMessages[index] = { ...message, content: parts };
+    nextMessages[index] = { ...message, content: parts };
     return nextMessages;
   }
   return messages;
@@ -652,21 +751,37 @@ function prefixFallbackSkillMentions(
   input: CodexAppServerUserInput[],
   skillIds: ReadonlyArray<string>,
 ): CodexAppServerUserInput[] {
-  const fallbackSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
-  if (!fallbackSkillIds.length) return input;
-  const prefix = fallbackSkillIds.map((skillId) => `$${skillId}`).join("\n");
-  const nextInput = input.slice();
-  const textIndex = nextInput.findIndex((entry) => entry.type === "text");
-  if (textIndex < 0) {
-    return [{ type: "text", text: prefix }, ...nextInput];
+  let textIndex = -1;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    if (input[index]?.type === "text") {
+      textIndex = index;
+      break;
+    }
   }
-  const textInput = nextInput[textIndex] as Extract<
+  if (textIndex < 0) {
+    const fallbackSkillIds = normalizeNativeSkillIds(skillIds);
+    if (!fallbackSkillIds.length) return input;
+    return [
+      {
+        type: "text",
+        text: prependNativeSkillMentions("", fallbackSkillIds),
+      },
+      ...input,
+    ];
+  }
+  const textInput = input[textIndex] as Extract<
     CodexAppServerUserInput,
     { type: "text" }
   >;
+  const fallbackSkillIds = getMissingNativeSkillMentionIds(
+    textInput.text,
+    skillIds,
+  );
+  if (!fallbackSkillIds.length) return input;
+  const nextInput = input.slice();
   nextInput[textIndex] = {
     ...textInput,
-    text: textInput.text.trim() ? `${prefix}\n\n${textInput.text}` : prefix,
+    text: prependNativeSkillMentions(textInput.text, fallbackSkillIds),
   };
   return nextInput;
 }
@@ -943,11 +1058,13 @@ function logCodexNativeApprovalDecision(params: {
   method: string;
   requestParams: unknown;
   decision: CodexNativeApprovalDecision;
+  redactText?: (value: string) => string;
 }): void {
+  const target =
+    params.decision.target || getApprovalRequestTarget(params.requestParams);
   ztoolkit.log("Codex app-server native approval", {
     method: params.method,
-    target:
-      params.decision.target || getApprovalRequestTarget(params.requestParams),
+    target: params.redactText ? params.redactText(target) : target,
     approved: params.decision.approved,
     reason: params.decision.reason,
     responseShape: summarizeApprovalResponseShape(params.decision.response),
@@ -1015,6 +1132,8 @@ export const isDeniedTrustedZoteroMcpGuardianReviewForTests =
 function registerNativeGuardianReviewHandlers(params: {
   proc: CodexAppServerProcess;
   threadId: string;
+  redactText?: (value: string) => string;
+  redactValue?: <T>(value: T) => T;
 }): () => void {
   return params.proc.onNotification(
     CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
@@ -1022,7 +1141,9 @@ function registerNativeGuardianReviewHandlers(params: {
       if (!isDeniedTrustedZoteroMcpGuardianReview(rawParams)) {
         ztoolkit.log("Codex app-server native guardian review observed", {
           method: CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
-          target: getApprovalRequestTarget(rawParams),
+          target: params.redactText
+            ? params.redactText(getApprovalRequestTarget(rawParams))
+            : getApprovalRequestTarget(rawParams),
           trustedZoteroMcp: false,
         });
         return;
@@ -1030,7 +1151,7 @@ function registerNativeGuardianReviewHandlers(params: {
       const event = buildGuardianAssessmentEvent(rawParams);
       ztoolkit.log(
         "Codex app-server native: approving trusted Zotero MCP guardian denial",
-        event,
+        params.redactValue ? params.redactValue(event) : event,
       );
       void params.proc
         .sendRequest("thread/approveGuardianDeniedAction", {
@@ -1040,7 +1161,13 @@ function registerNativeGuardianReviewHandlers(params: {
         .catch((error) => {
           ztoolkit.log(
             "Codex app-server native: failed to approve trusted Zotero MCP guardian denial",
-            error,
+            params.redactText
+              ? new Error(
+                  params.redactText(
+                    error instanceof Error ? error.message : String(error),
+                  ),
+                )
+              : error,
           );
         });
     },
@@ -1161,29 +1288,6 @@ export function buildCodexNativeVisibleTurnContextBlockForTests(params: {
   return buildCodexNativeVisibleTurnContextBlock(params);
 }
 
-function buildCodexNativeLocalPdfRuntimeOptions(paths: string[]): {
-  sandbox: "read-only";
-  sandboxPolicy: { type: "readOnly" };
-  runtimeWorkspaceRoots?: string[];
-} {
-  const runtimeWorkspaceRoots = Array.from(
-    new Set(paths.map((path) => getLocalParentPath(path)).filter(Boolean)),
-  );
-  return {
-    sandbox: "read-only",
-    sandboxPolicy: { type: "readOnly" },
-    runtimeWorkspaceRoots: runtimeWorkspaceRoots.length
-      ? runtimeWorkspaceRoots
-      : undefined,
-  };
-}
-
-export function buildCodexNativeLocalPdfRuntimeOptionsForTests(
-  paths: string[],
-) {
-  return buildCodexNativeLocalPdfRuntimeOptions(paths);
-}
-
 function buildCodexNativeScopedMcpScope(params: {
   scope: CodexNativeConversationScope;
   profileSignature: string;
@@ -1240,7 +1344,12 @@ export function buildZoteroEnvironmentManifest(params: {
     params.rawPdfMode && !rawPdfPolicyAlreadyPresent
       ? RAW_PDF_TRANSPORT_POLICY_BLOCK
       : "";
-  const notesDirectoryConfig = buildNotesDirectoryConfigSection();
+  const notesDirectoryConfig = params.rawPdfMode
+    ? ""
+    : buildNotesDirectoryConfigSection();
+  const priorReadContextBlock = params.rawPdfMode
+    ? ""
+    : params.priorReadContextBlock || "";
   const lines = [
     "Zotero environment for this turn:",
     formatScopeLine(
@@ -1262,7 +1371,9 @@ export function buildZoteroEnvironmentManifest(params: {
         formatScopeLine("Active item ID", scope.activeItemId),
         formatScopeLine("Active context item ID", scope.activeContextItemId),
         formatScopeLine("Active paper title", scope.paperTitle),
-        formatPaperContextLine(scope.paperContext),
+        params.rawPdfMode
+          ? undefined
+          : formatPaperContextLine(scope.paperContext),
       ].filter((line): line is string => Boolean(line)),
     );
   }
@@ -1289,7 +1400,7 @@ export function buildZoteroEnvironmentManifest(params: {
       lines.join("\n"),
       notesDirectoryConfig,
       params.resourceContextBlock || "",
-      params.priorReadContextBlock || "",
+      priorReadContextBlock,
       params.skillInstructionBlock || "",
       finalRawPdfPolicy,
     ]
@@ -1305,7 +1416,7 @@ export function buildZoteroEnvironmentManifest(params: {
       lines.join("\n"),
       notesDirectoryConfig,
       params.resourceContextBlock || "",
-      params.priorReadContextBlock || "",
+      priorReadContextBlock,
       params.skillInstructionBlock || "",
       finalRawPdfPolicy,
     ]
@@ -1318,7 +1429,9 @@ export function buildZoteroEnvironmentManifest(params: {
     "- Use tools only when they materially improve the answer or are required to inspect/update Zotero. If available context is enough, answer directly.",
     "- For Zotero library, profile, item, PDF, and note facts not shown in context, use Zotero MCP tools instead of local Zotero database/filesystem copies.",
     ...(params.rawPdfMode
-      ? []
+      ? [
+          "- Raw PDF content: read only the exact current-turn local paths with native shell or file capabilities. Never use paper_read, MinerU, extracted-text context, sibling attachments, or paths from earlier turns as a substitute.",
+        ]
       : [
           "- Paper content: use paper_read overview for broad single-paper summaries, targeted for specific sections/results/methods, and visual/capture only for figures, layout, pages, or current reader capture. For bounded selected multi-paper synthesis, comparison, commonality, or theme questions, overview is the answer style, not the read depth; use library_retrieve or the supplied evidence ledger for body-evidence coverage before answering.",
         ]),
@@ -1326,7 +1439,11 @@ export function buildZoteroEnvironmentManifest(params: {
     "- Citations: use the provided sourceLabel for paper-grounded claims. When paper_read provides verified quote anchors like [[quote:Q_x7a2]], use those anchor tokens only when exact wording is useful instead of manually copying the quote or sourceLabel. Use `>` blockquotes only for direct original source text. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. If a translation, interpretation, emphasis, example, or opinion is useful, write it outside the blockquote as explanation or in a fenced `text` block, not as the quoted source passage. If no quote anchor is provided for a direct quote, put the sourceLabel on the next non-empty line after the blockquote. Copy the Source label string exactly. Do not invent author/year/page/section labels. Do not write [[source=...]], section=..., or chunk=... metadata in the final answer. Do not call tools solely to discover quotes or page numbers; the UI citation binder may resolve page links after rendering.",
     "- External lookup is allowed when the user asks for current web information, or when paper_read shows local paper content is unavailable and Zotero metadata/abstract is insufficient. Label external sources separately.",
     "- Write/update requests should use semantic Zotero MCP write tools. Review cards or direct tool results are the deliverable for tool-backed writes.",
-    "- Advanced tools run_command, file_io, and zotero_script are escape hatches for explicit shell/file/script tasks or unsupported formats, not ordinary paper/library reading.",
+    ...(params.rawPdfMode
+      ? []
+      : [
+          "- Advanced tools run_command, file_io, and zotero_script are escape hatches for explicit shell/file/script tasks or unsupported formats, not ordinary paper/library reading.",
+        ]),
   );
   if (scope.activeNoteId) {
     lines.push(`- ${NOTE_EDITING_QUOTE_BLOCK_GUIDANCE}`);
@@ -1344,7 +1461,7 @@ export function buildZoteroEnvironmentManifest(params: {
     lines.join("\n"),
     notesDirectoryConfig,
     params.resourceContextBlock || "",
-    params.priorReadContextBlock || "",
+    priorReadContextBlock,
     params.skillInstructionBlock || "",
     finalRawPdfPolicy,
   ]
@@ -1445,15 +1562,44 @@ function resolveNativeContextPlacement(
     : "latest-user-prefix";
 }
 
-async function loadStoredProviderSessionId(params: {
+async function loadStoredProviderSession(params: {
   conversationKey: number;
   hooks?: CodexNativeStoreHooks;
-}): Promise<string> {
+}): Promise<StoredCodexProviderSession> {
   if (params.hooks?.loadProviderSessionId) {
-    return normalizeNonEmptyString(await params.hooks.loadProviderSessionId());
+    return {
+      threadId: normalizeNonEmptyString(
+        await params.hooks.loadProviderSessionId(),
+      ),
+    };
   }
   const summary = await getCodexConversationSummary(params.conversationKey);
-  return normalizeNonEmptyString(summary?.providerSessionId);
+  return {
+    threadId: normalizeNonEmptyString(summary?.providerSessionId),
+  };
+}
+
+async function clearStoredProviderSession(params: {
+  conversationKey: number;
+  hooks?: CodexNativeStoreHooks;
+}): Promise<void> {
+  if (params.hooks?.clearProviderSessionId) {
+    await params.hooks.clearProviderSessionId();
+    return;
+  }
+  if (params.hooks?.loadProviderSessionId) {
+    throw new Error(
+      "Codex cannot clear the prior provider session after a raw-PDF turn.",
+    );
+  }
+  await clearCodexConversationSessionMetadata(params.conversationKey);
+}
+
+async function loadResumableProviderSession(params: {
+  conversationKey: number;
+  hooks?: CodexNativeStoreHooks;
+}): Promise<StoredCodexProviderSession> {
+  return loadStoredProviderSession(params);
 }
 
 async function persistProviderSessionId(params: {
@@ -1485,6 +1631,7 @@ async function startNativeThread(params: {
   developerInstructions?: string;
   config?: Record<string, unknown>;
   cwd?: string;
+  ephemeral?: boolean;
 }): Promise<{
   threadId: string;
   developerInstructionsAccepted: boolean;
@@ -1492,8 +1639,7 @@ async function startNativeThread(params: {
 }> {
   const threadStartParams: Record<string, unknown> = {
     model: params.model,
-    ephemeral: false,
-    persistExtendedHistory: true,
+    ephemeral: Boolean(params.ephemeral),
     ...buildCodexAppServerNativeApprovalParams(),
     serviceName: CODEX_APP_SERVER_SERVICE_NAME,
     sandbox: "read-only",
@@ -1554,7 +1700,6 @@ async function resumeNativeThread(params: {
   const threadResumeParams: Record<string, unknown> = {
     threadId: params.threadId,
     model: params.model,
-    persistExtendedHistory: true,
     sandbox: "read-only",
     ...buildCodexAppServerNativeApprovalParams(),
     ...(params.cwd ? { cwd: params.cwd } : {}),
@@ -1611,13 +1756,16 @@ async function resolveNativeThread(params: {
   hooks?: CodexNativeStoreHooks;
   storedThreadId?: string | null;
 }): Promise<NativeThreadResolution> {
-  const storedThreadId =
+  const storedSession =
     params.storedThreadId !== undefined
-      ? normalizeNonEmptyString(params.storedThreadId)
-      : await loadStoredProviderSessionId({
+      ? {
+          threadId: normalizeNonEmptyString(params.storedThreadId),
+        }
+      : await loadResumableProviderSession({
           conversationKey: params.scope.conversationKey,
           hooks: params.hooks,
         });
+  const storedThreadId = storedSession.threadId;
   if (storedThreadId) {
     try {
       const resumedThread = await resumeNativeThread({
@@ -1686,6 +1834,7 @@ function registerNativeApprovalRequestHandlers(params: {
   onApprovalRequest?: (
     request: CodexNativeApprovalRequest,
   ) => unknown | Promise<unknown>;
+  redactText?: (value: string) => string;
 }): () => void {
   const disposers = CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS.map((method) =>
     params.proc.onRequest(method, async (rawParams) => {
@@ -1712,6 +1861,7 @@ function registerNativeApprovalRequestHandlers(params: {
             reason: "custom_handler",
             target: getApprovalRequestTarget(rawParams),
           },
+          redactText: params.redactText,
         });
         return response;
       }
@@ -1723,6 +1873,7 @@ function registerNativeApprovalRequestHandlers(params: {
         method,
         requestParams: rawParams,
         decision,
+        redactText: params.redactText,
       });
       return decision.response;
     }),
@@ -1856,10 +2007,11 @@ export async function compactCodexAppServerConversation(params: {
   signal?: AbortSignal;
   timeoutMs?: number;
 }): Promise<void> {
-  const threadId = await loadStoredProviderSessionId({
+  const storedSession = await loadResumableProviderSession({
     conversationKey: params.conversationKey,
     hooks: params.hooks,
   });
+  const threadId = storedSession.threadId;
   if (!threadId) {
     throw new Error(NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE);
   }
@@ -1965,91 +2117,282 @@ export async function runCodexAppServerNativeTurn(params: {
     request: CodexNativeApprovalRequest,
   ) => unknown | Promise<unknown>;
 }): Promise<CodexNativeTurnResult> {
+  const originalLocalDocuments = params.skillContext?.localDocuments || [];
+  validateLocalPdfDocumentBatch({
+    pdfPaperContexts: params.skillContext?.pdfPaperContexts,
+    localDocuments: originalLocalDocuments,
+  });
+  const pathLease = acquireLocalDocumentPathLease(
+    params.scope.conversationKey,
+    originalLocalDocuments,
+  );
+  const turnPathRedactor = new LocalDocumentPathStreamRedactor(
+    params.scope.conversationKey,
+  );
+  const redactTerminalValue = <T>(value: T): T =>
+    turnPathRedactor.redactTerminalValue(value);
+  const redactText = (value: string): string =>
+    turnPathRedactor.redactTerminalText(value);
+  const redactTerminalText = redactText;
   const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
   const processKey = params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY;
-  const proc = await getOrCreateCodexAppServerProcess(processKey, {
-    codexPath,
-  });
-  return proc.runTurnExclusive(async () => {
-    const unregisterApprovalHandlers = registerNativeApprovalRequestHandlers({
-      proc,
-      onApprovalRequest: params.onApprovalRequest,
-    });
-    const mcpEnabled = isCodexZoteroMcpToolsEnabled();
-    const profileSignature =
-      normalizeNonEmptyString(params.scope.profileSignature) ||
-      getCodexProfileSignature();
-    const latestUserText = extractLatestUserText(params.messages);
-    const storedThreadId = await loadStoredProviderSessionId({
-      conversationKey: params.scope.conversationKey,
-      hooks: params.hooks,
-    });
-    const scopeWithProfile = { ...params.scope, profileSignature };
-    const scopedMcpScope = buildCodexNativeScopedMcpScope({
-      scope: scopeWithProfile,
-      profileSignature,
-      userText: latestUserText,
-      model: params.model,
+  try {
+    const skillContext = params.skillContext;
+    const proc = await getOrCreateCodexAppServerProcess(processKey, {
       codexPath,
-      reasoning: params.reasoning,
-      skillContext: params.skillContext,
     });
-    const scopedMcp = mcpEnabled
-      ? registerScopedZoteroMcpScope(scopedMcpScope)
-      : null;
-    const mcpThreadConfig = scopedMcp
-      ? buildCodexZoteroMcpThreadConfig({
-          profileSignature,
-          scopeToken: scopedMcp.token,
-          required: true,
-          enableShellTool: Boolean(params.skillContext?.localDocuments?.length),
-        })
-      : null;
-    const threadConfig = mcpThreadConfig?.config || {
-      features: {
-        shell_tool: Boolean(params.skillContext?.localDocuments?.length),
-      },
-    };
-    const localPdfRuntimeOptions = buildCodexNativeLocalPdfRuntimeOptions(
-      (params.skillContext?.localDocuments || []).map(
-        (document) => document.absolutePath,
-      ),
-    );
-    const codexNativeSkillMode = getCodexNativeSkillModePref();
-    const codexNativeRuntimeCwd =
-      codexNativeSkillMode === "native"
+    return await proc.runTurnExclusive(async () => {
+      const unregisterApprovalHandlers = registerNativeApprovalRequestHandlers({
+        proc,
+        onApprovalRequest: params.onApprovalRequest
+          ? (request) =>
+              params.onApprovalRequest?.(redactTerminalValue(request))
+          : undefined,
+        redactText,
+      });
+      const mcpEnabled = isCodexZoteroMcpToolsEnabled();
+      const profileSignature =
+        normalizeNonEmptyString(params.scope.profileSignature) ||
+        getCodexProfileSignature();
+      const latestUserText = extractLatestUserText(params.messages);
+      const currentTurnHasLocalPdfs = Boolean(
+        skillContext?.localDocuments?.length,
+      );
+      const storedSession = await loadResumableProviderSession({
+        conversationKey: params.scope.conversationKey,
+        hooks: params.hooks,
+      });
+      const storedThreadId = storedSession.threadId;
+      const scopeWithProfile = { ...params.scope, profileSignature };
+      const scopedMcpScope = buildCodexNativeScopedMcpScope({
+        scope: scopeWithProfile,
+        profileSignature,
+        userText: latestUserText,
+        model: params.model,
+        codexPath,
+        reasoning: params.reasoning,
+        skillContext,
+      });
+      const scopedMcp = mcpEnabled
+        ? registerScopedZoteroMcpScope(scopedMcpScope)
+        : null;
+      const mcpThreadConfig = scopedMcp
+        ? buildCodexZoteroMcpThreadConfig({
+            profileSignature,
+            scopeToken: scopedMcp.token,
+            required: true,
+            enableShellTool: currentTurnHasLocalPdfs,
+            rawPdfMode: currentTurnHasLocalPdfs,
+          })
+        : null;
+      const threadConfig = {
+        ...(mcpThreadConfig?.config || {}),
+        features: {
+          shell_tool: currentTurnHasLocalPdfs,
+        },
+      };
+      const configuredCodexNativeSkillMode = getCodexNativeSkillModePref();
+      const codexNativeSkillMode = currentTurnHasLocalPdfs
+        ? "off"
+        : configuredCodexNativeSkillMode;
+      const requestedExplicitPdfSkillIds =
+        currentTurnHasLocalPdfs && configuredCodexNativeSkillMode === "native"
+          ? normalizeNativeSkillIds(skillContext?.forcedSkillIds || [])
+          : [];
+      const explicitPdfSkillIds = resolveExplicitCodexNativeSkillIds(
+        requestedExplicitPdfSkillIds,
+      );
+      const explicitPdfSkillIdSet = new Set(explicitPdfSkillIds);
+      const staleExplicitPdfSkillIds = requestedExplicitPdfSkillIds.filter(
+        (skillId) => !explicitPdfSkillIdSet.has(skillId),
+      );
+      const useNativeSkillInputs =
+        codexNativeSkillMode === "native" || explicitPdfSkillIds.length > 0;
+      const codexNativeSkillLookupCwd = useNativeSkillInputs
         ? resolveCodexNativeRuntimeCwd()
         : undefined;
-    let mcpReady = !mcpEnabled;
-    let mcpWarning = "";
-    let mcpStatus: CodexNativeMcpSetupStatus | undefined;
-    const clearMcpScope = mcpEnabled
-      ? setActiveZoteroMcpScope(scopedMcpScope)
-      : () => undefined;
-    const clearMcpConfirmationHandler =
-      mcpEnabled && params.onMcpConfirmationRequest
-        ? addZoteroMcpConfirmationHandler(
-            scopedMcpScope,
-            params.onMcpConfirmationRequest,
-          )
-        : () => undefined;
-    let unregisterGuardianReviews: () => void = () => undefined;
-    try {
-      const reasoningParams = resolveCodexAppServerReasoningParams(
-        params.reasoning,
-        params.model,
+      const codexNativeRuntimeCwd = useNativeSkillInputs
+        ? codexNativeSkillLookupCwd
+        : undefined;
+      const unavailableExplicitPdfSkillIds = Array.from(
+        new Set([
+          ...staleExplicitPdfSkillIds,
+          ...(!codexNativeSkillLookupCwd ? explicitPdfSkillIds : []),
+        ]),
       );
-      const executePreparedThread = async (args: {
-        thread: NativeThreadResolution;
-        input: unknown;
-        skillIds: string[];
-      }): Promise<CodexNativeTurnResult> => {
-        unregisterGuardianReviews = registerNativeGuardianReviewHandlers({
-          proc,
-          threadId: args.thread.threadId,
-        });
-        params.onDiagnostics?.(
-          buildNativeDiagnostics({
+      let mcpReady = !mcpEnabled;
+      let mcpWarning = "";
+      let mcpStatus: CodexNativeMcpSetupStatus | undefined;
+      const clearMcpScope = mcpEnabled
+        ? setActiveZoteroMcpScope(scopedMcpScope)
+        : () => undefined;
+      const clearMcpConfirmationHandler =
+        mcpEnabled && params.onMcpConfirmationRequest
+          ? addZoteroMcpConfirmationHandler(scopedMcpScope, (request) =>
+              params.onMcpConfirmationRequest!(redactTerminalValue(request)),
+            )
+          : () => undefined;
+      let unregisterGuardianReviews: () => void = () => undefined;
+      try {
+        const reasoningParams = resolveCodexAppServerReasoningParams(
+          params.reasoning,
+          params.model,
+        );
+        const executePreparedThread = async (args: {
+          thread: NativeThreadResolution;
+          input: unknown;
+          skillIds: string[];
+        }): Promise<CodexNativeTurnResult> => {
+          unregisterGuardianReviews = registerNativeGuardianReviewHandlers({
+            proc,
+            threadId: args.thread.threadId,
+            redactText,
+            redactValue: redactTerminalValue,
+          });
+          params.onDiagnostics?.(
+            redactTerminalValue(
+              buildNativeDiagnostics({
+                thread: args.thread,
+                profileSignature,
+                scope: params.scope,
+                mcpServerName: mcpThreadConfig?.serverName,
+                mcpReady,
+                mcpStatus,
+                skillIds: args.skillIds,
+              }),
+            ),
+          );
+          const unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
+            (event) => {
+              const sameConversation =
+                !event.conversationKey ||
+                !params.scope.conversationKey ||
+                event.conversationKey === params.scope.conversationKey;
+              const sameProfile =
+                !event.profileSignature ||
+                !profileSignature ||
+                event.profileSignature === profileSignature;
+              if (!sameConversation || !sameProfile) return;
+              const redactedEvent = redactTerminalValue(event);
+              recordCodexNativeReadActivity({
+                threadId: args.thread.threadId,
+                scope: scopeWithProfile,
+                event: redactedEvent,
+              });
+              params.onMcpToolActivity?.(redactedEvent);
+            },
+          );
+          let text = "";
+          const streamRedactor = new LocalDocumentPathStreamRedactor(
+            params.scope.conversationKey,
+          );
+          const streamFlushers = new Map<string, (text: string) => void>();
+          const pushStreamText = (
+            channel: string,
+            chunk: string,
+            emit: (text: string) => void,
+          ) => {
+            streamFlushers.set(channel, emit);
+            const safeChunk = streamRedactor.push(channel, chunk);
+            if (safeChunk) emit(safeChunk);
+          };
+          const flushStreamText = () => {
+            for (const entry of streamRedactor.flushAll()) {
+              streamFlushers.get(entry.channel)?.(entry.text);
+            }
+            streamFlushers.clear();
+          };
+          try {
+            const turnResult = await proc.sendRequest("turn/start", {
+              threadId: args.thread.threadId,
+              input: args.input,
+              model: params.model,
+              ...(codexNativeRuntimeCwd ? { cwd: codexNativeRuntimeCwd } : {}),
+              ...buildCodexAppServerNativeApprovalParams(),
+              sandboxPolicy: { type: "readOnly", networkAccess: false },
+              ...reasoningParams,
+            });
+            const turnId = extractCodexAppServerTurnId(turnResult);
+            if (!turnId) {
+              throw new Error("Codex app-server did not return a turn ID");
+            }
+            text = await waitForCodexAppServerTurnCompletion({
+              proc,
+              threadId: args.thread.threadId,
+              turnId,
+              onTextDelta: params.onDelta
+                ? (delta) =>
+                    pushStreamText("text", delta, (text) =>
+                      params.onDelta?.(text),
+                    )
+                : undefined,
+              onAgentMessageDelta: params.onAgentMessageDelta
+                ? (event) => {
+                    const safeEvent = redactTerminalValue(event);
+                    const channel = `agent:${event.itemId || "default"}`;
+                    pushStreamText(channel, event.delta, (delta) =>
+                      params.onAgentMessageDelta?.({ ...safeEvent, delta }),
+                    );
+                  }
+                : undefined,
+              onReasoning: params.onReasoning
+                ? (event) => {
+                    const safeEvent = redactTerminalValue(event);
+                    const identity = `${event.stepId || event.stepLabel || "default"}`;
+                    if (event.summary) {
+                      pushStreamText(
+                        `reasoning:${identity}:summary`,
+                        event.summary,
+                        (summary) =>
+                          params.onReasoning?.({
+                            ...safeEvent,
+                            summary,
+                            details: undefined,
+                          }),
+                      );
+                    }
+                    if (event.details) {
+                      pushStreamText(
+                        `reasoning:${identity}:details`,
+                        event.details,
+                        (details) =>
+                          params.onReasoning?.({
+                            ...safeEvent,
+                            summary: undefined,
+                            details,
+                          }),
+                      );
+                    }
+                  }
+                : undefined,
+              onUsage: params.onUsage,
+              onItemStarted: params.onItemStarted
+                ? (event) => params.onItemStarted?.(redactTerminalValue(event))
+                : undefined,
+              onItemCompleted: params.onItemCompleted
+                ? (event) =>
+                    params.onItemCompleted?.(redactTerminalValue(event))
+                : undefined,
+              onTurnCompleted: params.onTurnCompleted
+                ? (event) =>
+                    params.onTurnCompleted?.(redactTerminalValue(event))
+                : undefined,
+              signal: params.signal,
+              interruptOnAbort: true,
+              cacheKey: processKey,
+              processOptions: { codexPath },
+            });
+            flushStreamText();
+          } finally {
+            unregisterMcpToolActivity();
+          }
+          const historyVerified = currentTurnHasLocalPdfs
+            ? undefined
+            : await verifyCodexAppServerThreadHistoryIfDue({
+                proc,
+                threadId: args.thread.threadId,
+              });
+          const diagnostics = buildNativeDiagnostics({
             thread: args.thread,
             profileSignature,
             scope: params.scope,
@@ -2057,254 +2400,264 @@ export async function runCodexAppServerNativeTurn(params: {
             mcpReady,
             mcpStatus,
             skillIds: args.skillIds,
-          }),
-        );
-        const unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
-          (event) => {
-            const sameConversation =
-              !event.conversationKey ||
-              !params.scope.conversationKey ||
-              event.conversationKey === params.scope.conversationKey;
-            const sameProfile =
-              !event.profileSignature ||
-              !profileSignature ||
-              event.profileSignature === profileSignature;
-            if (!sameConversation || !sameProfile) return;
-            recordCodexNativeReadActivity({
-              threadId: args.thread.threadId,
-              scope: scopeWithProfile,
-              event,
-            });
-            params.onMcpToolActivity?.(event);
-          },
-        );
-        let text = "";
-        try {
-          const turnResult = await proc.sendRequest("turn/start", {
-            threadId: args.thread.threadId,
-            input: args.input,
-            model: params.model,
-            ...(codexNativeRuntimeCwd ? { cwd: codexNativeRuntimeCwd } : {}),
-            ...buildCodexAppServerNativeApprovalParams(),
-            sandboxPolicy: localPdfRuntimeOptions.sandboxPolicy,
-            ...(localPdfRuntimeOptions.runtimeWorkspaceRoots
-              ? {
-                  runtimeWorkspaceRoots:
-                    localPdfRuntimeOptions.runtimeWorkspaceRoots,
-                }
-              : {}),
-            ...reasoningParams,
+            historyVerified,
           });
-          const turnId = extractCodexAppServerTurnId(turnResult);
-          if (!turnId) {
-            throw new Error("Codex app-server did not return a turn ID");
-          }
-          text = await waitForCodexAppServerTurnCompletion({
-            proc,
+          const redactedDiagnostics = redactTerminalValue(diagnostics);
+          params.onDiagnostics?.(redactedDiagnostics);
+          return {
+            text: redactTerminalText(text),
             threadId: args.thread.threadId,
-            turnId,
-            onTextDelta: params.onDelta,
-            onAgentMessageDelta: params.onAgentMessageDelta,
-            onReasoning: params.onReasoning,
-            onUsage: params.onUsage,
-            onItemStarted: params.onItemStarted,
-            onItemCompleted: params.onItemCompleted,
-            onTurnCompleted: params.onTurnCompleted,
-            signal: params.signal,
-            interruptOnAbort: true,
-            cacheKey: processKey,
-            processOptions: { codexPath },
-          });
-        } finally {
-          unregisterMcpToolActivity();
-        }
-        const historyVerified = await verifyCodexAppServerThreadHistoryIfDue({
-          proc,
-          threadId: args.thread.threadId,
-        });
-        const diagnostics = buildNativeDiagnostics({
-          thread: args.thread,
-          profileSignature,
-          scope: params.scope,
-          mcpServerName: mcpThreadConfig?.serverName,
-          mcpReady,
-          mcpStatus,
-          skillIds: args.skillIds,
-          historyVerified,
-        });
-        params.onDiagnostics?.(diagnostics);
-        return {
-          text,
-          threadId: args.thread.threadId,
-          resumed: args.thread.resumed,
-          diagnostics,
+            resumed: args.thread.resumed,
+            diagnostics: redactedDiagnostics,
+          };
         };
-      };
 
-      const priorReadContextBlock = buildCodexNativePriorReadContextBlock({
-        profileSignature,
-        conversationKey: params.scope.conversationKey,
-        threadId: storedThreadId,
-      });
-      const resolvedSkills =
-        codexNativeSkillMode !== "off"
-          ? await resolveCodexNativeSkills({
-              scope: scopeWithProfile,
-              userText: latestUserText,
-              model: params.model,
-              apiBase: params.codexPath,
-              signal: params.signal,
-              skillContext: params.skillContext,
-            })
-          : { matchedSkillIds: [], instructionBlock: "" };
-      const nativeSkillInputResolution =
-        codexNativeSkillMode === "native"
+        const priorReadContextBlock = currentTurnHasLocalPdfs
+          ? ""
+          : buildCodexNativePriorReadContextBlock({
+              profileSignature,
+              conversationKey: params.scope.conversationKey,
+              threadId: storedThreadId,
+            });
+        if (unavailableExplicitPdfSkillIds.length) {
+          throw new Error(
+            `Codex could not load the explicitly selected skill(s): ${unavailableExplicitPdfSkillIds.join(
+              ", ",
+            )}. The selection may be stale; choose an available skill before retrying.`,
+          );
+        }
+        const explicitPdfSkillPaths = currentTurnHasLocalPdfs
+          ? Object.fromEntries(
+              explicitPdfSkillIds.map((skillId) => [
+                skillId,
+                getCanonicalSkillFilePath(skillId),
+              ]),
+            )
+          : undefined;
+        const resolvedSkills =
+          codexNativeSkillMode !== "off"
+            ? await resolveCodexNativeSkills({
+                scope: scopeWithProfile,
+                userText: latestUserText,
+                model: params.model,
+                apiBase: params.codexPath,
+                signal: params.signal,
+                skillContext,
+              })
+            : { matchedSkillIds: [], instructionBlock: "" };
+        const nativeSkillInputResolution = useNativeSkillInputs
           ? await resolveCodexNativeSkillInputItems({
               proc,
-              cwd: codexNativeRuntimeCwd,
-              skillIds: resolvedSkills.matchedSkillIds,
+              cwd: codexNativeSkillLookupCwd,
+              skillIds: currentTurnHasLocalPdfs
+                ? explicitPdfSkillIds
+                : resolvedSkills.matchedSkillIds,
+              exactSkillPaths: currentTurnHasLocalPdfs
+                ? explicitPdfSkillPaths
+                : undefined,
             })
           : { skillInputs: [], fallbackSkillIds: [] };
-      const skillInstructionBlock =
-        codexNativeSkillMode === "legacy"
-          ? resolvedSkills.instructionBlock
-          : "";
-      const messagesForNativeTurn =
-        codexNativeSkillMode === "native"
-          ? stripLatestUserNativeSkillMentions(
+        if (
+          currentTurnHasLocalPdfs &&
+          nativeSkillInputResolution.fallbackSkillIds.length
+        ) {
+          throw new Error(
+            `Codex could not load the explicitly selected skill(s): ${nativeSkillInputResolution.fallbackSkillIds.join(
+              ", ",
+            )}. Remove the skill selection or update/restart Codex before retrying.`,
+          );
+        }
+        const skillInstructionBlock =
+          codexNativeSkillMode === "legacy"
+            ? resolvedSkills.instructionBlock
+            : "";
+        const activatedSkillIds = currentTurnHasLocalPdfs
+          ? explicitPdfSkillIds
+          : resolvedSkills.matchedSkillIds;
+        for (const skillId of activatedSkillIds) {
+          params.onSkillActivated?.(skillId);
+        }
+        const visibleTurnContextBlock = buildCodexNativeVisibleTurnContextBlock(
+          {
+            scope: scopeWithProfile,
+            skillContext,
+          },
+        );
+        const optimisticMcpReady = mcpEnabled;
+        const rawPdfMode = currentTurnHasLocalPdfs;
+        const messagesForNativeTurn = rawPdfMode
+          ? ensureLatestUserNativeSkillMentions(
               params.messages,
-              resolvedSkills.matchedSkillIds,
+              skillContext?.forcedSkillIds || [],
             )
           : params.messages;
-      for (const skillId of resolvedSkills.matchedSkillIds) {
-        params.onSkillActivated?.(skillId);
-      }
-      const visibleTurnContextBlock = buildCodexNativeVisibleTurnContextBlock({
-        scope: scopeWithProfile,
-        skillContext: params.skillContext,
-      });
-      const optimisticMcpReady = mcpEnabled;
-      const rawPdfMode = Boolean(params.skillContext?.localDocuments?.length);
-      const developerEnvironmentText = buildZoteroEnvironmentManifest({
-        scope: scopeWithProfile,
-        mcpEnabled,
-        mcpReady: optimisticMcpReady,
-        mcpWarning,
-        skillInstructionBlock,
-        priorReadContextBlock,
-        resourceContextBlock: visibleTurnContextBlock,
-        rawPdfMode,
-      });
-      const developerInstructionMessages = buildNativeMessages({
-        messages: messagesForNativeTurn,
-        includeVisibleHistory: true,
-        zoteroEnvironmentText: developerEnvironmentText,
-      });
-      const developerPreparedTurn = await prepareCodexAppServerChatTurn(
-        developerInstructionMessages,
-      );
-      if (mcpEnabled && mcpThreadConfig && scopedMcp) {
-        try {
-          mcpStatus = await preflightCodexZoteroMcpServer({
-            serverName: mcpThreadConfig.serverName,
-            scopeToken: scopedMcp.token,
-            required: true,
-          });
-          assertRequiredCodexZoteroMcpToolsReady(mcpStatus);
-          mcpReady = true;
-        } catch (error) {
-          mcpReady = false;
-          mcpWarning = `Zotero MCP setup failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-          params.onMcpSetupWarning?.(mcpWarning);
-          ztoolkit.log(
-            "Codex app-server native: Zotero MCP preflight failed",
-            error,
-          );
-          throw new Error(mcpWarning);
-        }
-      }
-      const thread = await resolveNativeThread({
-        proc,
-        scope: scopeWithProfile,
-        model: params.model,
-        effort: reasoningParams.effort,
-        developerInstructions: developerPreparedTurn.developerInstructions,
-        config: threadConfig,
-        cwd: codexNativeRuntimeCwd,
-        hooks: params.hooks,
-        storedThreadId: storedThreadId || null,
-      });
-      if (!thread.resumed) {
-        await setNativeThreadName({
-          proc,
-          threadId: thread.threadId,
-          name: params.scope.title,
-        });
-      }
-      const contextPlacement = resolveNativeContextPlacement(thread);
-      const latestUserFallbackContextText = [
-        visibleTurnContextBlock,
-        buildZoteroEnvironmentManifest({
+        const developerEnvironmentText = buildZoteroEnvironmentManifest({
           scope: scopeWithProfile,
           mcpEnabled,
-          mcpReady,
+          mcpReady: optimisticMcpReady,
           mcpWarning,
           skillInstructionBlock,
           priorReadContextBlock,
-          resourceContextBlock: "",
+          resourceContextBlock: visibleTurnContextBlock,
           rawPdfMode,
-        }),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      const nativeMessages = buildNativeMessages({
-        messages: messagesForNativeTurn,
-        includeVisibleHistory: true,
-        zoteroEnvironmentText: buildZoteroEnvironmentManifest({
-          scope: scopeWithProfile,
-          mcpEnabled,
-          mcpReady,
-          mcpWarning,
-          skillInstructionBlock: "",
-          priorReadContextBlock: "",
-          resourceContextBlock: "",
-          rawPdfMode,
-        }),
-        prefixLatestUserWithContext: contextPlacement === "latest-user-prefix",
-        latestUserContextText: latestUserFallbackContextText,
-      });
-      const preparedTurn = await prepareCodexAppServerChatTurn(nativeMessages);
-      const input = await resolveCodexAppServerTurnInputWithFallback({
-        proc,
-        threadId: thread.threadId,
-        historyItemsToInject: thread.resumed
-          ? []
-          : preparedTurn.historyItemsToInject,
-        turnInput: preparedTurn.turnInput,
-        legacyInputFactory: () =>
-          buildLegacyCodexAppServerChatInput(nativeMessages),
-        logContext: "native",
-      });
-      const nativeInput =
-        codexNativeSkillMode === "native"
+        });
+        const developerInstructionMessages = buildNativeMessages({
+          messages: messagesForNativeTurn,
+          includeVisibleHistory: true,
+          zoteroEnvironmentText: developerEnvironmentText,
+        });
+        const developerPreparedTurn = await prepareCodexAppServerChatTurn(
+          developerInstructionMessages,
+        );
+        if (mcpEnabled && mcpThreadConfig && scopedMcp) {
+          try {
+            mcpStatus = await preflightCodexZoteroMcpServer({
+              serverName: mcpThreadConfig.serverName,
+              scopeToken: scopedMcp.token,
+              required: true,
+              rawPdfMode,
+            });
+            assertRequiredCodexZoteroMcpToolsReady(
+              mcpStatus,
+              rawPdfMode ? getZoteroMcpDirectPdfToolNames() : undefined,
+            );
+            mcpReady = true;
+          } catch (error) {
+            mcpReady = false;
+            mcpWarning = `Zotero MCP setup failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+            params.onMcpSetupWarning?.(mcpWarning);
+            (
+              globalThis as typeof globalThis & {
+                Zotero?: { debug?: (message: string) => void };
+              }
+            ).Zotero?.debug?.(
+              "Codex app-server native: Zotero MCP preflight failed safely",
+            );
+            throw new Error(mcpWarning);
+          }
+        }
+        const thread: NativeThreadResolution = rawPdfMode
+          ? {
+              ...(await startNativeThread({
+                proc,
+                model: params.model,
+                developerInstructions:
+                  developerPreparedTurn.developerInstructions,
+                config: threadConfig,
+                cwd: codexNativeRuntimeCwd,
+                ephemeral: true,
+              })),
+              resumed: false,
+            }
+          : await resolveNativeThread({
+              proc,
+              scope: scopeWithProfile,
+              model: params.model,
+              effort: reasoningParams.effort,
+              developerInstructions:
+                developerPreparedTurn.developerInstructions,
+              config: threadConfig,
+              cwd: codexNativeRuntimeCwd,
+              hooks: params.hooks,
+              storedThreadId: storedThreadId || null,
+            });
+        if (!rawPdfMode && !thread.resumed) {
+          await setNativeThreadName({
+            proc,
+            threadId: thread.threadId,
+            name: params.scope.title,
+          });
+        }
+        const contextPlacement = resolveNativeContextPlacement(thread);
+        const latestUserFallbackContextText = [
+          visibleTurnContextBlock,
+          buildZoteroEnvironmentManifest({
+            scope: scopeWithProfile,
+            mcpEnabled,
+            mcpReady,
+            mcpWarning,
+            skillInstructionBlock,
+            priorReadContextBlock,
+            resourceContextBlock: "",
+            rawPdfMode,
+          }),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        const nativeMessages = buildNativeMessages({
+          messages: messagesForNativeTurn,
+          includeVisibleHistory: true,
+          zoteroEnvironmentText: buildZoteroEnvironmentManifest({
+            scope: scopeWithProfile,
+            mcpEnabled,
+            mcpReady,
+            mcpWarning,
+            skillInstructionBlock: "",
+            priorReadContextBlock: "",
+            resourceContextBlock: "",
+            rawPdfMode,
+          }),
+          prefixLatestUserWithContext:
+            contextPlacement === "latest-user-prefix",
+          latestUserContextText: latestUserFallbackContextText,
+        });
+        const preparedTurn =
+          await prepareCodexAppServerChatTurn(nativeMessages);
+        const input = await resolveCodexAppServerTurnInputWithFallback({
+          proc,
+          threadId: thread.threadId,
+          historyItemsToInject: thread.resumed
+            ? []
+            : preparedTurn.historyItemsToInject,
+          turnInput: preparedTurn.turnInput,
+          legacyInputFactory: () =>
+            buildLegacyCodexAppServerChatInput(nativeMessages),
+          logContext: "native",
+        });
+        const nativeInput = useNativeSkillInputs
           ? applyNativeSkillInputs({
               input: input as CodexAppServerUserInput[],
               resolution: nativeSkillInputResolution,
             })
           : input;
-      return await executePreparedThread({
-        thread,
-        input: nativeInput,
-        skillIds: resolvedSkills.matchedSkillIds,
-      });
-    } finally {
-      unregisterGuardianReviews();
-      scopedMcp?.clear();
-      clearMcpConfirmationHandler();
-      clearMcpScope();
-      unregisterApprovalHandlers();
-    }
-  });
+        const result = await executePreparedThread({
+          thread,
+          input: nativeInput,
+          skillIds: activatedSkillIds,
+        });
+        if (rawPdfMode && storedThreadId) {
+          try {
+            await proc.sendRequest("thread/archive", {
+              threadId: storedThreadId,
+            });
+          } catch (error) {
+            ztoolkit.log(
+              "Codex app-server native: failed to archive the prior persistent thread after a raw-PDF turn",
+              redactTerminalValue(error),
+            );
+          }
+          await clearStoredProviderSession({
+            conversationKey: params.scope.conversationKey,
+            hooks: params.hooks,
+          });
+        }
+        return result;
+      } finally {
+        unregisterGuardianReviews();
+        scopedMcp?.clear();
+        clearMcpConfirmationHandler();
+        clearMcpScope();
+        unregisterApprovalHandlers();
+      }
+    });
+  } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const redactedMessage = redactTerminalText(rawMessage);
+    if (error instanceof Error && redactedMessage === rawMessage) throw error;
+    throw new Error(redactedMessage);
+  } finally {
+    pathLease.release();
+  }
 }

@@ -3,6 +3,10 @@ import type {
   PaperContextRef,
 } from "../../../../shared/types";
 import { isAbsoluteLocalPath } from "../../../../utils/localPath";
+import {
+  getZoteroAttachmentFilename,
+  isZoteroPdfAttachmentCandidate,
+} from "./pdfAttachmentPolicy";
 
 type LocalPdfFileInspection = {
   size: number;
@@ -40,9 +44,17 @@ export function createLocalPdfResourceResolver(
     resolve: async (paperContexts) => {
       const resources: LocalDocumentResource[] = [];
       for (const paperContext of paperContexts) {
+        if (paperContext.contentSourceMode !== "pdf") {
+          throw new Error(
+            "Only an explicitly selected PDF source can become a raw PDF resource.",
+          );
+        }
         const attachment = getItemById(paperContext.contextItemId);
         if (!attachment?.isAttachment?.()) {
           throw new Error("Selected PDF attachment no longer exists.");
+        }
+        if ((attachment as unknown as { deleted?: unknown }).deleted) {
+          throw new Error("Selected PDF attachment is in the Zotero trash.");
         }
         const parentId =
           Number((attachment as unknown as { parentID?: number }).parentID) ||
@@ -54,23 +66,18 @@ export function createLocalPdfResourceResolver(
               "Selected PDF attachment no longer belongs to this paper.",
             );
           }
+          if ((parent as unknown as { deleted?: unknown }).deleted) {
+            throw new Error(
+              "Selected PDF parent paper is in the Zotero trash.",
+            );
+          }
         } else if (paperContext.itemId !== paperContext.contextItemId) {
           throw new Error(
             "Standalone PDF identity does not match its attachment.",
           );
         }
-        const contentType = String(
-          (attachment as unknown as { attachmentContentType?: string })
-            .attachmentContentType || "",
-        ).toLowerCase();
-        const attachmentFilename = String(
-          (attachment as unknown as { attachmentFilename?: string })
-            .attachmentFilename || "",
-        ).trim();
-        if (
-          contentType !== "application/pdf" &&
-          !attachmentFilename.toLowerCase().endsWith(".pdf")
-        ) {
+        const attachmentFilename = getZoteroAttachmentFilename(attachment);
+        if (!isZoteroPdfAttachmentCandidate(attachment)) {
           throw new Error("Selected attachment is not a PDF.");
         }
         let asyncPath: string | false | undefined;

@@ -198,6 +198,129 @@ describe("Zotero MCP server", function () {
     });
   });
 
+  it("keeps Codex direct-path PDF turns on the metadata/write MCP surface", async function () {
+    let executionCount = 0;
+    const registry = new AgentToolRegistry();
+    for (const tool of [
+      createReadTool("library_search"),
+      createReadTool("literature_search"),
+      createWriteTool("note_write"),
+      createWriteTool("library_update"),
+      createReadTool("library_read"),
+      createReadTool("library_retrieve"),
+      createReadTool("paper_read"),
+      createWriteTool("run_command"),
+      createWriteTool("file_io"),
+      createWriteTool("zotero_script"),
+    ]) {
+      tool.execute = async () => {
+        executionCount += 1;
+        return { ok: true };
+      };
+      registry.register(tool);
+    }
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 7_940_001,
+      libraryID: 1,
+      kind: "paper",
+      pdfPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "Raw PDF",
+          contentSourceMode: "pdf",
+        },
+      ],
+    });
+    const token = getOrCreateZoteroMcpBearerToken();
+    const headers = { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token };
+
+    try {
+      const listed = await invokeMcpEndpoint({
+        token,
+        headers,
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const listPayload = JSON.parse(listed[2]);
+      assert.deepEqual(
+        listPayload.result.tools.map((tool: { name: string }) => tool.name),
+        [
+          "library_search",
+          "note_write",
+          "library_update",
+          "library_read",
+          "library_retrieve",
+          "paper_read",
+        ],
+      );
+
+      for (const [index, name] of ["library_search"].entries()) {
+        const response = await invokeMcpEndpoint({
+          token,
+          headers,
+          body: {
+            jsonrpc: "2.0",
+            id: index + 2,
+            method: "tools/call",
+            params: { name, arguments: {} },
+          },
+        });
+        const payload = JSON.parse(response[2]);
+        assert.isNotTrue(payload.result.isError, name);
+      }
+      assert.equal(executionCount, 1);
+
+      const externalRetrieval = await invokeMcpEndpoint({
+        token,
+        headers,
+        body: {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "literature_search", arguments: {} },
+        },
+      });
+      const externalRetrievalPayload = JSON.parse(externalRetrieval[2]);
+      assert.equal(externalRetrievalPayload.result.isError, true);
+      assert.include(
+        externalRetrievalPayload.result.content[0].text,
+        "unavailable for direct-path PDF identities",
+      );
+      assert.equal(executionCount, 1);
+
+      const rawReader = await invokeMcpEndpoint({
+        token,
+        headers,
+        body: {
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: { name: "raw_pdf_read", arguments: {} },
+        },
+      });
+      const rawReaderPayload = JSON.parse(rawReader[2]);
+      assert.equal(rawReaderPayload.result.isError, true);
+      assert.include(
+        rawReaderPayload.result.content[0].text,
+        "not available in Codex native mode",
+      );
+
+      for (const method of ["resources/list", "resources/templates/list"]) {
+        const response = await invokeMcpEndpoint({
+          token,
+          headers,
+          body: { jsonrpc: "2.0", id: method, method },
+        });
+        const payload = JSON.parse(response[2]);
+        assert.equal(payload.error.code, -32601);
+        assert.notProperty(payload, "result");
+      }
+    } finally {
+      scoped.clear();
+    }
+  });
+
   it("accepts the MCP initialized notification without a JSON-RPC response", async function () {
     const registry = new AgentToolRegistry();
     registry.register(createReadTool("library_search"));
@@ -247,7 +370,7 @@ describe("Zotero MCP server", function () {
     });
   });
 
-  it("blocks paper retrieval for the exact raw PDF but allows another paper", async function () {
+  it("blocks exact, implicit, and same-parent sibling reads for a raw PDF", async function () {
     let executionCount = 0;
     const registry = new AgentToolRegistry();
     const paperRead = createReadTool("paper_read");
@@ -275,6 +398,11 @@ describe("Zotero MCP server", function () {
           contentSourceMode: "pdf",
         },
       ],
+    });
+    globalThis.Zotero.Items.get = (itemId: number) => ({
+      isAttachment: () => itemId === 99 || itemId === 100 || itemId === 101,
+      parentID:
+        itemId === 99 || itemId === 100 ? 42 : itemId === 101 ? 43 : undefined,
     });
 
     try {
@@ -313,7 +441,7 @@ describe("Zotero MCP server", function () {
       assert.equal(implicitBlockedPayload.result.isError, true);
       assert.equal(executionCount, 0);
 
-      const allowed = await invokeMcpEndpoint({
+      const siblingBlocked = await invokeMcpEndpoint({
         token: getOrCreateZoteroMcpBearerToken(),
         headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
         body: {
@@ -328,11 +456,535 @@ describe("Zotero MCP server", function () {
           },
         },
       });
-      const allowedPayload = JSON.parse(allowed[2]);
-      assert.isNotTrue(allowedPayload.result.isError);
-      assert.equal(executionCount, 1);
+      const siblingBlockedPayload = JSON.parse(siblingBlocked[2]);
+      assert.equal(siblingBlockedPayload.result.isError, true);
+      assert.equal(executionCount, 0);
+
+      for (const [id, itemId] of [
+        [4, 99],
+        [5, 100],
+      ] as const) {
+        const aliasBlocked = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+          body: {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: {
+              name: "paper_read",
+              arguments: { target: { itemId } },
+            },
+          },
+        });
+        assert.equal(JSON.parse(aliasBlocked[2]).result.isError, true);
+      }
+      assert.equal(executionCount, 0);
+
+      const otherParent = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 6,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              target: { paperContext: { itemId: 43, contextItemId: 101 } },
+            },
+          },
+        },
+      });
+      const otherParentPayload = JSON.parse(otherParent[2]);
+      assert.equal(otherParentPayload.result.isError, true);
+      assert.equal(executionCount, 0);
     } finally {
       scoped.clear();
+    }
+  });
+
+  it("keeps exact Text retrieval available in a mixed direct-PDF scope", async function () {
+    let executedInput: unknown;
+    const registry = new AgentToolRegistry();
+    const paperRead = createReadTool("paper_read");
+    paperRead.execute = async (input) => {
+      executedInput = input;
+      return { input };
+    };
+    registry.register(paperRead);
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 790,
+      libraryID: 7,
+      kind: "paper",
+      pdfPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "PDF_A_SENTINEL",
+          contentSourceMode: "pdf",
+        },
+      ],
+      selectedPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 100,
+          title: "PDF_B_SENTINEL",
+          contentSourceMode: "text",
+        },
+      ],
+    });
+    globalThis.Zotero.Items.get = (itemId: number) => ({
+      isAttachment: () => itemId === 99 || itemId === 100,
+      parentID: itemId === 99 || itemId === 100 ? 42 : undefined,
+    });
+
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              target: { paperContext: { itemId: 42, contextItemId: 100 } },
+            },
+          },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      assert.isNotTrue(payload.result.isError);
+      assert.deepEqual(executedInput, {
+        target: { paperContext: { itemId: 42, contextItemId: 100 } },
+      });
+
+      const rawResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 6,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              target: { paperContext: { itemId: 42, contextItemId: 99 } },
+            },
+          },
+        },
+      });
+      assert.equal(JSON.parse(rawResponse[2]).result.isError, true);
+      assert.deepEqual(executedInput, {
+        target: { paperContext: { itemId: 42, contextItemId: 100 } },
+      });
+    } finally {
+      scoped.clear();
+    }
+  });
+
+  it("fails closed for global library retrieval and recognizes scope.itemIds", async function () {
+    let executionCount = 0;
+    const registry = new AgentToolRegistry();
+    const libraryRetrieve = createReadTool("library_retrieve");
+    libraryRetrieve.execute = async (input) => {
+      executionCount += 1;
+      return { input };
+    };
+    registry.register(libraryRetrieve);
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 791,
+      libraryID: 7,
+      kind: "global",
+      pdfPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "PDF_A_SENTINEL",
+          contentSourceMode: "pdf",
+        },
+      ],
+    });
+    globalThis.Zotero.Items.get = (itemId: number) => ({
+      isAttachment: () => itemId === 99 || itemId === 100,
+      parentID: itemId === 99 || itemId === 100 ? 42 : undefined,
+    });
+    const call = async (id: number, args: Record<string, unknown>) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "library_retrieve", arguments: args },
+        },
+      });
+      return JSON.parse(response[2]);
+    };
+
+    try {
+      assert.equal((await call(6, { query: "sentinel" })).result.isError, true);
+      assert.equal(
+        (
+          await call(7, {
+            query: "sentinel",
+            scope: { itemIds: [42] },
+          })
+        ).result.isError,
+        true,
+      );
+      assert.equal(
+        (
+          await call(8, {
+            query: "sentinel",
+            scope: { itemIds: [99] },
+          })
+        ).result.isError,
+        true,
+      );
+      assert.equal(
+        (
+          await call(9, {
+            query: "sentinel",
+            scope: { itemIds: [100] },
+          })
+        ).result.isError,
+        true,
+      );
+      assert.equal(executionCount, 0);
+      const otherParent = await call(10, {
+        query: "sentinel",
+        scope: { itemIds: [43] },
+      });
+      assert.equal(otherParent.result.isError, true);
+      assert.equal(executionCount, 0);
+    } finally {
+      scoped.clear();
+    }
+  });
+
+  it("blocks library attachment enumeration for raw parents without suppressing metadata and notes", async function () {
+    const executed: unknown[] = [];
+    const registry = new AgentToolRegistry();
+    const libraryRead = createReadTool("library_read");
+    libraryRead.execute = async (input) => {
+      executed.push(input);
+      return {
+        input,
+        attachments: [
+          {
+            contextItemId: 99,
+            mineruCacheDir: "/private/wrong/full.md",
+          },
+        ],
+      };
+    };
+    registry.register(libraryRead);
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scoped = registerScopedZoteroMcpScope({
+      conversationKey: 7_915,
+      libraryID: 7,
+      kind: "paper",
+      pdfPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "Raw PDF",
+          contentSourceMode: "pdf",
+        },
+      ],
+      selectedPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 100,
+          title: "Explicit Text sibling",
+          contentSourceMode: "text",
+        },
+      ],
+    });
+    globalThis.Zotero.Items.get = (itemId: number) => ({
+      isAttachment: () => itemId === 99 || itemId === 100,
+      parentID: itemId === 99 || itemId === 100 ? 42 : undefined,
+    });
+    const headers = { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token };
+    const call = async (id: number, args: Record<string, unknown>) => {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers,
+        body: {
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "library_read", arguments: args },
+        },
+      });
+      return JSON.parse(response[2]);
+    };
+
+    try {
+      const safe = await call(1, {
+        itemIds: [42],
+        sections: ["metadata", "notes"],
+      });
+      assert.isNotTrue(safe.result.isError);
+
+      const rawParentAttachments = await call(2, {
+        itemIds: [42],
+        sections: ["attachments"],
+      });
+      assert.equal(rawParentAttachments.result.isError, true);
+
+      const rawContextMetadata = await call(5, {
+        itemIds: [99],
+        sections: ["metadata", "notes"],
+      });
+      assert.equal(rawContextMetadata.result.isError, true);
+
+      const rawContextAttachments = await call(6, {
+        itemIds: [99],
+        sections: ["attachments"],
+      });
+      assert.equal(rawContextAttachments.result.isError, true);
+
+      const siblingAttachmentAlias = await call(7, {
+        itemIds: [100],
+        sections: ["attachments"],
+      });
+      assert.equal(siblingAttachmentAlias.result.isError, true);
+
+      const siblingStillEnumeratesRawParent = await call(3, {
+        paperContexts: [
+          {
+            itemId: 42,
+            contextItemId: 100,
+            title: "Explicit Text sibling",
+          },
+        ],
+        sections: ["attachments"],
+      });
+      assert.equal(siblingStillEnumeratesRawParent.result.isError, true);
+
+      const otherParent = await call(4, {
+        itemIds: [43],
+        sections: ["attachments"],
+      });
+      assert.equal(otherParent.result.isError, true);
+      assert.deepEqual(executed, [
+        { itemIds: [42], sections: ["metadata", "notes"] },
+      ]);
+    } finally {
+      scoped.clear();
+    }
+  });
+
+  for (const backend of ["unavailable", "codex_responses"] as const) {
+    const modeLabel = backend === "codex_responses" ? "Codex" : "Claude Code";
+    it(`prevents native filesystem and Zotero-script PDF bypasses in ${modeLabel} raw-PDF scope`, async function () {
+      const executed: Array<{ name: string; input: unknown }> = [];
+      const registry = new AgentToolRegistry();
+      for (const name of ["run_command", "file_io", "zotero_script"]) {
+        registry.register({
+          spec: {
+            name,
+            description: `Native access tool ${name}`,
+            inputSchema:
+              name === "file_io"
+                ? {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["action", "filePath"],
+                    properties: {
+                      action: {
+                        type: "string",
+                        enum: ["read", "write"],
+                      },
+                      filePath: { type: "string" },
+                      content: { type: "string" },
+                      offset: { type: "number" },
+                      length: { type: "number" },
+                    },
+                  }
+                : { type: "object", additionalProperties: true },
+            mutability: "write",
+            requiresConfirmation: false,
+          },
+          validate: (args) => ({ ok: true, value: args ?? {} }),
+          execute: async (input) => {
+            executed.push({ name, input });
+            return { name, input };
+          },
+        });
+      }
+      registerMcpServer({
+        toolRegistry: registry,
+        zoteroGateway: {} as never,
+      });
+      const rawScope = registerScopedZoteroMcpScope({
+        profileSignature: `profile-${modeLabel}`,
+        conversationKey: backend === "codex_responses" ? 7_920_001 : 7_920_002,
+        libraryID: 7,
+        kind: "paper",
+        exhaustiveReadBackend: backend,
+        pdfPaperContexts: [
+          {
+            itemId: 42,
+            contextItemId: 99,
+            title: "PDF_B_SENTINEL",
+            contentSourceMode: "pdf",
+          },
+        ],
+      });
+      const headers = { [ZOTERO_MCP_SCOPE_HEADER]: rawScope.token };
+      const call = async (id: number, name: string, args: unknown) => {
+        const response = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          headers,
+          body: {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name, arguments: args },
+          },
+        });
+        return JSON.parse(response[2]);
+      };
+
+      try {
+        const listResponse = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          headers,
+          body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        });
+        const tools = JSON.parse(listResponse[2]).result.tools as Array<{
+          name: string;
+          description: string;
+          inputSchema: {
+            properties?: Record<string, { enum?: string[] }>;
+          };
+        }>;
+        assert.notInclude(
+          tools.map((tool) => tool.name),
+          "run_command",
+        );
+        assert.notInclude(
+          tools.map((tool) => tool.name),
+          "zotero_script",
+        );
+        const fileIo = tools.find((tool) => tool.name === "file_io");
+        assert.isUndefined(fileIo);
+
+        const blockedCalls: Array<[string, unknown]> = [
+          ["run_command", { command: "cat /papers/wrong-sibling.pdf" }],
+          [
+            "file_io",
+            { action: "read", filePath: "/papers/wrong-sibling.pdf" },
+          ],
+          [
+            "file_io",
+            { action: "stat", filePath: "/papers/wrong-sibling.pdf" },
+          ],
+          ["file_io", { operation: "list", path: "/papers/wrong-sibling" }],
+          [
+            "zotero_script",
+            {
+              mode: "read",
+              code: "return Zotero.Items.get(99).getFilePath();",
+            },
+          ],
+        ];
+        for (let index = 0; index < blockedCalls.length; index += 1) {
+          const [name, args] = blockedCalls[index];
+          const payload = await call(index + 2, name, args);
+          assert.equal(
+            payload.result.isError,
+            true,
+            `${name} must fail closed`,
+          );
+        }
+        assert.deepEqual(executed, []);
+
+        const writePayload = await call(20, "file_io", {
+          action: "write",
+          filePath: "/tmp/user-authorized-analysis.md",
+          content: "Safe derived output",
+        });
+        assert.equal(writePayload.result.isError, true);
+        assert.deepEqual(executed, []);
+      } finally {
+        rawScope.clear();
+      }
+    });
+  }
+
+  it("keeps native filesystem and Zotero-script tools unchanged outside raw-PDF scope", async function () {
+    const executed: string[] = [];
+    const registry = new AgentToolRegistry();
+    for (const name of ["run_command", "file_io", "zotero_script"]) {
+      registry.register({
+        spec: {
+          name,
+          description: `Native access tool ${name}`,
+          inputSchema: { type: "object", additionalProperties: true },
+          mutability: "write",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args ?? {} }),
+        execute: async () => {
+          executed.push(name);
+          return { name };
+        },
+      });
+    }
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+    const scope = registerScopedZoteroMcpScope({
+      conversationKey: 7_920_003,
+      libraryID: 7,
+      kind: "global",
+    });
+    const headers = { [ZOTERO_MCP_SCOPE_HEADER]: scope.token };
+
+    try {
+      const listResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers,
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const names = JSON.parse(listResponse[2]).result.tools.map(
+        (tool: { name: string }) => tool.name,
+      );
+      assert.includeMembers(names, ["run_command", "file_io", "zotero_script"]);
+
+      for (const [index, [name, args]] of [
+        ["run_command", { command: "pwd" }],
+        ["file_io", { action: "read", filePath: "/tmp/source.md" }],
+        ["zotero_script", { mode: "read", code: "return 1" }],
+      ].entries()) {
+        const response = await invokeMcpEndpoint({
+          token: getOrCreateZoteroMcpBearerToken(),
+          headers,
+          body: {
+            jsonrpc: "2.0",
+            id: index + 2,
+            method: "tools/call",
+            params: { name, arguments: args },
+          },
+        });
+        assert.isNotTrue(JSON.parse(response[2]).result.isError);
+      }
+      assert.deepEqual(executed, ["run_command", "file_io", "zotero_script"]);
+    } finally {
+      scope.clear();
     }
   });
 
@@ -1212,6 +1864,87 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("keeps an overlapping raw-PDF token authoritative over a same-profile ordinary active turn", async function () {
+    let executionCount = 0;
+    const registry = new AgentToolRegistry();
+    const paperRead = createReadTool("paper_read");
+    paperRead.execute = async (input) => {
+      executionCount += 1;
+      return { input };
+    };
+    registry.register(paperRead);
+    registry.register(createWriteTool("run_command"));
+    registerMcpServer({ toolRegistry: registry, zoteroGateway: {} as never });
+
+    const rawScope = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-overlap",
+        conversationKey: 8_001,
+        libraryID: 1,
+        kind: "paper",
+        pdfPaperContexts: [
+          {
+            itemId: 42,
+            contextItemId: 99,
+            title: "Raw turn A",
+            contentSourceMode: "pdf",
+          },
+        ],
+      },
+      { token: "raw-overlap-token" },
+    );
+    const clearActiveScope = setActiveZoteroMcpScope({
+      profileSignature: "profile-overlap",
+      conversationKey: 8_002,
+      libraryID: 1,
+      kind: "global",
+    });
+    const rawHeaders = { [ZOTERO_MCP_SCOPE_HEADER]: rawScope.token };
+    const exactRawArgs = {
+      target: { paperContext: { itemId: 42, contextItemId: 99 } },
+    };
+
+    try {
+      const listResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: rawHeaders,
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      });
+      const listedNames = JSON.parse(listResponse[2]).result.tools.map(
+        (tool: { name: string }) => tool.name,
+      );
+      assert.notInclude(listedNames, "run_command");
+
+      const rawResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: rawHeaders,
+        body: {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "paper_read", arguments: exactRawArgs },
+        },
+      });
+      assert.equal(JSON.parse(rawResponse[2]).result.isError, true);
+      assert.equal(executionCount, 0);
+
+      const activeOrdinaryResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        body: {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "paper_read", arguments: exactRawArgs },
+        },
+      });
+      assert.isNotTrue(JSON.parse(activeOrdinaryResponse[2]).result.isError);
+      assert.equal(executionCount, 1);
+    } finally {
+      clearActiveScope();
+      rawScope.clear();
+    }
+  });
+
   it("rejects full reads from Claude-only MCP scopes before loading the PDF", async function () {
     const paperContext = {
       itemId: 91,
@@ -1729,7 +2462,7 @@ describe("Zotero MCP server", function () {
     }
   });
 
-  it("falls back to the active turn scope for stale cached MCP write headers", async function () {
+  it("rejects stale cached MCP write headers instead of rebinding them", async function () {
     let pendingConversationKey: number | undefined;
     const registry = new AgentToolRegistry();
     registry.register({
@@ -1807,14 +2540,8 @@ describe("Zotero MCP server", function () {
         },
       });
       const payload = JSON.parse(response[2]);
-      const content = JSON.parse(payload.result.content[0].text);
-      assert.equal(content.ok, true);
-      assert.equal(pendingConversationKey, 200);
-      assert.deepEqual(content.result.request, {
-        conversationKey: 200,
-        libraryID: 2,
-        activeItemId: 20,
-      });
+      assert.include(payload.error.message, "invalid or expired");
+      assert.isUndefined(pendingConversationKey);
     } finally {
       clearHandler();
       clearActiveScope();

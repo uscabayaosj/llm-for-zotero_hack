@@ -28,6 +28,22 @@ async function expectRejected(
 }
 
 describe("local PDF resource resolver", function () {
+  it("rejects non-PDF source identities before touching Zotero items", async function () {
+    let lookups = 0;
+    const resolver = createLocalPdfResourceResolver({
+      getItemById: () => {
+        lookups += 1;
+        return null;
+      },
+    });
+
+    await expectRejected(
+      resolver.resolve([paper({ contentSourceMode: "text" })]),
+      "explicitly selected PDF source",
+    );
+    assert.equal(lookups, 0);
+  });
+
   it("resolves only the exact selected child attachment", async function () {
     const items = new Map<number, any>([
       [10, { id: 10, isRegularItem: () => true }],
@@ -227,6 +243,33 @@ describe("local PDF resource resolver", function () {
       resolver.resolve([paper({ itemId: 10, contextItemId: 30 })]),
       "Standalone PDF identity",
     );
+  });
+
+  it("rejects trashed attachments and trashed parent papers", async function () {
+    const parent = { id: 10, deleted: false, isRegularItem: () => true };
+    const attachment = {
+      id: 20,
+      parentID: 10,
+      deleted: true,
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "paper.pdf",
+      isAttachment: () => true,
+      getFilePathAsync: async () => "/papers/paper.pdf",
+    };
+    const resolver = createLocalPdfResourceResolver({
+      getItemById: (id) =>
+        id === 10 ? (parent as any) : id === 20 ? (attachment as any) : null,
+      inspectFile: async () => ({
+        size: 10,
+        type: "regular",
+        header: new TextEncoder().encode("%PDF-"),
+      }),
+    });
+
+    await expectRejected(resolver.resolve([paper()]), "Zotero trash");
+    attachment.deleted = false;
+    parent.deleted = true;
+    await expectRejected(resolver.resolve([paper()]), "parent paper");
   });
 
   it("rejects duplicate identities atomically", async function () {

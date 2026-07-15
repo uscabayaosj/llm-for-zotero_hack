@@ -460,6 +460,10 @@ export type SendQuestionOptions = {
   pdfUploadSystemMessages?: string[];
   /** [webchat] When true, attach the paper PDF to the ChatGPT query. */
   webchatSendPdf?: boolean;
+  /** [webchat] Exact PDF chips active for the current upload, in UI order. */
+  webchatPdfPaperContexts?: PaperContextRef[];
+  /** [webchat] Ephemeral delivery outcome for send-state bookkeeping. */
+  onWebChatSendOutcome?: (outcome: "success" | "failed" | "cancelled") => void;
   /** [webchat] When true, send the prompt into a fresh ChatGPT conversation. */
   webchatForceNewChat?: boolean;
   skipAutoCompact?: boolean;

@@ -13,6 +13,7 @@ export {
   getPaperContentSourceOverride,
   setPaperContentSourceOverride,
   clearPaperContentSourceOverrides,
+  clearPaperContentSourceOverride,
   getNextContentSourceMode,
   clearSelectedPaperState,
   clearAllRefContextState,

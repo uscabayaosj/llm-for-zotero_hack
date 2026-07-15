@@ -346,7 +346,10 @@ import { getConversationKey } from "./conversationIdentity";
 import { recordContextCacheTelemetry } from "../../contextCache/manager";
 import { resolveContextAttachmentSupportFromMetadata } from "./contextAttachmentSupport";
 import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
-import { setPaperContentSourceOverride } from "./contexts/paperContextState";
+import {
+  clearPaperContentSourceOverride,
+  setPaperContentSourceOverride,
+} from "./contexts/paperContextState";
 import {
   getConversationScopeValidationDetails,
   type ConversationRegistryScope,
@@ -1666,20 +1669,35 @@ function normalizeStoredPaperContextRoutes(params: {
   pdfPaperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
 } {
-  const pdfPaperContexts = normalizePaperContexts(params.pdfPaperContexts).map(
-    (paper) => ({ ...paper, contentSourceMode: "pdf" as const }),
+  const allPaperContexts = normalizePaperContexts(params.paperContexts);
+  const allFullTextPaperContexts = normalizePaperContexts(
+    params.fullTextPaperContexts,
   );
+  const pdfPaperContexts = normalizePaperContexts([
+    ...(params.pdfPaperContexts || []),
+    ...allPaperContexts.filter((paper) => paper.contentSourceMode === "pdf"),
+    ...allFullTextPaperContexts.filter(
+      (paper) => paper.contentSourceMode === "pdf",
+    ),
+  ]).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const pdfKeys = new Set(
     pdfPaperContexts.map((paper) => `${paper.itemId}:${paper.contextItemId}`),
   );
-  const excludePdf = (papers?: PaperContextRef[]) =>
-    normalizePaperContexts(papers).filter(
-      (paper) => !pdfKeys.has(`${paper.itemId}:${paper.contextItemId}`),
-    );
+  const fullTextPaperContexts = allFullTextPaperContexts.filter(
+    (paper) => !pdfKeys.has(`${paper.itemId}:${paper.contextItemId}`),
+  );
+  const fullTextKeys = new Set(
+    fullTextPaperContexts.map(
+      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    ),
+  );
   return {
-    paperContexts: excludePdf(params.paperContexts),
+    paperContexts: allPaperContexts.filter((paper) => {
+      const key = `${paper.itemId}:${paper.contextItemId}`;
+      return !pdfKeys.has(key) && !fullTextKeys.has(key);
+    }),
     pdfPaperContexts,
-    fullTextPaperContexts: excludePdf(params.fullTextPaperContexts),
+    fullTextPaperContexts,
   };
 }
 
@@ -4835,6 +4853,7 @@ function reconstructRetryPayload(
   screenshotImages: string[];
   attachments: ChatAttachment[];
   paperContexts: PaperContextRef[];
+  pdfPaperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   selectedCollectionContexts: CollectionContextRef[];
   selectedTagContexts: TagContextRef[];
@@ -4889,16 +4908,13 @@ function reconstructRetryPayload(
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  const pdfPaperContexts = normalizePaperContexts(
-    userMessage.pdfPaperContexts,
-  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
-  const paperContexts = normalizePaperContexts([
-    ...(userMessage.paperContexts || []),
-    ...pdfPaperContexts,
-  ]);
-  const fullTextPaperContexts = normalizePaperContexts(
-    userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
-  );
+  const { paperContexts, pdfPaperContexts, fullTextPaperContexts } =
+    normalizeStoredPaperContextRoutes({
+      paperContexts: userMessage.paperContexts,
+      pdfPaperContexts: userMessage.pdfPaperContexts,
+      fullTextPaperContexts:
+        userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
+    });
   const selectedCollectionContexts = normalizeCollectionContexts(
     userMessage.selectedCollectionContexts,
   );
@@ -4910,6 +4926,7 @@ function reconstructRetryPayload(
     screenshotImages,
     attachments: fileAttachments,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
@@ -4985,7 +5002,8 @@ export type EditLatestTurnResult =
   | "ok"
   | "missing"
   | "stale"
-  | "persist-failed";
+  | "persist-failed"
+  | "retry-failed";
 
 function normalizeEditableAttachments(
   attachments?: ChatAttachment[],
@@ -5408,26 +5426,28 @@ function syncComposeContextForInlineEdit(
     selectedFileAttachmentCache.delete(item.id);
   }
 
-  const pdfPaperContexts = normalizePaperContexts(
-    userMessage.pdfPaperContexts,
-  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
-  const paperContexts = normalizePaperContexts([
-    ...(userMessage.paperContexts || []),
+  const { paperContexts, pdfPaperContexts, fullTextPaperContexts } =
+    normalizeStoredPaperContextRoutes({
+      paperContexts: userMessage.paperContexts,
+      pdfPaperContexts: userMessage.pdfPaperContexts,
+      fullTextPaperContexts:
+        userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
+    });
+  const composePaperContexts = normalizePaperContexts([
+    ...paperContexts,
+    ...fullTextPaperContexts,
     ...pdfPaperContexts,
   ]);
-  const fullTextPaperContexts = normalizePaperContexts(
-    userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
-  );
   const autoLoadedPaperContext = resolveAutoLoadedPaperContextForItem(item);
   const selectedPaperContexts = autoLoadedPaperContext
-    ? paperContexts.filter(
+    ? composePaperContexts.filter(
         (paperContext) =>
           !(
             paperContext.itemId === autoLoadedPaperContext.itemId &&
             paperContext.contextItemId === autoLoadedPaperContext.contextItemId
           ),
       )
-    : paperContexts;
+    : composePaperContexts;
   if (selectedPaperContexts.length) {
     selectedPaperContextCache.set(item.id, selectedPaperContexts);
   } else {
@@ -5460,8 +5480,13 @@ function syncComposeContextForInlineEdit(
       "full-next",
     );
   }
-  for (const paperContext of pdfPaperContexts) {
-    setPaperContentSourceOverride(item.id, paperContext, "pdf");
+  for (const paperContext of composePaperContexts) {
+    clearPaperContentSourceOverride(item.id, paperContext);
+    setPaperContentSourceOverride(
+      item.id,
+      paperContext,
+      paperContext.contentSourceMode || "text",
+    );
   }
 
   activeContextPanelStateSync.get(body)?.();
@@ -5577,17 +5602,23 @@ export async function editLatestUserMessageAndRetry(
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  const normalizedPaperContexts = normalizeEditablePaperContexts([
+  const normalizedPaperContextsInput = normalizeEditablePaperContexts([
     ...(paperContexts || []),
     ...selectedTextPaperContextsForMessage.filter(
       (paper): paper is PaperContextRef => Boolean(paper),
     ),
   ]);
-  const normalizedPdfPaperContexts = normalizePaperContexts(
-    pdfPaperContexts,
-  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
-  const normalizedFullTextPaperContexts =
-    normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
+  const {
+    paperContexts: normalizedPaperContexts,
+    pdfPaperContexts: normalizedPdfPaperContexts,
+    fullTextPaperContexts: normalizedFullTextPaperContexts,
+  } = normalizeStoredPaperContextRoutes({
+    paperContexts: normalizedPaperContextsInput,
+    pdfPaperContexts: normalizePaperContexts(pdfPaperContexts),
+    fullTextPaperContexts: normalizeEditableFullTextPaperContexts(
+      fullTextPaperContexts,
+    ),
+  });
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
@@ -5750,38 +5781,38 @@ export async function editLatestUserMessageAndRetry(
     return "persist-failed";
   }
 
-  if (retryRuntimeMode === "agent") {
-    await retryLatestAgentResponse(
-      body,
-      item,
-      model,
-      apiBase,
-      apiKey,
-      authMode,
-      providerProtocol,
-      modelEntryId,
-      modelProviderLabel,
-      reasoning,
-      advanced,
-      modelAttachments,
-    );
-  } else {
-    await retryLatestAssistantResponse(
-      body,
-      item,
-      model,
-      apiBase,
-      apiKey,
-      authMode,
-      providerProtocol,
-      modelEntryId,
-      modelProviderLabel,
-      reasoning,
-      advanced,
-      pdfUploadSystemMessages,
-      modelAttachments,
-    );
-  }
+  const retrySucceeded =
+    retryRuntimeMode === "agent"
+      ? await retryLatestAgentResponse(
+          body,
+          item,
+          model,
+          apiBase,
+          apiKey,
+          authMode,
+          providerProtocol,
+          modelEntryId,
+          modelProviderLabel,
+          reasoning,
+          advanced,
+          modelAttachments,
+        )
+      : await retryLatestAssistantResponse(
+          body,
+          item,
+          model,
+          apiBase,
+          apiKey,
+          authMode,
+          providerProtocol,
+          modelEntryId,
+          modelProviderLabel,
+          reasoning,
+          advanced,
+          pdfUploadSystemMessages,
+          modelAttachments,
+        );
+  if (!retrySucceeded) return "retry-failed";
   return "ok";
 }
 
@@ -5902,6 +5933,7 @@ export async function retryLatestAssistantResponse(
     screenshotImages,
     attachments,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
@@ -5911,6 +5943,15 @@ export async function retryLatestAssistantResponse(
       effectiveRequestConfig.authMode === "webchat" ||
       effectiveRequestConfig.providerProtocol === "web_sync",
   });
+  retryPair.userMessage.paperContexts = paperContexts.length
+    ? paperContexts
+    : undefined;
+  retryPair.userMessage.pdfPaperContexts = pdfPaperContexts.length
+    ? pdfPaperContexts
+    : undefined;
+  retryPair.userMessage.fullTextPaperContexts = fullTextPaperContexts.length
+    ? fullTextPaperContexts
+    : undefined;
   let retryPaperContexts = paperContexts;
   let retryFullTextPaperContexts = fullTextPaperContexts;
   if (shouldUseCodexNativeLightContext({ isCodexNativeTurn })) {
@@ -6036,10 +6077,8 @@ export async function retryLatestAssistantResponse(
   }
 
   try {
-    const retryLocalDocuments = retryPair.userMessage.pdfPaperContexts?.length
-      ? await createLocalPdfResourceResolver().resolve(
-          retryPair.userMessage.pdfPaperContexts,
-        )
+    const retryLocalDocuments = pdfPaperContexts.length
+      ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)
       : undefined;
     if (
       retryLocalDocuments?.length &&
@@ -6078,7 +6117,7 @@ export async function retryLatestAssistantResponse(
           recentPaperContexts,
           history: llmHistory,
           effectiveRequestConfig,
-          pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+          pdfPaperContexts,
           pdfUploadSystemMessages: retryPdfUploadSystemMessages.length
             ? retryPdfUploadSystemMessages
             : undefined,
@@ -6455,6 +6494,7 @@ export async function retryLatestAssistantResponse(
     );
 
     setStatusSafely("Ready", "ready");
+    return true;
   } catch (err) {
     const isCancelled =
       getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -6531,7 +6571,7 @@ export async function editUserTurnAndRetry(opts: {
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
-}): Promise<void> {
+}): Promise<boolean> {
   const {
     body,
     item,
@@ -6574,7 +6614,7 @@ export async function editUserTurnAndRetry(opts: {
   );
   if (userIndex < 0) {
     ztoolkit.log("LLM: editUserTurnAndRetry — user message not found");
-    return;
+    return false;
   }
   const assistantIndex = userIndex + 1;
   if (
@@ -6582,11 +6622,11 @@ export async function editUserTurnAndRetry(opts: {
     history[assistantIndex]?.role !== "assistant"
   ) {
     ztoolkit.log("LLM: editUserTurnAndRetry — assistant message not found");
-    return;
+    return false;
   }
   if (history[assistantIndex]!.streaming) {
     ztoolkit.log("LLM: editUserTurnAndRetry — assistant is still streaming");
-    return;
+    return false;
   }
   const retryRequestConfig = resolveEffectiveRequestConfig({
     item,
@@ -6817,38 +6857,37 @@ export async function editUserTurnAndRetry(opts: {
   // Route agent-mode retries through the agent runtime so tools are available
   // and the old trace is properly cleared before the new run starts.
   const isAgentRetry = retryRuntimeMode === "agent";
-  if (isAgentRetry) {
-    await retryLatestAgentResponse(
-      body,
-      item,
-      retryRequestConfig.model,
-      retryRequestConfig.apiBase,
-      retryRequestConfig.apiKey,
-      retryRequestConfig.authMode,
-      retryRequestConfig.providerProtocol,
-      retryRequestConfig.modelEntryId,
-      retryRequestConfig.modelProviderLabel,
-      retryRequestConfig.reasoning,
-      retryRequestConfig.advanced,
-      modelAttachments,
-    );
-  } else {
-    await retryLatestAssistantResponse(
-      body,
-      item,
-      retryRequestConfig.model,
-      retryRequestConfig.apiBase,
-      retryRequestConfig.apiKey,
-      retryRequestConfig.authMode,
-      retryRequestConfig.providerProtocol,
-      retryRequestConfig.modelEntryId,
-      retryRequestConfig.modelProviderLabel,
-      retryRequestConfig.reasoning,
-      retryRequestConfig.advanced,
-      pdfUploadSystemMessages,
-      modelAttachments,
-    );
-  }
+  const retrySucceeded = isAgentRetry
+    ? await retryLatestAgentResponse(
+        body,
+        item,
+        retryRequestConfig.model,
+        retryRequestConfig.apiBase,
+        retryRequestConfig.apiKey,
+        retryRequestConfig.authMode,
+        retryRequestConfig.providerProtocol,
+        retryRequestConfig.modelEntryId,
+        retryRequestConfig.modelProviderLabel,
+        retryRequestConfig.reasoning,
+        retryRequestConfig.advanced,
+        modelAttachments,
+      )
+    : await retryLatestAssistantResponse(
+        body,
+        item,
+        retryRequestConfig.model,
+        retryRequestConfig.apiBase,
+        retryRequestConfig.apiKey,
+        retryRequestConfig.authMode,
+        retryRequestConfig.providerProtocol,
+        retryRequestConfig.modelEntryId,
+        retryRequestConfig.modelProviderLabel,
+        retryRequestConfig.reasoning,
+        retryRequestConfig.advanced,
+        pdfUploadSystemMessages,
+        modelAttachments,
+      );
+  return retrySucceeded === true;
 }
 
 export type BuildAgentRuntimeRequestParams = {
@@ -7453,7 +7492,7 @@ async function retryLatestAgentResponse(
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
   modelAttachmentsOverride?: ChatAttachment[],
-): Promise<void> {
+): Promise<true> {
   const conversationSystem = resolveEffectiveConversationSystem({
     item,
     authMode,
@@ -7476,6 +7515,7 @@ async function retryLatestAgentResponse(
     modelAttachmentsOverride,
     buildAgentEngineDeps(item, conversationSystem),
   );
+  return true;
 }
 
 async function sendAgentQuestion(opts: {
@@ -7928,6 +7968,9 @@ export async function sendQuestion(
   const normalizedPdfPaperContexts = normalizePaperContexts(
     pdfPaperContexts,
   ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
+  const normalizedWebChatPdfPaperContexts = normalizePaperContexts(
+    opts.webchatPdfPaperContexts ?? normalizedPdfPaperContexts,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const pdfModePaperKeys = new Set(
     normalizedPdfPaperContexts.map(
       (paper) => `${paper.itemId}:${paper.contextItemId}`,
@@ -8151,6 +8194,11 @@ export async function sendQuestion(
   // [webchat] Dedicated pipeline — bypass context assembly, send raw PDF + question
   if (effectiveRequestConfig.providerProtocol === "web_sync") {
     const webChatQueueRefresh = createQueuedRefresh(refreshChatSafely);
+    const reportWebChatSendOutcome = (
+      outcome: "success" | "failed" | "cancelled",
+    ) => {
+      opts.onWebChatSendOutcome?.(outcome);
+    };
     try {
       // Determine webchat target from the model name (e.g., "chatgpt.com" → "chatgpt", "chat.deepseek.com" → "deepseek")
       const { getWebChatTargetByModelName } =
@@ -8177,6 +8225,7 @@ export async function sendQuestion(
         question,
         host: getRelayBaseUrl(),
         sendPdf: opts.webchatSendPdf === true,
+        pdfPaperContexts: normalizedWebChatPdfPaperContexts,
         forceNewChat: opts.webchatForceNewChat === true,
         images:
           screenshotImagesForMessage.length > 0
@@ -8200,6 +8249,7 @@ export async function sendQuestion(
         Boolean(getAbortController(conversationKey)?.signal.aborted)
       ) {
         await markCancelled();
+        reportWebChatSendOutcome("cancelled");
         return;
       }
 
@@ -8234,6 +8284,7 @@ export async function sendQuestion(
           : "Ready",
         answer.runState === "incomplete" ? "error" : "ready",
       );
+      reportWebChatSendOutcome("success");
     } catch (err) {
       const isCancelled =
         getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -8242,6 +8293,7 @@ export async function sendQuestion(
       if (isCancelled) {
         await markCancelled();
         restoreRequestUIIdle(body, conversationKey, thisRequestId);
+        reportWebChatSendOutcome("cancelled");
         return;
       }
       const errMsg = (err as Error).message || "Error";
@@ -8262,6 +8314,7 @@ export async function sendQuestion(
       await persistAssistantOnce();
       restoreRequestUIIdle(body, conversationKey, thisRequestId);
       setStatusSafely(errMsg, "error");
+      reportWebChatSendOutcome("failed");
     } finally {
       setAbortController(conversationKey, null);
       clearPendingRequestIdAndSync(conversationKey, body, item);

@@ -2,12 +2,18 @@
  * [webchat] Dedicated send pipeline for WebChat providers.
  *
  * Unlike the normal LLM pipeline, this:
- *   - Attaches the current paper's PDF when `sendPdf` is true (controlled by chip state)
+ *   - Attaches the exact selected PDF when `sendPdf` is true (controlled by chip state)
  *   - Sends only the raw question text (no system messages, no history)
  *   - Submits via the embedded Zotero relay → Chrome extension → ChatGPT.com
  */
 
 import { readLocalFileBytes } from "../utils/llmClient";
+import { isAbsoluteLocalPath } from "../utils/localPath";
+import type { PaperContextRef } from "../modules/contextPanel/types";
+import {
+  getZoteroAttachmentFilename,
+  isZoteroPdfAttachmentCandidate,
+} from "../modules/contextPanel/setupHandlers/controllers/pdfAttachmentPolicy";
 import {
   submitQuery,
   pollForResponse,
@@ -23,41 +29,79 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the file path of the PDF attachment for the given Zotero item.
- * Handles both the item-is-attachment case and the item-has-child-attachment case.
+ * Resolve the exact Zotero attachment identities selected by the user.
+ *
+ * Do not search parents or siblings here. A WebChat PDF request must either use
+ * the selected attachment or fail before anything is submitted to the relay.
  */
-async function resolveItemPdfPath(
-  item: Zotero.Item,
-): Promise<{ path: string; filename: string } | null> {
-  // If the item itself is a PDF attachment
-  if (
-    item.isAttachment?.() &&
-    item.attachmentContentType === "application/pdf"
-  ) {
-    const path = await getFilePath(item);
-    if (path) return { path, filename: extractFilename(path) };
+export async function resolveSelectedWebChatPdfBatch(
+  paperContexts: readonly PaperContextRef[],
+): Promise<ReadonlyArray<{ path: string; filename: string }>> {
+  if (!paperContexts.length) {
+    throw new Error("No selected PDF attachment was provided for WebChat.");
   }
 
-  // Otherwise look through child attachments
-  const attachmentIds = item.getAttachments?.() || [];
-  for (const attId of attachmentIds) {
-    const att = Zotero.Items.get(attId);
+  const seen = new Set<string>();
+  const resolved: Array<{ path: string; filename: string }> = [];
+
+  for (const paperContext of paperContexts) {
+    const itemId = paperContext?.itemId;
+    const contextItemId = paperContext?.contextItemId;
     if (
-      !att?.isAttachment?.() ||
-      att.attachmentContentType !== "application/pdf"
-    )
-      continue;
-    const path = await getFilePath(att);
-    if (path) return { path, filename: extractFilename(path) };
+      !Number.isSafeInteger(itemId) ||
+      itemId <= 0 ||
+      !Number.isSafeInteger(contextItemId) ||
+      contextItemId <= 0
+    ) {
+      throw new Error("The selected WebChat PDF identity is invalid.");
+    }
+
+    const sourceKey = `${itemId}:${contextItemId}`;
+    if (seen.has(sourceKey)) {
+      throw new Error("The selected WebChat PDF list contains a duplicate.");
+    }
+    seen.add(sourceKey);
+
+    const attachment = Zotero.Items.get(contextItemId);
+    if (!isZoteroPdfAttachmentCandidate(attachment)) {
+      throw new Error("The selected WebChat PDF attachment is unavailable.");
+    }
+    if ((attachment as unknown as { deleted?: unknown }).deleted) {
+      throw new Error("The selected WebChat PDF attachment is in the trash.");
+    }
+
+    const parentId = Number(attachment.parentID || 0);
+    if (parentId) {
+      const parent = Zotero.Items.get(itemId);
+      if (parentId !== itemId || !parent?.isRegularItem?.()) {
+        throw new Error(
+          "The selected WebChat PDF attachment identity changed.",
+        );
+      }
+      if ((parent as unknown as { deleted?: unknown }).deleted) {
+        throw new Error("The selected WebChat PDF parent is in the trash.");
+      }
+    } else if (itemId !== contextItemId) {
+      throw new Error("The selected WebChat PDF attachment identity changed.");
+    }
+
+    let path: string | null;
+    try {
+      path = await getFilePath(attachment);
+    } catch {
+      throw new Error("The selected WebChat PDF file is unavailable.");
+    }
+    if (!path || !isAbsoluteLocalPath(path)) {
+      throw new Error("The selected WebChat PDF file is unavailable.");
+    }
+    resolved.push({
+      path,
+      filename:
+        getZoteroAttachmentFilename(attachment) || extractFilename(path),
+    });
   }
 
-  // Check parentItem if item is something like a note
-  if (item.parentID) {
-    const parent = Zotero.Items.get(item.parentID);
-    if (parent) return resolveItemPdfPath(parent);
-  }
-
-  return null;
+  return resolved;
 }
 
 async function getFilePath(att: Zotero.Item): Promise<string | null> {
@@ -98,6 +142,8 @@ export type WebChatSendOptions = {
   host: string;
   /** When true, attach the paper PDF to the query. */
   sendPdf?: boolean;
+  /** Exact PDF attachment identities selected in the composer, in UI order. */
+  pdfPaperContexts?: readonly PaperContextRef[];
   /** When true, force the next query into a fresh conversation. */
   forceNewChat?: boolean;
   /** Screenshot images as base64 data URLs to attach. */
@@ -116,7 +162,7 @@ export type WebChatSendOptions = {
 
 /**
  * Send a question to ChatGPT via the embedded Zotero relay.
- * Attaches the current paper's PDF only when `sendPdf` is true.
+ * Attaches the exact selected paper PDF only when `sendPdf` is true.
  * The caller determines whether to send PDF based on the paper chip state.
  *
  * Returns the final response text.
@@ -125,10 +171,10 @@ export async function sendWebChatQuestion(
   opts: WebChatSendOptions,
 ): Promise<WebChatPollResult> {
   const {
-    item,
     question,
     host,
     sendPdf,
+    pdfPaperContexts,
     forceNewChat,
     images,
     chatgptMode,
@@ -145,17 +191,30 @@ export async function sendWebChatQuestion(
   let pdfFilename: string | null = null;
 
   if (sendPdf) {
-    const pdf = await resolveItemPdfPath(item);
-    if (pdf) {
-      try {
-        const bytes = await readLocalFileBytes(pdf.path);
-        pdfBase64 = bytesToBase64(bytes);
-        pdfFilename = pdf.filename;
-      } catch (err) {
-        ztoolkit.log("[webchat] Failed to read PDF:", err);
-        // Continue without PDF — send text-only query
-      }
+    const pdfs = await resolveSelectedWebChatPdfBatch(pdfPaperContexts || []);
+    if (pdfs.length !== 1) {
+      throw new Error(
+        "WebChat supports exactly one selected PDF attachment per send.",
+      );
     }
+    const pdf = pdfs[0]!;
+    let bytes: Uint8Array;
+    try {
+      bytes = await readLocalFileBytes(pdf.path);
+    } catch {
+      throw new Error("The selected WebChat PDF file could not be read.");
+    }
+    if (!bytes.byteLength) {
+      throw new Error("The selected WebChat PDF file is empty.");
+    }
+    if (
+      bytes.byteLength < 5 ||
+      String.fromCharCode(...bytes.subarray(0, 5)) !== "%PDF-"
+    ) {
+      throw new Error("The selected WebChat file is not a valid PDF.");
+    }
+    pdfBase64 = bytesToBase64(bytes);
+    pdfFilename = pdf.filename;
   }
 
   // If the extension is still navigating to a loaded history item or a fresh

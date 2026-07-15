@@ -11,6 +11,7 @@ import {
 import {
   getZoteroMcpAllowedToolNames,
   registerMcpServer,
+  registerScopedZoteroMcpScope,
   unregisterMcpServer,
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -270,18 +271,26 @@ describe("Codex app-server MCP setup", function () {
         throw new Error("preflight should not self-fetch Zotero's HTTP server");
       }) as typeof fetch;
 
-    const status = await preflightCodexZoteroMcpServer({
-      scopeToken: "scope-direct",
-      required: true,
-    });
+    const scoped = registerScopedZoteroMcpScope(
+      { conversationKey: 7_950_001, libraryID: 1, kind: "global" },
+      { token: "scope-direct" },
+    );
+    try {
+      const status = await preflightCodexZoteroMcpServer({
+        scopeToken: scoped.token,
+        required: true,
+      });
 
-    assert.equal(status.connected, true);
-    assert.deepEqual(status.toolNames, [
-      "library_search",
-      "library_read",
-      "library_retrieve",
-      "paper_read",
-    ]);
+      assert.equal(status.connected, true);
+      assert.deepEqual(status.toolNames, [
+        "library_search",
+        "library_read",
+        "library_retrieve",
+        "paper_read",
+      ]);
+    } finally {
+      scoped.clear();
+    }
   });
 
   it("caches successful local MCP preflight across per-turn scope tokens", async function () {
@@ -455,14 +464,51 @@ describe("Codex app-server MCP setup", function () {
     );
   });
 
+  it("keeps Claude raw local-path turns on an identity-gated MCP surface", function () {
+    const config = buildClaudeZoteroMcpServerConfig({
+      profileSignature: "profile-claude-raw",
+      scopeToken: "scope-token-claude-raw",
+      required: true,
+      rawPdfMode: true,
+    });
+    const prefix = "mcp__llm_for_zotero_profile_claude_raw__";
+
+    assert.include(config.allowedTools, `${prefix}library_search`);
+    assert.include(config.allowedTools, `${prefix}note_write`);
+    assert.include(config.allowedTools, `${prefix}paper_read`);
+    assert.include(config.allowedTools, `${prefix}library_read`);
+    assert.include(config.allowedTools, `${prefix}library_retrieve`);
+    assert.notInclude(config.allowedTools, `${prefix}raw_pdf_read`);
+    assert.notInclude(config.allowedTools, `${prefix}literature_search`);
+    assert.notInclude(config.allowedTools, `${prefix}run_command`);
+    assert.notInclude(config.allowedTools, `${prefix}file_io`);
+    assert.notInclude(config.allowedTools, `${prefix}zotero_script`);
+  });
+
   it("enables the native shell only when a local PDF turn requests it", function () {
     const withPdf = buildCodexZoteroMcpThreadConfig({
       profileSignature: "profile-pdf",
       scopeToken: "scope-token",
       enableShellTool: true,
+      rawPdfMode: true,
     });
 
     assert.deepEqual(withPdf.config.features, { shell_tool: true });
+    const pdfServer = (
+      withPdf.config.mcp_servers as Record<string, { enabled_tools?: string[] }>
+    )[withPdf.serverName];
+    const enabledTools = pdfServer.enabled_tools || [];
+    assert.include(enabledTools, "library_search");
+    assert.include(enabledTools, "note_write");
+    assert.include(enabledTools, "paper_read");
+    assert.include(enabledTools, "library_read");
+    assert.include(enabledTools, "library_retrieve");
+    assert.notInclude(enabledTools, "raw_pdf_read");
+    assert.notInclude(enabledTools, "literature_search");
+    assert.notInclude(enabledTools, "run_command");
+    assert.notInclude(enabledTools, "file_io");
+    assert.notInclude(enabledTools, "zotero_script");
+
     const withoutPdf = buildCodexZoteroMcpThreadConfig({
       profileSignature: "profile-text",
       scopeToken: "scope-token",

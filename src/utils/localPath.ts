@@ -1,22 +1,38 @@
 type ParsedLocalPath =
   | { kind: "unc"; host: string; share: string; segments: string[] }
   | { kind: "windows-drive"; drive: string; segments: string[] }
-  | { kind: "posix"; segments: string[] }
+  | { kind: "posix"; prefix: "/" | "//"; segments: string[] }
   | { kind: "relative"; segments: string[]; separator: "/" | "\\" };
 
 function splitPathSegments(value: string | undefined): string[] {
   return (value || "").split(/[\\/]+/).filter(Boolean);
 }
 
+function isWindowsHost(): boolean {
+  const zoteroIsWin = (
+    globalThis as typeof globalThis & { Zotero?: { isWin?: unknown } }
+  ).Zotero?.isWin;
+  if (typeof zoteroIsWin === "boolean") return zoteroIsWin;
+  const processPlatform = (
+    globalThis as typeof globalThis & {
+      process?: { platform?: unknown };
+    }
+  ).process?.platform;
+  return processPlatform === "win32";
+}
+
 function parseLocalPath(path: string | undefined): ParsedLocalPath {
-  const raw = (path || "").trim();
+  const raw = path || "";
   if (!raw) {
     return { kind: "relative", segments: [], separator: "/" };
   }
 
-  const uncMatch = raw.match(
-    /^(?:\\\\|\/\/)([^\\/]+)[\\/]+([^\\/]+)(?:[\\/]+(.*))?$/,
-  );
+  const supportsForwardSlashUnc = isWindowsHost();
+  const uncMatch = (
+    raw.startsWith("\\\\") || (supportsForwardSlashUnc && raw.startsWith("//"))
+      ? raw
+      : ""
+  ).match(/^(?:\\\\|\/\/)([^\\/]+)[\\/]+([^\\/]+)(?:[\\/]+(.*))?$/);
   if (uncMatch) {
     return {
       kind: "unc",
@@ -38,6 +54,7 @@ function parseLocalPath(path: string | undefined): ParsedLocalPath {
   if (raw.startsWith("/")) {
     return {
       kind: "posix",
+      prefix: raw.startsWith("//") ? "//" : "/",
       segments: splitPathSegments(raw),
     };
   }
@@ -59,7 +76,9 @@ function formatLocalPath(path: ParsedLocalPath): string {
     return path.segments.length ? `${root}${path.segments.join("\\")}` : root;
   }
   if (path.kind === "posix") {
-    return path.segments.length ? `/${path.segments.join("/")}` : "/";
+    return path.segments.length
+      ? `${path.prefix}${path.segments.join("/")}`
+      : path.prefix;
   }
   return path.segments.join(path.separator);
 }
@@ -92,6 +111,48 @@ export function isAbsoluteLocalPath(path: string | undefined): boolean {
   );
 }
 
+export function areEquivalentLocalPaths(
+  left: string | undefined,
+  right: string | undefined,
+): boolean {
+  const leftPath = parseLocalPath(left);
+  const rightPath = parseLocalPath(right);
+  if (leftPath.kind !== rightPath.kind || leftPath.kind === "relative") {
+    return false;
+  }
+  const compareSegments = (
+    leftSegments: readonly string[],
+    rightSegments: readonly string[],
+    caseInsensitive: boolean,
+  ) =>
+    leftSegments.length === rightSegments.length &&
+    leftSegments.every((segment, index) =>
+      caseInsensitive
+        ? segment.toLowerCase() === rightSegments[index]?.toLowerCase()
+        : segment === rightSegments[index],
+    );
+  if (leftPath.kind === "windows-drive" && rightPath.kind === "windows-drive") {
+    return (
+      leftPath.drive.toLowerCase() === rightPath.drive.toLowerCase() &&
+      compareSegments(leftPath.segments, rightPath.segments, true)
+    );
+  }
+  if (leftPath.kind === "unc" && rightPath.kind === "unc") {
+    return (
+      leftPath.host.toLowerCase() === rightPath.host.toLowerCase() &&
+      leftPath.share.toLowerCase() === rightPath.share.toLowerCase() &&
+      compareSegments(leftPath.segments, rightPath.segments, true)
+    );
+  }
+  if (leftPath.kind === "posix" && rightPath.kind === "posix") {
+    return (
+      leftPath.prefix === rightPath.prefix &&
+      compareSegments(leftPath.segments, rightPath.segments, false)
+    );
+  }
+  return false;
+}
+
 export function joinLocalPath(...parts: string[]): string {
   const filtered = parts.filter((part) => Boolean(part));
   if (!filtered.length) return "";
@@ -120,6 +181,7 @@ export function joinLocalPath(...parts: string[]): string {
   if (base.kind === "posix") {
     return formatLocalPath({
       kind: "posix",
+      prefix: base.prefix,
       segments,
     });
   }
@@ -150,6 +212,7 @@ export function getLocalParentPath(path: string): string {
   if (parsed.kind === "posix") {
     return formatLocalPath({
       kind: "posix",
+      prefix: parsed.prefix,
       segments: parsed.segments.slice(0, -1),
     });
   }
@@ -182,7 +245,7 @@ export function fileUrlToPath(url: string | undefined): string | undefined {
     }
 
     const pathname = parsed.pathname || "";
-    if (/^\/\/[^/]+\/[^/]+/.test(pathname)) {
+    if (isWindowsHost() && /^\/\/[^/]+\/[^/]+/.test(pathname)) {
       const [host, share, ...rest] = decodeFileUrlSegments(pathname);
       if (host && share) {
         return formatLocalPath({
@@ -224,7 +287,10 @@ export function toFileUrl(path: string | undefined): string | undefined {
   }
   if (parsed.kind === "posix") {
     const encodedTail = encodeFileUrlSegments(parsed.segments);
-    return encodedTail ? `file:///${encodedTail}` : "file:///";
+    if (!encodedTail) return "file:///";
+    return parsed.prefix === "//"
+      ? `file:////${encodedTail}`
+      : `file:///${encodedTail}`;
   }
   return undefined;
 }

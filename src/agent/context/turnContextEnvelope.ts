@@ -11,6 +11,7 @@ import type {
   SelectedTextSource,
   TagContextRef,
 } from "../../shared/types";
+import { safeJsonStringify } from "../../utils/safeJsonStringify";
 
 export type TurnContextEnvelopeInput = Pick<
   AgentRuntimeRequest,
@@ -410,7 +411,7 @@ export function renderTurnContextEnvelopeForModel(
       "Raw PDFs explicitly selected for this turn:",
       ...envelope.localDocuments.map(
         (document, index) =>
-          `${index + 1}. sourceKey=${document.sourceKey}, title=${JSON.stringify(document.title)}, name=${JSON.stringify(document.name)}, path=${document.absolutePath}`,
+          `${index + 1}. sourceKey=${document.sourceKey}, itemId=${document.itemId}, contextItemId=${document.contextItemId}, title=${safeJsonStringify(document.title)}, name=${safeJsonStringify(document.name)}, path=${safeJsonStringify(document.absolutePath)}`,
       ),
       "Read exactly these paths. The current-turn list is authoritative. Do not substitute other Zotero attachments, MinerU full.md, extracted text, generic attachments, or PDF paths from earlier turns.",
     );

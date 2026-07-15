@@ -168,7 +168,7 @@ export async function resolvePdfModeModelInputs(params: {
         "Could not resolve the selected paper PDF attachment.",
       );
     }
-    deps.setStatusMessage?.(`Sending raw PDF path to ${modelName}...`, "ready");
+    deps.setStatusMessage?.(`Sending raw PDF to ${modelName}...`, "ready");
   }
 
   if (hasProviderProcessedPdfs) {

@@ -10,6 +10,11 @@ import type {
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
+import {
+  LocalDocumentPathStreamRedactor,
+  redactAllRememberedLocalDocumentPathsFromTerminalText,
+  redactAllRememberedLocalDocumentPathsFromTerminalValue,
+} from "../agent/privacy/localDocumentPathRedaction";
 
 const DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
@@ -129,6 +134,8 @@ export class CodexAppServerProcess {
   private turnQueue = Promise.resolve();
   private lineBuffer = "";
   private diagnosticBuffer = "";
+  private readonly diagnosticStreamRedactor =
+    new LocalDocumentPathStreamRedactor(0, { allConversations: true });
   private launchDescription = "";
   private destroyed = false;
   private didNotifyClose = false;
@@ -193,7 +200,6 @@ export class CodexAppServerProcess {
       args = invocation.args;
       environment = invocation.environment;
     }
-
     let proc: any;
     try {
       proc = await Subprocess.call({
@@ -214,8 +220,14 @@ export class CodexAppServerProcess {
     );
     instance.startReadLoop();
     instance.startStderrReadLoop();
-    await instance.initialize();
-    return instance;
+    try {
+      await instance.initialize();
+      return instance;
+    } catch (error) {
+      // spawn() still owns the subprocess until initialization succeeds.
+      await instance.destroyAndWait().catch(() => undefined);
+      throw error;
+    }
   }
 
   private startReadLoop(): void {
@@ -238,9 +250,11 @@ export class CodexAppServerProcess {
           try {
             this.handleMessage(JSON.parse(trimmed));
           } catch {
-            this.appendDiagnostic(trimmed);
+            const redactedLine =
+              redactAllRememberedLocalDocumentPathsFromTerminalText(trimmed);
+            this.appendDiagnostic(`${redactedLine}\n`, "stdout");
             Zotero.debug?.(
-              `[llm-for-zotero] codex app-server: failed to parse line: ${trimmed}`,
+              `[llm-for-zotero] codex app-server: failed to parse line: ${redactedLine}`,
             );
           }
         }
@@ -270,13 +284,13 @@ export class CodexAppServerProcess {
           break;
         }
         if (!chunk) break;
-        this.appendDiagnostic(chunk);
+        this.appendDiagnostic(chunk, "stderr");
       }
     })();
   }
 
-  private appendDiagnostic(chunk: string): void {
-    this.diagnosticBuffer += `${chunk}\n`;
+  private appendDiagnostic(chunk: string, channel: string): void {
+    this.diagnosticBuffer += this.diagnosticStreamRedactor.push(channel, chunk);
     if (
       this.diagnosticBuffer.length >
       CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_TRIM_THRESHOLD
@@ -288,9 +302,16 @@ export class CodexAppServerProcess {
   }
 
   private getDiagnosticTail(): string {
-    const pendingStdout = this.lineBuffer.trim();
+    for (const entry of this.diagnosticStreamRedactor.flushAll()) {
+      this.diagnosticBuffer += entry.text;
+    }
+    const pendingStdout = redactAllRememberedLocalDocumentPathsFromTerminalText(
+      this.lineBuffer.trim(),
+    );
     const combined = `${this.diagnosticBuffer}${pendingStdout ? `\n${pendingStdout}` : ""}`;
-    return combined.replace(/\s+/g, " ").trim();
+    return redactAllRememberedLocalDocumentPathsFromTerminalText(combined)
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   private async waitForStderrTail(): Promise<void> {
@@ -319,7 +340,11 @@ export class CodexAppServerProcess {
         this.pendingRequests.delete(id);
         if ("error" in msg) {
           pending.reject(
-            new Error(String((msg.error as any)?.message ?? msg.error)),
+            new Error(
+              redactAllRememberedLocalDocumentPathsFromTerminalText(
+                String((msg.error as any)?.message ?? msg.error),
+              ),
+            ),
           );
         } else {
           pending.resolve(msg.result);
@@ -333,7 +358,9 @@ export class CodexAppServerProcess {
           try {
             ztoolkit.log("Codex app-server: unhandled server request", {
               method: msg.method,
-              params: msg.params,
+              params: redactAllRememberedLocalDocumentPathsFromTerminalValue(
+                msg.params,
+              ),
             });
           } catch {
             /* diagnostics must not affect protocol responses */
@@ -528,6 +555,42 @@ export class CodexAppServerProcess {
 
   destroy(): void {
     this.fail(new Error("CodexAppServerProcess destroyed"), true);
+  }
+
+  async destroyAndWait(timeoutMs = 2_000): Promise<boolean> {
+    const rawProcess = this.proc as any;
+    this.destroy();
+    const waitBounded = async (task: Promise<unknown>): Promise<boolean> => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          task.then(
+            () => true,
+            () => true,
+          ),
+          new Promise<boolean>((resolve) => {
+            timeoutId = setTimeout(
+              () => resolve(false),
+              Math.max(0, timeoutMs),
+            );
+          }),
+        ]);
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+      }
+    };
+    const processExited =
+      typeof rawProcess?.wait === "function"
+        ? await waitBounded(Promise.resolve(rawProcess.wait()))
+        : true;
+    const readLoops = [this.readLoopPromise, this.stderrLoopPromise].filter(
+      (task): task is Promise<void> => Boolean(task),
+    );
+    if (readLoops.length) {
+      const loopsDrained = await waitBounded(Promise.allSettled(readLoops));
+      return processExited && loopsDrained;
+    }
+    return processExited;
   }
 
   private fail(error: Error, killProcess: boolean): void {
@@ -1208,7 +1271,11 @@ export function waitForCodexAppServerTurnCompletion(params: {
           .catch((error) => {
             ztoolkit.log(
               "Codex app-server: turn/interrupt failed; destroying process",
-              error,
+              new Error(
+                redactAllRememberedLocalDocumentPathsFromTerminalText(
+                  error instanceof Error ? error.message : String(error),
+                ),
+              ),
             );
             if (cacheKey) {
               destroyCachedCodexAppServerProcess(

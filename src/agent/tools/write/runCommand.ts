@@ -115,9 +115,10 @@ async function executeCommand(params: {
           drainPipe(proc.stderr),
         ]);
 
-        const timeoutPromise = new Promise<"timeout">((resolve) =>
-          setTimeout(() => resolve("timeout"), timeoutMs),
-        );
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<"timeout">((resolve) => {
+          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
+        });
 
         const resultPromise = (async () => {
           await drainPromise;
@@ -125,7 +126,12 @@ async function executeCommand(params: {
           return exitCode;
         })();
 
-        const race = await Promise.race([resultPromise, timeoutPromise]);
+        let race: number | "timeout";
+        try {
+          race = await Promise.race([resultPromise, timeoutPromise]);
+        } finally {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        }
         if (race === "timeout") {
           try {
             proc.kill();
@@ -163,9 +169,10 @@ async function executeCommand(params: {
           workdir: params.cwd || undefined,
         });
 
-        const timeoutPromise = new Promise<"timeout">((resolve) =>
-          setTimeout(() => resolve("timeout"), timeoutMs),
-        );
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<"timeout">((resolve) => {
+          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
+        });
 
         const resultPromise = (async () => {
           const [stdout, stderr] = await Promise.all([
@@ -176,7 +183,14 @@ async function executeCommand(params: {
           return { stdout, stderr, exitCode };
         })();
 
-        const raceResult = await Promise.race([resultPromise, timeoutPromise]);
+        let raceResult:
+          | { stdout: string; stderr: string; exitCode: number }
+          | "timeout";
+        try {
+          raceResult = await Promise.race([resultPromise, timeoutPromise]);
+        } finally {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        }
         if (raceResult === "timeout") {
           try {
             proc.kill();

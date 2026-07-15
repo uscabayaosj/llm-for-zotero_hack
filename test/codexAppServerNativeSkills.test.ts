@@ -3,6 +3,7 @@ import {
   buildCodexNativeSkillInstructionBlock,
   buildCodexNativeSkillRequest,
   clearCodexNativeSkillClassifierCache,
+  resolveExplicitCodexNativeSkillIds,
   resolveCodexNativeSkills,
 } from "../src/codexAppServer/nativeSkills";
 import {
@@ -62,6 +63,23 @@ describe("Codex native skills", function () {
     assert.equal(classifierCalls, 0);
     assert.include(resolved.instructionBlock, "Skill: write-note");
     assert.include(resolved.instructionBlock, "Write-note instructions.");
+  });
+
+  it("resolves only known explicit skill IDs in the user's selection order", function () {
+    setUserSkills([
+      makeSkill("write-note", /write note/i, "Write-note instructions."),
+      makeSkill("compare-papers", /compare/i, "Compare instructions."),
+    ]);
+
+    assert.deepEqual(
+      resolveExplicitCodexNativeSkillIds([
+        "missing-skill",
+        "compare-papers",
+        "write-note",
+        "compare-papers",
+      ]),
+      ["compare-papers", "write-note"],
+    );
   });
 
   it("uses deterministic regex matching without a classifier call", async function () {
@@ -322,6 +340,11 @@ describe("Codex native skills", function () {
     );
     assert.deepEqual(request.localDocuments, [localDocument]);
     assert.include(block, "Call paper_read overview.");
+    assert.include(block, "overrides conflicting paper-reading routes");
+    assert.notInclude(
+      block,
+      "overrides ordinary paper-reading and skill guidance",
+    );
     assert.match(
       block,
       /Raw PDF transport policy[\s\S]*Do not use `paper_read`[\s\S]*$/,

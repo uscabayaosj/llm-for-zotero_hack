@@ -1050,6 +1050,87 @@ describe("AgentRuntime", function () {
     }
   });
 
+  it("does not expose a local PDF path split across answer or reasoning deltas", async function () {
+    const restoreDb = installMockDb();
+    const rawPath = "/private/papers/stream-selected.pdf";
+    const split = Math.floor(rawPath.length / 2);
+    try {
+      const runtime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: true,
+            toolCalls: true,
+            multimodal: false,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            await params.onTextDelta?.(rawPath.slice(0, split));
+            await params.onTextDelta?.(rawPath.slice(split));
+            await params.onTextDelta?.(" complete");
+            await params.onReasoning?.({
+              stepId: "split-reasoning",
+              summary: rawPath.slice(0, split),
+            });
+            await params.onReasoning?.({
+              stepId: "split-reasoning",
+              summary: rawPath.slice(split),
+            });
+            return {
+              kind: "final",
+              text: `${rawPath} complete`,
+              assistantMessage: {
+                role: "assistant",
+                content: `${rawPath} complete`,
+              },
+            };
+          },
+        }),
+      });
+      const events: AgentEvent[] = [];
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 7_940_001,
+          mode: "agent",
+          userText: "read selected PDF",
+          model: "gpt-5.4",
+          apiBase: "https://api.openai.com/v1/responses",
+          apiKey: "test",
+          pdfPaperContexts: [
+            {
+              itemId: 10,
+              contextItemId: 11,
+              title: "Selected",
+              contentSourceMode: "pdf",
+            },
+          ],
+          localDocuments: [
+            {
+              kind: "local_pdf",
+              sourceKey: "zotero-pdf:10:11",
+              itemId: 10,
+              contextItemId: 11,
+              title: "Selected",
+              name: "stream-selected.pdf",
+              mimeType: "application/pdf",
+              absolutePath: rawPath,
+            },
+          ],
+        },
+        onEvent: (event) => events.push(event),
+      });
+      const trace = await runtime.getRunTrace(outcome.runId);
+      const serialized = JSON.stringify({ events, outcome, trace });
+
+      assert.notInclude(serialized, rawPath);
+      assert.include(serialized, "[raw_pdf_path:zotero-pdf:10:11]");
+      assert.include(serialized, '"type":"message_delta"');
+      assert.include(serialized, '"type":"reasoning"');
+    } finally {
+      restoreDb();
+    }
+  });
+
   it("rolls back streamed scratch text before adapter tool callbacks", async function () {
     const restoreDb = installMockDb();
     try {

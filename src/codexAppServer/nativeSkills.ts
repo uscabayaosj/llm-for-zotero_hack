@@ -88,6 +88,15 @@ export function clearCodexNativeSkillClassifierCache(): void {
   classifierCache.clear();
 }
 
+export function resolveExplicitCodexNativeSkillIds(
+  forcedSkillIds: ReadonlyArray<string>,
+): string[] {
+  const knownSkillIds = new Set(getAllSkills().map((skill) => skill.id));
+  return Array.from(
+    new Set(forcedSkillIds.filter((skillId) => knownSkillIds.has(skillId))),
+  );
+}
+
 function normalizeTextForSignature(value: string): string {
   return value
     .normalize("NFKC")

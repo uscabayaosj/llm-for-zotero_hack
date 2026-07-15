@@ -1,5 +1,5 @@
 export const RAW_PDF_TRANSPORT_POLICY_BLOCK = [
-  "Raw PDF transport policy (overrides ordinary paper-reading and skill guidance for this turn):",
+  "Raw PDF transport policy (overrides conflicting paper-reading routes for this turn):",
   "Read each raw PDF from the exact current-turn local path using native runtime or shell file capabilities.",
   "Do not use `paper_read`, `read_paper`, `search_paper`, `library_retrieve`, Zotero indexed PDF text, MinerU `full.md`, sibling attachments, or paths from earlier turns for those PDF identities.",
   "Zotero metadata and write tools remain available. Text/MinerU papers in a mixed turn keep their normal reading route.",

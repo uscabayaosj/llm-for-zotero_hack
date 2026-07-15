@@ -462,4 +462,203 @@ describe("external bridge action approval handling", function () {
         originalZotero;
     }
   });
+
+  it("keeps raw PDF paths in the model request while redacting callbacks and persisted traces", async function () {
+    const originalFetch = globalThis.fetch;
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    const rawPath = "C:\\Private Papers\\Alice\\Selected File.pdf";
+    const jsonEscapedPath = JSON.stringify(rawPath).slice(1, -1);
+    const forwardCaseVariant = "c:/private papers/ALICE/selected file.pdf";
+    const fileUrlVariant =
+      "FILE:///c:/private%20papers/alice/selected%20file.pdf";
+    const parentPath = "C:\\Private Papers\\Alice";
+    const parentFileUrlVariant = "file:///c:/private%20papers/alice";
+    const unrelatedPath = "/private/other/reference.pdf";
+    const dbWrites: Array<{ sql: string; params: unknown[] }> = [];
+    const callbackEvents: unknown[] = [];
+    let capturedBody: Record<string, any> | null = null;
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Prefs: {
+        get(key: string) {
+          if (key.endsWith("enableClaudeCodeMode")) return true;
+          if (key.endsWith("agentClaudeConfigSource")) return "default";
+          if (key.endsWith("agentPermissionMode")) return "safe";
+          if (key.endsWith("conversationSystem")) return "claude_code";
+          if (key.endsWith("codexAppServerZoteroMcpToolsEnabled")) return false;
+          if (key.endsWith("agentTraceExportEnabled")) return false;
+          return "";
+        },
+      },
+      Profile: {
+        dir: "/tmp/llm-for-zotero-test-profile",
+      },
+      DB: {
+        queryAsync: async (sql: string, params: unknown[] = []) => {
+          dbWrites.push({ sql, params });
+          return [];
+        },
+      },
+    };
+
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input);
+      if (url.endsWith("/healthz")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            protocolVersion: 2,
+            capabilities: ["local_pdf_paths"],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ) as Response;
+      }
+      capturedBody = JSON.parse(String(init?.body || "{}"));
+      const eventText = [
+        `raw=${rawPath}`,
+        `escaped=${jsonEscapedPath}`,
+        `forward=${forwardCaseVariant}`,
+        `fileUrl=${fileUrlVariant}`,
+        `parent=${parentPath}`,
+        `parentUrl=${parentFileUrlVariant}`,
+        `unrelated=${unrelatedPath}`,
+      ].join(" ");
+      const rawSplit = Math.floor(rawPath.length / 2);
+      const urlSplit = Math.floor(fileUrlVariant.length / 2);
+      const lines = [
+        { type: "start", runId: "run-redaction-seam" },
+        { type: "event", event: { type: "status", text: eventText } },
+        {
+          type: "event",
+          event: {
+            type: "message_delta",
+            text: rawPath.slice(0, rawSplit),
+          },
+        },
+        {
+          type: "event",
+          event: {
+            type: "message_delta",
+            text: rawPath.slice(rawSplit),
+          },
+        },
+        {
+          type: "event",
+          event: {
+            type: "message_delta",
+            text: " complete",
+          },
+        },
+        {
+          type: "event",
+          event: {
+            type: "reasoning",
+            round: 1,
+            stepId: "split-path-reasoning",
+            summary: fileUrlVariant.slice(0, urlSplit),
+          },
+        },
+        {
+          type: "event",
+          event: {
+            type: "reasoning",
+            round: 1,
+            stepId: "split-path-reasoning",
+            summary: fileUrlVariant.slice(urlSplit),
+          },
+        },
+        {
+          type: "outcome",
+          outcome: {
+            kind: "completed",
+            runId: "run-redaction-seam",
+            text: eventText,
+            usedFallback: false,
+          },
+        },
+      ];
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 }) as Response;
+    }) as typeof fetch;
+
+    try {
+      const runtime = createRuntime();
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 8901,
+          mode: "agent",
+          userText: "Read the selected PDF.",
+          model: "claude-sonnet",
+          authMode: "api_key",
+          apiBase: "",
+          apiKey: "",
+          libraryID: 1,
+          pdfPaperContexts: [
+            {
+              itemId: 10,
+              contextItemId: 11,
+              title: "Selected PDF",
+              contentSourceMode: "pdf",
+            },
+          ],
+          localDocuments: [
+            {
+              kind: "local_pdf",
+              sourceKey: "zotero-pdf:10:11",
+              itemId: 10,
+              contextItemId: 11,
+              title: "Selected PDF",
+              name: "selected.pdf",
+              mimeType: "application/pdf",
+              absolutePath: rawPath,
+            },
+          ],
+        },
+        onEvent: (event) => callbackEvents.push(event),
+      });
+
+      assert.equal(
+        capturedBody?.runtimeRequest?.localDocuments?.[0]?.absolutePath,
+        rawPath,
+      );
+      const persistedAndVisible = JSON.stringify({
+        callbackEvents,
+        outcome,
+        dbWrites,
+      });
+      for (const sensitiveVariant of [
+        rawPath,
+        jsonEscapedPath,
+        forwardCaseVariant,
+        fileUrlVariant,
+        parentPath,
+        parentFileUrlVariant,
+      ]) {
+        assert.notInclude(
+          persistedAndVisible,
+          JSON.stringify(sensitiveVariant).slice(1, -1),
+        );
+      }
+      assert.include(persistedAndVisible, unrelatedPath);
+      assert.include(persistedAndVisible, "[raw_pdf_path:zotero-pdf:10:11]");
+    } finally {
+      globalThis.fetch = originalFetch;
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+    }
+  });
 });

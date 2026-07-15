@@ -112,8 +112,15 @@ const RAW_PDF_RETRIEVAL_TOOL_NAMES = new Set([
   "search_paper",
   "view_pdf_pages",
   "read_attachment",
+  "library_read",
   "library_retrieve",
 ]);
+const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set([
+  "run_command",
+  "file_io",
+  "zotero_script",
+]);
+const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set(["literature_search"]);
 const MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY = new Set([
   "run_command",
   "file_io",
@@ -334,12 +341,24 @@ export function getZoteroMcpAllowedToolNames(): string[] {
   ];
 }
 
-function getZoteroMcpToolApprovalOverrides(): Record<
-  string,
-  { approval_mode: typeof CODEX_MCP_TOOL_APPROVAL_MODE }
-> {
+/**
+ * Direct-path PDF turns read PDFs through the provider's native filesystem
+ * capability. Native filesystem tools and unscoped online retrieval stay
+ * hidden; local paper retrieval is enforced per exact current-turn identity.
+ */
+export function getZoteroMcpDirectPdfToolNames(): string[] {
+  return getZoteroMcpAllowedToolNames().filter(
+    (name) =>
+      !RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES.has(name) &&
+      !RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES.has(name),
+  );
+}
+
+function getZoteroMcpToolApprovalOverrides(
+  toolNames = getZoteroMcpAllowedToolNames(),
+): Record<string, { approval_mode: typeof CODEX_MCP_TOOL_APPROVAL_MODE }> {
   return Object.fromEntries(
-    getZoteroMcpAllowedToolNames().map((name) => [
+    toolNames.map((name) => [
       name,
       { approval_mode: CODEX_MCP_TOOL_APPROVAL_MODE },
     ]),
@@ -365,20 +384,24 @@ export function buildZoteroMcpConfigValue(
   params: {
     scopeToken?: string;
     required?: boolean;
+    rawPdfMode?: boolean;
   } = {},
 ): Record<string, unknown> {
   const token = getOrCreateZoteroMcpBearerToken();
   const scopeToken = normalizeText(params.scopeToken, 256);
+  const enabledToolNames = params.rawPdfMode
+    ? getZoteroMcpDirectPdfToolNames()
+    : getZoteroMcpAllowedToolNames();
   return {
     url: getZoteroMcpServerUrl(),
     ...(params.required ? { required: true } : {}),
     default_tools_approval_mode: CODEX_MCP_TOOL_APPROVAL_MODE,
-    tools: getZoteroMcpToolApprovalOverrides(),
+    tools: getZoteroMcpToolApprovalOverrides(enabledToolNames),
     http_headers: {
       [ZOTERO_MCP_AUTH_HEADER]: `Bearer ${token}`,
       ...(scopeToken ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken } : {}),
     },
-    enabled_tools: getZoteroMcpAllowedToolNames(),
+    enabled_tools: enabledToolNames,
   };
 }
 
@@ -703,7 +726,7 @@ function cloneMcpResultWithDuplicateMarker(
   result: McpToolCallResult,
 ): McpToolCallResult {
   const content = result.content.map((part, index) => {
-    if (index !== 0 || part.type !== "text") return { ...part };
+    if (index !== 0) return { ...part };
     try {
       const parsed = JSON.parse(part.text) as Record<string, unknown>;
       return {
@@ -753,6 +776,52 @@ function collectPaperIdentities(value: unknown): Array<{
   return [...current, ...Object.values(record).flatMap(collectPaperIdentities)];
 }
 
+function collectLibraryRetrieveItemIdentities(
+  value: unknown,
+): Array<{ itemId: number }> {
+  const record = normalizeRecord(value);
+  const scope = normalizeRecord(record.scope);
+  if (!Array.isArray(scope.itemIds)) return [];
+  return scope.itemIds
+    .map((itemId) => normalizePositiveInt(itemId))
+    .filter((itemId): itemId is number => Boolean(itemId))
+    .map((itemId) => ({ itemId }));
+}
+
+function collectLibraryReadItemIdentities(
+  value: unknown,
+): Array<{ itemId: number }> {
+  const record = normalizeRecord(value);
+  if (!Array.isArray(record.itemIds)) return [];
+  return record.itemIds
+    .map((itemId) => normalizePositiveInt(itemId))
+    .filter((itemId): itemId is number => Boolean(itemId))
+    .map((itemId) => ({ itemId }));
+}
+
+function getAttachmentParentItemId(itemId: number): number | null {
+  try {
+    const item = Zotero?.Items?.get?.(itemId);
+    if (!item || typeof item.isAttachment !== "function") return null;
+    if (!item.isAttachment()) return null;
+    return normalizePositiveInt(item.parentID) || null;
+  } catch {
+    return null;
+  }
+}
+
+function identityUsesAttachmentUnderRawParent(
+  identity: { itemId?: number; contextItemId?: number },
+  rawParentItemIds: ReadonlySet<number>,
+): boolean {
+  return [identity.itemId, identity.contextItemId].some((value) => {
+    const itemId = normalizePositiveInt(value);
+    if (!itemId) return false;
+    const parentItemId = getAttachmentParentItemId(itemId);
+    return Boolean(parentItemId && rawParentItemIds.has(parentItemId));
+  });
+}
+
 function shouldBlockRawPdfRetrieval(params: {
   toolName: string;
   rawArgs: unknown;
@@ -761,28 +830,115 @@ function shouldBlockRawPdfRetrieval(params: {
   if (!RAW_PDF_RETRIEVAL_TOOL_NAMES.has(params.toolName)) return false;
   const rawPdfs = normalizePaperContexts(params.scope?.pdfPaperContexts) || [];
   if (!rawPdfs.length) return false;
-  const identities = collectPaperIdentities(params.rawArgs);
-  if (!identities.length) {
-    const activeItemId = normalizePositiveInt(
-      params.scope?.activeItemId ?? params.scope?.paperItemID,
+  const isLibraryAttachmentEnumeration =
+    params.toolName === "library_read" &&
+    Array.isArray(normalizeRecord(params.rawArgs).sections) &&
+    (normalizeRecord(params.rawArgs).sections as unknown[]).includes(
+      "attachments",
     );
-    const activeContextItemId = normalizePositiveInt(
-      params.scope?.activeContextItemId,
-    );
-    return rawPdfs.some(
-      (paper) =>
-        paper.itemId === activeItemId &&
-        paper.contextItemId === activeContextItemId,
-    );
+  const identities: Array<{
+    itemId?: number;
+    contextItemId?: number;
+  }> = [
+    ...collectPaperIdentities(params.rawArgs),
+    ...(params.toolName === "library_retrieve"
+      ? collectLibraryRetrieveItemIdentities(params.rawArgs)
+      : []),
+    ...(params.toolName === "library_read"
+      ? collectLibraryReadItemIdentities(params.rawArgs)
+      : []),
+  ];
+  const rawParentItemIds = new Set(rawPdfs.map((paper) => paper.itemId));
+  const rawContextItemIds = new Set(
+    rawPdfs.map((paper) => paper.contextItemId),
+  );
+  if (params.toolName === "library_read" && !isLibraryAttachmentEnumeration) {
+    // Parent metadata and notes remain available, but an attachment ID can be
+    // silently canonicalized to its parent by library_read. Block raw and
+    // same-parent attachment aliases before that canonicalization occurs.
+    return identities.some((identity) => {
+      const suppliedValues = [identity.itemId, identity.contextItemId]
+        .map(normalizePositiveInt)
+        .filter((value): value is number => Boolean(value));
+      return (
+        suppliedValues.some((value) => rawContextItemIds.has(value)) ||
+        identityUsesAttachmentUnderRawParent(identity, rawParentItemIds)
+      );
+    });
   }
-  return identities.some((identity) =>
-    rawPdfs.some(
-      (paper) =>
-        (!identity.contextItemId ||
-          paper.contextItemId === identity.contextItemId) &&
-        (!identity.itemId || paper.itemId === identity.itemId),
+  if (!identities.length) {
+    // A global or implicit retrieval can traverse any paper in scope. Once a
+    // current turn contains a raw PDF, fail closed unless the tool names an
+    // exact non-PDF paper identity.
+    return true;
+  }
+  const explicitTextContexts = [
+    ...(normalizePaperContexts(params.scope?.selectedPaperContexts) || []),
+    ...(normalizePaperContexts(params.scope?.fullTextPaperContexts) || []),
+    ...(normalizePaperContexts(params.scope?.pinnedPaperContexts) || []),
+  ].filter((paper) => paper.contentSourceMode !== "pdf");
+  const explicitTextKeys = new Set(
+    explicitTextContexts.map(
+      (paper) => `${paper.itemId}:${paper.contextItemId}`,
     ),
   );
+  const explicitTextItemIds = new Set(
+    explicitTextContexts.map((paper) => paper.itemId),
+  );
+  return identities.some((identity) => {
+    const itemId = normalizePositiveInt(identity.itemId);
+    const contextItemId = normalizePositiveInt(identity.contextItemId);
+    if (!itemId && !contextItemId) return true;
+
+    const suppliedValues = [itemId, contextItemId].filter(
+      (value): value is number => Boolean(value),
+    );
+    if (suppliedValues.some((value) => rawContextItemIds.has(value))) {
+      return true;
+    }
+
+    if (
+      itemId &&
+      contextItemId &&
+      !isLibraryAttachmentEnumeration &&
+      explicitTextKeys.has(`${itemId}:${contextItemId}`)
+    ) {
+      return false;
+    }
+
+    if (
+      suppliedValues.some((value) => rawParentItemIds.has(value)) ||
+      identityUsesAttachmentUnderRawParent(identity, rawParentItemIds)
+    ) {
+      // A parent-only target includes the raw attachment, while an unselected
+      // sibling under the same parent is not independently authorized as
+      // Text/MinerU context.
+      return true;
+    }
+
+    if (itemId && !contextItemId && explicitTextItemIds.has(itemId)) {
+      return false;
+    }
+
+    // Content retrieval in a direct-PDF turn is allowed only for an exact
+    // current-turn Text/MinerU identity. Any other target could silently
+    // substitute unrelated or previously selected paper text.
+    return true;
+  });
+}
+
+function getRawPdfNativeFilesystemViolation(params: {
+  toolName: string;
+  scope: ZoteroMcpActiveScope | null;
+}): string | null {
+  if (!hasRawPdfScope(params.scope)) return null;
+  if (RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES.has(params.toolName)) {
+    return `${params.toolName} is unavailable while this turn contains a direct-path PDF. Read only the exact current-turn local PDF path with Codex's native shell capability.`;
+  }
+  if (RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES.has(params.toolName)) {
+    return `${params.toolName} is unavailable for direct-path PDF identities. Read only the exact current-turn local PDF path with Codex's native shell capability.`;
+  }
+  return null;
 }
 
 function rememberMcpReadResult(
@@ -849,10 +1005,26 @@ function getMcpToolAnnotations(
     : WRITE_TOOL_ANNOTATIONS;
 }
 
-function handleToolsList(toolRegistry: AgentToolRegistry): McpToolsListResult {
+function hasRawPdfScope(scope: ZoteroMcpActiveScope | null): boolean {
+  return Boolean(normalizePaperContexts(scope?.pdfPaperContexts)?.length);
+}
+
+function isMcpToolVisibleInScope(
+  tool: ToolSpec,
+  scope: ZoteroMcpActiveScope | null,
+): boolean {
+  if (!isMcpExposedTool(tool)) return false;
+  if (!hasRawPdfScope(scope)) return true;
+  return getZoteroMcpDirectPdfToolNames().includes(tool.name);
+}
+
+function handleToolsList(
+  toolRegistry: AgentToolRegistry,
+  scope: ZoteroMcpActiveScope | null,
+): McpToolsListResult {
   const tools: McpToolDefinition[] = toolRegistry
     .listTools()
-    .filter(isMcpExposedTool)
+    .filter((tool) => isMcpToolVisibleInScope(tool, scope))
     .map(({ name, description, inputSchema, mutability }) => ({
       name,
       title: formatToolTitle(name),
@@ -1012,28 +1184,21 @@ function resolveScopedMcpScope(
   headers: Record<string, string> | undefined,
 ): ZoteroMcpActiveScope | null {
   const token = getHeader(headers, ZOTERO_MCP_SCOPE_HEADER).trim();
-  if (!token) return activeZoteroMcpScope;
+  if (!token) {
+    if (hasRawPdfScope(activeZoteroMcpScope)) {
+      throw new Error(
+        "Raw PDF MCP access requires the exact current-turn scope token.",
+      );
+    }
+    return activeZoteroMcpScope;
+  }
   pruneExpiredScopedMcpScopes();
   const entry = scopedZoteroMcpScopes.get(token);
   if (entry) {
-    if (
-      activeZoteroMcpScope &&
-      scopesMatchCurrentProfile(entry.scope, activeZoteroMcpScope)
-    ) {
-      return activeZoteroMcpScope;
-    }
+    // A valid token identifies one immutable request scope. The process-wide
+    // active scope may belong to an overlapping turn from the same profile and
+    // must never replace it.
     return entry.scope;
-  }
-  if (activeZoteroMcpScope) {
-    logZoteroMcp(
-      "Zotero MCP scope token was stale; using active Codex turn scope",
-      {
-        conversationKey: activeZoteroMcpScope.conversationKey,
-        profileSignature: activeZoteroMcpScope.profileSignature,
-        libraryID: activeZoteroMcpScope.libraryID,
-      },
-    );
-    return activeZoteroMcpScope;
   }
   throw new Error(
     "Zotero MCP scope token is invalid or expired. Start a new Codex turn from Zotero so tools bind to the current profile and library.",
@@ -1120,20 +1285,6 @@ function scopesMatchForConfirmation(
     return false;
   }
   return Boolean(handlerScope.profileSignature || handlerScope.conversationKey);
-}
-
-function scopesMatchCurrentProfile(
-  tokenScope: ZoteroMcpActiveScope,
-  currentScope: ZoteroMcpActiveScope,
-): boolean {
-  if (
-    tokenScope.profileSignature &&
-    currentScope.profileSignature &&
-    tokenScope.profileSignature !== currentScope.profileSignature
-  ) {
-    return false;
-  }
-  return true;
 }
 
 function findZoteroMcpConfirmationHandler(
@@ -1408,11 +1559,32 @@ async function handleToolsCall(
     };
   }
 
+  const scope = resolveScopedMcpScope(headers);
+  const nativeFilesystemViolation = getRawPdfNativeFilesystemViolation({
+    toolName: name,
+    scope,
+  });
+  if (nativeFilesystemViolation) {
+    completeActivity({ ok: false, error: nativeFilesystemViolation });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ok: false,
+            error: nativeFilesystemViolation,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
   if (
     shouldBlockRawPdfRetrieval({
       toolName: name,
       rawArgs,
-      scope: resolveScopedMcpScope(headers),
+      scope,
     })
   ) {
     const error =
@@ -1544,7 +1716,10 @@ async function handleRequest(
     }
 
     if (method === MCP_METHODS.TOOLS_LIST) {
-      const result = handleToolsList(deps.toolRegistry);
+      const result = handleToolsList(
+        deps.toolRegistry,
+        resolveScopedMcpScope(headers),
+      );
       return makeJsonRpcHttpResponse(makeResult(id ?? null, result));
     }
 

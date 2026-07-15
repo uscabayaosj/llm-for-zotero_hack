@@ -673,9 +673,6 @@ export const conversationRepository = {
     if (!catalogEntryMatchesScope(sourceEntry, params)) return null;
     const sourceProviderSessionId =
       normalizeTitle(sourceEntry.providerSessionId) || "";
-    if (params.system === "codex" && !sourceProviderSessionId) {
-      return null;
-    }
 
     let forkedCodexThreadId: string | null = null;
     if (params.system === "codex") {
@@ -684,10 +681,12 @@ export const conversationRepository = {
       if (latestCodexForkableAssistantTimestamp !== throughAssistantTimestamp) {
         return null;
       }
-      forkedCodexThreadId = await codexAppServerForkService.forkThread({
-        threadId: sourceProviderSessionId,
-      });
-      if (!forkedCodexThreadId) return null;
+      if (sourceProviderSessionId) {
+        forkedCodexThreadId = await codexAppServerForkService.forkThread({
+          threadId: sourceProviderSessionId,
+        });
+        if (!forkedCodexThreadId) return null;
+      }
     }
 
     const entry = await conversationRepository.createCatalogEntry({

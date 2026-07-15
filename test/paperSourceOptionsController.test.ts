@@ -5,6 +5,7 @@ import {
   canRevealMineruCacheForSourceOption,
   filterPaperSourceOptionsForWebChat,
   resolvePaperPdfSupportForConversation,
+  shouldDowngradePdfSourceForConversation,
   resolveMineruSourceOptionState,
 } from "../src/modules/contextPanel/setupHandlers/controllers/paperSourceOptionsController";
 import { getContextSourceModeDescriptor } from "../src/modules/contextPanel/contextSourceModes";
@@ -98,6 +99,30 @@ describe("paper source MinerU option state", function () {
     );
   });
 
+  it("retains purple PDF sources across Claude/Codex model switches only", function () {
+    assert.isFalse(
+      shouldDowngradePdfSourceForConversation({
+        basePdfSupport: "none",
+        isClaudeCode: true,
+        isCodex: false,
+      }),
+    );
+    assert.isFalse(
+      shouldDowngradePdfSourceForConversation({
+        basePdfSupport: "none",
+        isClaudeCode: false,
+        isCodex: true,
+      }),
+    );
+    assert.isTrue(
+      shouldDowngradePdfSourceForConversation({
+        basePdfSupport: "none",
+        isClaudeCode: false,
+        isCodex: false,
+      }),
+    );
+  });
+
   it("enables the PDF source for local-path agent runtimes", function () {
     const parent = makeParentItem({ id: 10, attachmentIds: [20] });
     const attachment = makeAttachment({
@@ -120,6 +145,46 @@ describe("paper source MinerU option state", function () {
     const pdf = options.find((option) => option.mode === "pdf");
     assert.isDefined(pdf);
     assert.isUndefined(pdf?.disabledReason);
+  });
+
+  it("offers Text and raw PDF sources for a standalone PDF attachment", function () {
+    const attachment = makeAttachment({
+      id: 30,
+      parentID: 0,
+      filename: "standalone.pdf",
+      contentType: "application/pdf",
+      title: "Standalone PDF",
+    });
+
+    const options = buildOptionsForItems({
+      paperContext: {
+        itemId: 30,
+        contextItemId: 30,
+        title: "Standalone PDF",
+      },
+      items: [attachment],
+      pdfSupport: "local_path",
+    });
+
+    assert.deepEqual(
+      options.map((option) => option.mode),
+      ["mineru", "text", "pdf"],
+    );
+    assert.deepEqual(
+      options.map((option) => [
+        option.paperContext.itemId,
+        option.paperContext.contextItemId,
+      ]),
+      [
+        [30, 30],
+        [30, 30],
+        [30, 30],
+      ],
+    );
+    assert.isUndefined(
+      options.find((option) => option.mode === "pdf")?.disabledReason,
+    );
+    assert.isDefined(options.find((option) => option.mode === "text"));
   });
 
   it("describes source modes with one shared descriptor", function () {

@@ -227,13 +227,19 @@ async function executeScript(params: {
     ).constructor;
     const fn = new AsyncFunction("Zotero", "env", params.script);
 
-    const timeoutPromise = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), params.timeoutMs),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timeoutHandle = setTimeout(() => resolve("timeout"), params.timeoutMs);
+    });
 
     const resultPromise = fn(Zotero, env);
 
-    const raceResult = await Promise.race([resultPromise, timeoutPromise]);
+    let raceResult: unknown | "timeout";
+    try {
+      raceResult = await Promise.race([resultPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
     if (raceResult === "timeout") {
       return {
         output: logBuffer.join("\n") + "\n[Script timed out]",

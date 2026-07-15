@@ -19,6 +19,7 @@ import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildClaudeZoteroMcpServerConfig,
   preflightCodexZoteroMcpServer,
+  REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES,
   REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
 } from "../codexAppServer/mcpSetup";
 import { dbg, dbgError } from "../utils/debugLogger";
@@ -65,7 +66,13 @@ import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,
 } from "./context/turnContextEnvelope";
+import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
+import {
+  AgentEventLocalDocumentStreamRedactor,
+  acquireLocalDocumentPathLease,
+  LocalDocumentPathStreamRedactor,
+} from "./privacy/localDocumentPathRedaction";
 
 export type RunTurnParams = {
   request: AgentRuntimeRequest;
@@ -2629,281 +2636,344 @@ export function createExternalBackendBridgeRuntime(options: {
       return result;
     },
     runTurn: async (params: RunTurnParams): Promise<AgentRuntimeOutcome> => {
-      const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
-      if (!bridgeUrl) {
-        throw new Error(
-          "Claude bridge URL is empty. Set Bridge URL to http://127.0.0.1:19787.",
+      validateLocalPdfDocumentBatch({
+        pdfPaperContexts: params.request.pdfPaperContexts,
+        localDocuments: params.request.localDocuments,
+      });
+      const pathLease = acquireLocalDocumentPathLease(
+        params.request.conversationKey,
+        params.request.localDocuments,
+      );
+      try {
+        const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
+        if (!bridgeUrl) {
+          throw new Error(
+            "Claude bridge URL is empty. Set Bridge URL to http://127.0.0.1:19787.",
+          );
+        }
+        if (params.request.localDocuments?.length) {
+          await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
+        }
+        let persistedRunId = "";
+        let persistedRunCreated = false;
+        let persistedSeq = 0;
+        const pendingEventsBeforeRunId: AgentEvent[] = [];
+        const eventStreamRedactor = new AgentEventLocalDocumentStreamRedactor(
+          params.request.conversationKey,
         );
-      }
-      if (params.request.localDocuments?.length) {
-        await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
-      }
-      let persistedRunId = "";
-      let persistedRunCreated = false;
-      let persistedSeq = 0;
-      const pendingEventsBeforeRunId: AgentEvent[] = [];
-      const ensurePersistedRun = async (runId: string): Promise<void> => {
-        const normalized = (runId || "").trim();
-        if (!normalized) return;
-        if (!persistedRunCreated || persistedRunId !== normalized) {
-          persistedRunId = normalized;
-          persistedSeq = 0;
-          await createAgentRun({
-            runId: persistedRunId,
-            conversationKey: params.request.conversationKey,
-            mode: "agent",
-            model: params.request.model,
-            status: "running",
-            createdAt: Date.now(),
-          });
-          persistedRunCreated = true;
-          if (pendingEventsBeforeRunId.length) {
-            for (const event of pendingEventsBeforeRunId.splice(0)) {
-              persistedSeq += 1;
-              await appendAgentRunEvent(persistedRunId, persistedSeq, event);
+        const turnPathRedactor = new LocalDocumentPathStreamRedactor(
+          params.request.conversationKey,
+        );
+        const ensurePersistedRun = async (runId: string): Promise<void> => {
+          const normalized = (runId || "").trim();
+          if (!normalized) return;
+          if (!persistedRunCreated || persistedRunId !== normalized) {
+            persistedRunId = normalized;
+            persistedSeq = 0;
+            await createAgentRun({
+              runId: persistedRunId,
+              conversationKey: params.request.conversationKey,
+              mode: "agent",
+              model: params.request.model,
+              status: "running",
+              createdAt: Date.now(),
+            });
+            persistedRunCreated = true;
+            if (pendingEventsBeforeRunId.length) {
+              for (const event of pendingEventsBeforeRunId.splice(0)) {
+                persistedSeq += 1;
+                await appendAgentRunEvent(persistedRunId, persistedSeq, event);
+              }
             }
           }
-        }
-      };
-      const appendPersistedEvent = async (event: AgentEvent): Promise<void> => {
-        if (!persistedRunCreated || !persistedRunId) {
-          pendingEventsBeforeRunId.push(event);
-          return;
-        }
-        persistedSeq += 1;
-        await appendAgentRunEvent(persistedRunId, persistedSeq, event);
-      };
-      await appendPersistedEvent(makeProfilingEvent("frontend.run_turn.enter"));
-      await params.onEvent?.(makeProfilingEvent("frontend.run_turn.enter"));
-      const contextEnvelope = buildContextEnvelope(params.request);
-      await appendPersistedEvent(
-        makeProfilingEvent("frontend.context_envelope.ready"),
-      );
-      await params.onEvent?.(
-        makeProfilingEvent("frontend.context_envelope.ready"),
-      );
-      const runtimeRequest = await buildBridgeRuntimeRequest(params.request);
-      await appendPersistedEvent(
-        makeProfilingEvent("frontend.bridge_runtime_request.ready"),
-      );
-      await params.onEvent?.(
-        makeProfilingEvent("frontend.bridge_runtime_request.ready"),
-      );
-      const scope = resolveBridgeScope(params.request);
-      rememberLastRunBridgeContext(params.request.conversationKey, scope);
-      if (isBridgeDebugEnabled()) {
-        dbg("run-turn scope snapshot", {
-          conversationKey: params.request.conversationKey,
-          scopeType: scope.scopeType,
-          scopeId: scope.scopeId,
-          scopeLabel: scope.scopeLabel,
-          scopedConversationKey: buildScopedConversationKey(
-            params.request.conversationKey,
-            scope,
-          ),
-        });
-      }
-      conversationScopeByKey.set(params.request.conversationKey, scope);
-      const currentSignature = signatureForContextEnvelope(contextEnvelope);
-      conversationContextSignature.set(
-        params.request.conversationKey,
-        currentSignature,
-      );
-      const emitTurnEvent = async (event: AgentEvent): Promise<void> => {
-        await appendPersistedEvent(event);
-        await params.onEvent?.(event);
-      };
-      let mcpServers: ClaudeMcpServersConfig | undefined;
-      let allowedTools: string[] | undefined;
-      let clearScopedMcpScope: () => void = () => undefined;
-      let clearActiveMcpScope: () => void = () => undefined;
-      let clearMcpConfirmationHandler: () => void = () => undefined;
-      let unregisterMcpToolActivity: () => void = () => undefined;
-      try {
-        if (isNativeZoteroMcpToolsEnabled()) {
-          const profileSignature = getClaudeProfileSignature();
-          const mcpScope = buildClaudeZoteroMcpScope(
-            params.request,
-            profileSignature,
+        };
+        const appendPersistedEvent = async (
+          event: AgentEvent,
+        ): Promise<void> => {
+          const redactedEvent = turnPathRedactor.redactTerminalValue(event);
+          if (!persistedRunCreated || !persistedRunId) {
+            pendingEventsBeforeRunId.push(redactedEvent);
+            return;
+          }
+          persistedSeq += 1;
+          await appendAgentRunEvent(
+            persistedRunId,
+            persistedSeq,
+            redactedEvent,
           );
-          const scopedMcp = registerScopedZoteroMcpScope(mcpScope);
-          clearScopedMcpScope = scopedMcp.clear;
-          clearActiveMcpScope = setActiveZoteroMcpScope(mcpScope);
-          clearMcpConfirmationHandler = addZoteroMcpConfirmationHandler(
-            mcpScope,
-            async ({ requestId, action }) => {
-              const resolution = new Promise<AgentConfirmationResolution>(
-                (resolve) => {
-                  coreRuntime.registerPendingConfirmation(requestId, resolve);
-                },
-              );
-              await emitTurnEvent({
-                type: "confirmation_required",
-                requestId,
-                action,
-              });
-              const settled = await resolution;
-              await emitTurnEvent({
-                type: "confirmation_resolved",
-                requestId,
-                approved: settled.approved,
-                actionId: settled.actionId,
-                data: settled.data,
-              });
-              return settled;
-            },
-          );
-          unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
-            (event) => {
-              const sameConversation =
-                !event.conversationKey ||
-                event.conversationKey === params.request.conversationKey;
-              const sameProfile =
-                !event.profileSignature ||
-                !profileSignature ||
-                event.profileSignature === profileSignature;
-              if (!sameConversation || !sameProfile) return;
-              void emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
-            },
-          );
-          const mcpConfig = buildClaudeZoteroMcpServerConfig({
-            profileSignature,
-            scopeToken: scopedMcp.token,
-            required: true,
+        };
+        await appendPersistedEvent(
+          makeProfilingEvent("frontend.run_turn.enter"),
+        );
+        await params.onEvent?.(makeProfilingEvent("frontend.run_turn.enter"));
+        const contextEnvelope = buildContextEnvelope(params.request);
+        await appendPersistedEvent(
+          makeProfilingEvent("frontend.context_envelope.ready"),
+        );
+        await params.onEvent?.(
+          makeProfilingEvent("frontend.context_envelope.ready"),
+        );
+        const runtimeRequest = await buildBridgeRuntimeRequest(params.request);
+        await appendPersistedEvent(
+          makeProfilingEvent("frontend.bridge_runtime_request.ready"),
+        );
+        await params.onEvent?.(
+          makeProfilingEvent("frontend.bridge_runtime_request.ready"),
+        );
+        const scope = resolveBridgeScope(params.request);
+        rememberLastRunBridgeContext(params.request.conversationKey, scope);
+        if (isBridgeDebugEnabled()) {
+          dbg("run-turn scope snapshot", {
+            conversationKey: params.request.conversationKey,
+            scopeType: scope.scopeType,
+            scopeId: scope.scopeId,
+            scopeLabel: scope.scopeLabel,
+            scopedConversationKey: buildScopedConversationKey(
+              params.request.conversationKey,
+              scope,
+            ),
           });
-          const mcpStatus = await preflightCodexZoteroMcpServer({
-            serverName: mcpConfig.serverName,
-            scopeToken: scopedMcp.token,
-            required: true,
-          });
-          assertRequiredCodexZoteroMcpToolsReady(
-            mcpStatus,
-            REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
-          );
-          mcpServers = mcpConfig.mcpServers;
-          allowedTools = mcpConfig.allowedTools;
-          await emitTurnEvent(
-            makeProfilingEvent("frontend.zotero_mcp.ready", {
-              serverName: mcpConfig.serverName,
-              toolNames: mcpStatus.toolNames,
-            }),
-          );
         }
-        const outcome = await runExternalBridgeTurn(bridgeUrl, {
-          ...params,
-          onStart: async (runId) => {
-            await ensurePersistedRun(runId);
-            await params.onStart?.(runId);
-          },
-          onEvent: emitTurnEvent,
-          contextEnvelope,
-          runtimeRequest,
-          allowedTools,
-          mcpServers,
-          scope,
-          registerPendingConfirmation: (requestId, resolve) =>
-            coreRuntime.registerPendingConfirmation(requestId, resolve),
-          resolveExternalConfirmation: async (requestId, resolution) => {
-            const response = await fetch(
-              `${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+        conversationScopeByKey.set(params.request.conversationKey, scope);
+        const currentSignature = signatureForContextEnvelope(contextEnvelope);
+        conversationContextSignature.set(
+          params.request.conversationKey,
+          currentSignature,
+        );
+        const emitTurnEvent = async (event: AgentEvent): Promise<void> => {
+          for (const redactedEvent of eventStreamRedactor.process(event)) {
+            await appendPersistedEvent(redactedEvent);
+            await params.onEvent?.(redactedEvent);
+          }
+        };
+        let mcpServers: ClaudeMcpServersConfig | undefined;
+        let allowedTools: string[] | undefined;
+        let clearScopedMcpScope: () => void = () => undefined;
+        let clearActiveMcpScope: () => void = () => undefined;
+        let clearMcpConfirmationHandler: () => void = () => undefined;
+        let unregisterMcpToolActivity: () => void = () => undefined;
+        try {
+          if (isNativeZoteroMcpToolsEnabled()) {
+            const rawPdfMode = Boolean(params.request.localDocuments?.length);
+            const profileSignature = getClaudeProfileSignature();
+            const mcpScope = buildClaudeZoteroMcpScope(
+              params.request,
+              profileSignature,
+            );
+            const scopedMcp = registerScopedZoteroMcpScope(mcpScope);
+            clearScopedMcpScope = scopedMcp.clear;
+            clearActiveMcpScope = setActiveZoteroMcpScope(mcpScope);
+            clearMcpConfirmationHandler = addZoteroMcpConfirmationHandler(
+              mcpScope,
+              async ({ requestId, action }) => {
+                const resolution = new Promise<AgentConfirmationResolution>(
+                  (resolve) => {
+                    coreRuntime.registerPendingConfirmation(requestId, resolve);
+                  },
+                );
+                await emitTurnEvent({
+                  type: "confirmation_required",
                   requestId,
-                  approved: Boolean(resolution.approved),
-                  actionId: resolution.actionId,
-                  data: resolution.data,
-                }),
+                  action,
+                });
+                const settled = await resolution;
+                await emitTurnEvent({
+                  type: "confirmation_resolved",
+                  requestId,
+                  approved: settled.approved,
+                  actionId: settled.actionId,
+                  data: settled.data,
+                });
+                return settled;
               },
             );
-            const payload = (await response.json().catch(() => ({}))) as Record<
-              string,
-              unknown
-            >;
-            const accepted = Boolean(payload.ok);
-            return {
-              ok: response.ok && accepted,
-              requestId,
-              httpStatus: response.status,
-              accepted,
-              source:
-                typeof payload.source === "string" ? payload.source : undefined,
-              pendingPermissionCount:
-                typeof payload.pendingPermissionCount === "number"
-                  ? payload.pendingPermissionCount
+            unregisterMcpToolActivity = addZoteroMcpToolActivityObserver(
+              (event) => {
+                const sameConversation =
+                  !event.conversationKey ||
+                  event.conversationKey === params.request.conversationKey;
+                const sameProfile =
+                  !event.profileSignature ||
+                  !profileSignature ||
+                  event.profileSignature === profileSignature;
+                if (!sameConversation || !sameProfile) return;
+                void emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
+              },
+            );
+            const mcpConfig = buildClaudeZoteroMcpServerConfig({
+              profileSignature,
+              scopeToken: scopedMcp.token,
+              required: true,
+              rawPdfMode,
+            });
+            const mcpStatus = await preflightCodexZoteroMcpServer({
+              serverName: mcpConfig.serverName,
+              scopeToken: scopedMcp.token,
+              required: true,
+              rawPdfMode,
+            });
+            assertRequiredCodexZoteroMcpToolsReady(
+              mcpStatus,
+              rawPdfMode
+                ? REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES
+                : REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
+            );
+            mcpServers = mcpConfig.mcpServers;
+            allowedTools = mcpConfig.allowedTools;
+            await emitTurnEvent(
+              makeProfilingEvent("frontend.zotero_mcp.ready", {
+                serverName: mcpConfig.serverName,
+                toolNames: mcpStatus.toolNames,
+              }),
+            );
+          }
+          const outcome = await runExternalBridgeTurn(bridgeUrl, {
+            ...params,
+            onStart: async (runId) => {
+              await ensurePersistedRun(runId);
+              await params.onStart?.(runId);
+            },
+            onEvent: emitTurnEvent,
+            contextEnvelope,
+            runtimeRequest,
+            allowedTools,
+            mcpServers,
+            scope,
+            registerPendingConfirmation: (requestId, resolve) =>
+              coreRuntime.registerPendingConfirmation(requestId, resolve),
+            resolveExternalConfirmation: async (requestId, resolution) => {
+              const response = await fetch(
+                `${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    requestId,
+                    approved: Boolean(resolution.approved),
+                    actionId: resolution.actionId,
+                    data: resolution.data,
+                  }),
+                },
+              );
+              const payload = (await response
+                .json()
+                .catch(() => ({}))) as Record<string, unknown>;
+              const accepted = Boolean(payload.ok);
+              return {
+                ok: response.ok && accepted,
+                requestId,
+                httpStatus: response.status,
+                accepted,
+                source:
+                  typeof payload.source === "string"
+                    ? payload.source
+                    : undefined,
+                pendingPermissionCount:
+                  typeof payload.pendingPermissionCount === "number"
+                    ? payload.pendingPermissionCount
+                    : undefined,
+                recentPendingRequestIds: Array.isArray(
+                  payload.recentPendingRequestIds,
+                )
+                  ? payload.recentPendingRequestIds
+                      .filter((x): x is string => typeof x === "string")
+                      .slice(0, 5)
                   : undefined,
-              recentPendingRequestIds: Array.isArray(
-                payload.recentPendingRequestIds,
-              )
-                ? payload.recentPendingRequestIds
-                    .filter((x): x is string => typeof x === "string")
-                    .slice(0, 5)
-                : undefined,
-              errorMessage:
-                typeof payload.error === "string"
-                  ? payload.error
-                  : !response.ok
-                    ? `resolve-confirmation failed (${response.status})`
-                    : accepted
-                      ? undefined
-                      : "backend returned ok=false",
-            };
-          },
-        });
-        const finalRunId = persistedRunId || outcome.runId;
-        if (finalRunId) {
-          await ensurePersistedRun(finalRunId);
-          await finishAgentRun(
-            finalRunId,
-            outcome.kind === "completed" ? "completed" : "failed",
-            outcome.kind === "completed" ? outcome.text : outcome.reason,
+                errorMessage:
+                  typeof payload.error === "string"
+                    ? payload.error
+                    : !response.ok
+                      ? `resolve-confirmation failed (${response.status})`
+                      : accepted
+                        ? undefined
+                        : "backend returned ok=false",
+              };
+            },
+          });
+          for (const redactedEvent of eventStreamRedactor.flush()) {
+            await appendPersistedEvent(redactedEvent);
+            await params.onEvent?.(redactedEvent);
+          }
+          const safeOutcome: AgentRuntimeOutcome =
+            outcome.kind === "completed"
+              ? {
+                  ...outcome,
+                  text: turnPathRedactor.redactTerminalText(outcome.text),
+                }
+              : {
+                  ...outcome,
+                  reason: turnPathRedactor.redactTerminalText(outcome.reason),
+                };
+          const finalRunId = persistedRunId || safeOutcome.runId;
+          if (finalRunId) {
+            await ensurePersistedRun(finalRunId);
+            await finishAgentRun(
+              finalRunId,
+              safeOutcome.kind === "completed" ? "completed" : "failed",
+              safeOutcome.kind === "completed"
+                ? safeOutcome.text
+                : safeOutcome.reason,
+            );
+          }
+          return safeOutcome;
+        } catch (error) {
+          if (persistedRunId) {
+            await finishAgentRun(
+              persistedRunId,
+              "failed",
+              turnPathRedactor.redactTerminalText(
+                error instanceof Error ? error.message : String(error),
+              ),
+            );
+          }
+          const rawErrorMessage =
+            error instanceof Error ? error.message : String(error);
+          const safeErrorMessage =
+            turnPathRedactor.redactTerminalText(rawErrorMessage);
+          const safeError =
+            error instanceof Error
+              ? new Error(safeErrorMessage)
+              : safeErrorMessage;
+          const message = turnPathRedactor.redactTerminalText(
+            formatBridgeUserError(
+              safeError,
+              bridgeUrl,
+              "External agent backend unavailable",
+            ),
           );
+          const fallbackRunId = persistedRunId || `bridge-error-${Date.now()}`;
+          if (!persistedRunCreated) {
+            await ensurePersistedRun(fallbackRunId);
+            await params.onStart?.(fallbackRunId);
+          }
+          const statusEvent: AgentEvent = {
+            type: "status",
+            text: message,
+          };
+          await appendPersistedEvent(statusEvent);
+          await params.onEvent?.(statusEvent);
+          const fallbackEvent: AgentEvent = {
+            type: "fallback",
+            reason: message,
+          };
+          await appendPersistedEvent(fallbackEvent);
+          await params.onEvent?.(fallbackEvent);
+          await finishAgentRun(fallbackRunId, "failed", message);
+          if (
+            typeof ztoolkit !== "undefined" &&
+            typeof ztoolkit.log === "function"
+          ) {
+            ztoolkit.log("LLM Agent: External bridge unavailable", message);
+          }
+          throw new Error(message);
+        } finally {
+          unregisterMcpToolActivity();
+          clearMcpConfirmationHandler();
+          clearActiveMcpScope();
+          clearScopedMcpScope();
         }
-        return outcome;
-      } catch (error) {
-        if (persistedRunId) {
-          await finishAgentRun(
-            persistedRunId,
-            "failed",
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-        const message = formatBridgeUserError(
-          error,
-          bridgeUrl,
-          "External agent backend unavailable",
-        );
-        const fallbackRunId = persistedRunId || `bridge-error-${Date.now()}`;
-        if (!persistedRunCreated) {
-          await ensurePersistedRun(fallbackRunId);
-          await params.onStart?.(fallbackRunId);
-        }
-        const statusEvent: AgentEvent = {
-          type: "status",
-          text: message,
-        };
-        await appendPersistedEvent(statusEvent);
-        await params.onEvent?.(statusEvent);
-        const fallbackEvent: AgentEvent = {
-          type: "fallback",
-          reason: message,
-        };
-        await appendPersistedEvent(fallbackEvent);
-        await params.onEvent?.(fallbackEvent);
-        await finishAgentRun(fallbackRunId, "failed", message);
-        if (
-          typeof ztoolkit !== "undefined" &&
-          typeof ztoolkit.log === "function"
-        ) {
-          ztoolkit.log("LLM Agent: External bridge unavailable", message);
-        }
-        throw new Error(message);
       } finally {
-        unregisterMcpToolActivity();
-        clearMcpConfirmationHandler();
-        clearActiveMcpScope();
-        clearScopedMcpScope();
+        pathLease.release();
       }
     },
   };

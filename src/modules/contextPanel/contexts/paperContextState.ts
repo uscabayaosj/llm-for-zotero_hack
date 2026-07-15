@@ -84,6 +84,13 @@ export function setPaperContentSourceOverride(
   paperContentSourceOverrides.set(overrideKey(itemId, paperContext), mode);
 }
 
+export function clearPaperContentSourceOverride(
+  itemId: number,
+  paperContext: PaperContextRef,
+): void {
+  paperContentSourceOverrides.delete(overrideKey(itemId, paperContext));
+}
+
 export function clearPaperContentSourceOverrides(itemId: number): void {
   const prefix = `${itemId}:`;
   for (const key of Array.from(paperContentSourceOverrides.keys())) {

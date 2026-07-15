@@ -4,6 +4,7 @@ import { clearAgentTranscript } from "../../agent/store/transcriptStore";
 import { clearPersistedAgentToolResultHandles } from "../../agent/store/toolResultHandles";
 import { clearPersistedAgentEvidence } from "../../agent/context/cacheManagement";
 import { clearPersistedAgentCoverage } from "../../agent/context/coverageLedger";
+import { clearRememberedLocalDocumentPaths } from "../../agent/privacy/localDocumentPathRedaction";
 
 export type AgentConversationCleanupDeps = {
   clearAgentToolCaches?: (conversationKey: number) => void;
@@ -14,6 +15,7 @@ export type AgentConversationCleanupDeps = {
 export async function clearAgentConversationState(
   conversationKey: number,
 ): Promise<void> {
+  clearRememberedLocalDocumentPaths(conversationKey);
   await Promise.all([
     clearAgentMemory(conversationKey),
     clearAgentTranscript(conversationKey),

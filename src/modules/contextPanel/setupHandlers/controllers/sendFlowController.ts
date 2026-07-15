@@ -186,7 +186,10 @@ type SendFlowControllerDeps = {
   retainClaudeRuntime?: (body: Element, item: Zotero.Item) => Promise<void>;
   retainPinnedImageState: (itemId: number) => void;
   retainPaperState: (itemId: number) => void;
-  consumePaperModeState: (itemId: number) => void;
+  consumePaperModeState: (
+    itemId: number,
+    options?: { webchatGreyOut?: boolean },
+  ) => void;
   retainPinnedFileState: (itemId: number) => void;
   retainPinnedTextState: (conversationKey: number) => void;
   updatePaperPreviewPreservingScroll: () => void;
@@ -208,9 +211,19 @@ type SendFlowControllerDeps = {
     item: Zotero.Item,
     paperContexts?: any[],
   ) => boolean;
+  getActiveWebChatPdfPaperContexts?: (
+    item: Zotero.Item,
+    paperContexts?: PaperContextRef[],
+  ) => PaperContextRef[];
   hasUploadedPdfInCurrentWebChatConversation?: () => boolean;
-  markWebChatPdfUploadedForCurrentConversation?: () => void;
+  getUploadedWebChatPdfSourceKeys?: () => readonly string[];
+  isWebChatPdfUploadStateUnknown?: () => boolean;
+  markWebChatPdfUploadStateUnknown?: () => void;
+  markWebChatPdfUploadedForCurrentConversation?: (
+    paperContexts: readonly PaperContextRef[],
+  ) => void;
   consumeWebChatForceNewChatIntent?: () => boolean;
+  markWebChatForceNewChatIntent?: () => void;
 };
 
 export function createSendFlowController(deps: SendFlowControllerDeps): {
@@ -287,6 +300,61 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       // Resolve PDFs based on model capability. The visible chip/attachment state
       // stays unchanged; these variables are the provider-specific model inputs.
       const isWebChat = earlyProfile?.authMode === "webchat";
+      const activeWebChatPdfPaperContexts = isWebChat
+        ? (deps.getActiveWebChatPdfPaperContexts?.(
+            item,
+            allSelectedPaperContexts,
+          ) ??
+          (deps.hasActivePdfFullTextPapers?.(item, allSelectedPaperContexts)
+            ? pdfModePaperContexts
+            : []))
+        : [];
+      const activeWebChatPdfSourceKeys = activeWebChatPdfPaperContexts.map(
+        (paperContext) =>
+          `zotero-pdf:${paperContext.itemId}:${paperContext.contextItemId}`,
+      );
+      const uploadedWebChatPdfSourceKeys = isWebChat
+        ? deps.getUploadedWebChatPdfSourceKeys?.() || []
+        : [];
+      const isWebChatPdfUploadStateUnknown = isWebChat
+        ? (deps.isWebChatPdfUploadStateUnknown?.() ?? false)
+        : false;
+      const uploadedWebChatPdfMatches =
+        uploadedWebChatPdfSourceKeys.length ===
+          activeWebChatPdfSourceKeys.length &&
+        uploadedWebChatPdfSourceKeys.every(
+          (sourceKey, index) => sourceKey === activeWebChatPdfSourceKeys[index],
+        );
+      if (isWebChat && activeWebChatPdfPaperContexts.length > 1) {
+        deps.setStatusMessage?.(
+          "Web chat supports one PDF attachment at a time. Keep one PDF active or start separate chats.",
+          "error",
+        );
+        return;
+      }
+      if (
+        isWebChat &&
+        activeWebChatPdfPaperContexts.length > 0 &&
+        isWebChatPdfUploadStateUnknown
+      ) {
+        deps.setStatusMessage?.(
+          "This web chat may already contain a different PDF. Start a new web chat before attaching the selected PDF.",
+          "error",
+        );
+        return;
+      }
+      if (
+        isWebChat &&
+        activeWebChatPdfPaperContexts.length > 0 &&
+        uploadedWebChatPdfSourceKeys.length > 0 &&
+        !uploadedWebChatPdfMatches
+      ) {
+        deps.setStatusMessage?.(
+          "The selected PDF differs from the PDF already attached to this web chat. Start a new web chat before sending.",
+          "error",
+        );
+        return;
+      }
       const runtimeMode: ChatRuntimeMode = usesPluginAgentMode
         ? "agent"
         : "chat";
@@ -412,20 +480,18 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         selectedCollectionContexts.length > 0 ||
         selectedTagContexts.length > 0;
 
-      const promptText = deps.resolvePromptText(
-        text,
-        primarySelectedText,
-        hasNonImageAttachments,
-      );
-      let resolvedPromptText = promptText;
+      let resolvedPromptText =
+        !text && !primarySelectedText && localDocuments.length
+          ? localDocuments.length === 1
+            ? "Please analyze the selected raw PDF."
+            : "Please analyze the selected raw PDFs."
+          : deps.resolvePromptText(
+              text,
+              primarySelectedText,
+              hasNonImageAttachments,
+            );
       if (!resolvedPromptText && hasImageInputs) {
         resolvedPromptText = "Please analyze the attached images.";
-      }
-      if (!resolvedPromptText && localDocuments.length) {
-        resolvedPromptText =
-          localDocuments.length === 1
-            ? "Please analyze the selected raw PDF."
-            : "Please analyze the selected raw PDFs.";
       }
       if (!resolvedPromptText) return;
 
@@ -618,7 +684,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         }
         deps.retainPinnedImageState(item.id);
         if (hasPaperComposeState) {
-          deps.consumePaperModeState(item.id);
+          deps.consumePaperModeState(item.id, {
+            webchatGreyOut: isWebChat,
+          });
           deps.retainPaperState(item.id);
           deps.updatePaperPreviewPreservingScroll();
         }
@@ -658,11 +726,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const webchatForceNewChat = isWebChat
         ? (deps.consumeWebChatForceNewChatIntent?.() ?? false)
         : false;
+      const hasUploadedMatchingWebChatPdf =
+        uploadedWebChatPdfSourceKeys.length > 0
+          ? uploadedWebChatPdfMatches
+          : (deps.hasUploadedPdfInCurrentWebChatConversation?.() ?? false);
       const webchatSendPdf = isWebChat
-        ? (deps.hasActivePdfFullTextPapers?.(item, allSelectedPaperContexts) ??
-            false) &&
-          (webchatForceNewChat ||
-            !(deps.hasUploadedPdfInCurrentWebChatConversation?.() ?? false))
+        ? activeWebChatPdfPaperContexts.length > 0 &&
+          (webchatForceNewChat || !hasUploadedMatchingWebChatPdf)
         : false;
 
       const consumedForcedSkillIds = deps.consumeForcedSkillIds?.() || [];
@@ -686,6 +756,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         scope: activeNoteScope,
         snapshot: readNoteSnapshot(item),
       }).activeNoteContext;
+      let webchatSendOutcome: "success" | "failed" | "cancelled" | null = null;
       const sendTask = deps.sendQuestion({
         body: deps.body,
         item,
@@ -735,9 +806,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           ? pdfUploadSystemMessages
           : undefined,
         webchatSendPdf,
+        webchatPdfPaperContexts: activeWebChatPdfPaperContexts,
         webchatForceNewChat,
+        onWebChatSendOutcome: (outcome) => {
+          webchatSendOutcome = outcome;
+        },
       });
-      if (hasPaperComposeState) {
+      if (hasPaperComposeState && !isWebChat) {
         deps.consumePaperModeState(item.id);
         deps.retainPaperState(item.id);
         deps.updatePaperPreviewPreservingScroll();
@@ -748,9 +823,34 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           deps.refreshGlobalHistoryHeader();
         }, 120);
       }
-      await sendTask;
-      if (isWebChat && webchatSendPdf) {
-        deps.markWebChatPdfUploadedForCurrentConversation?.();
+      try {
+        await sendTask;
+      } catch (err) {
+        if (isWebChat && webchatSendPdf) {
+          deps.markWebChatPdfUploadStateUnknown?.();
+        }
+        if (isWebChat && webchatForceNewChat) {
+          deps.markWebChatForceNewChatIntent?.();
+        }
+        throw err;
+      }
+      if (isWebChat) {
+        const webchatSendSucceeded = webchatSendOutcome === "success";
+        if (webchatSendSucceeded && hasPaperComposeState) {
+          deps.consumePaperModeState(item.id, { webchatGreyOut: true });
+          deps.retainPaperState(item.id);
+          deps.updatePaperPreviewPreservingScroll();
+        }
+        if (webchatSendPdf && webchatSendSucceeded) {
+          deps.markWebChatPdfUploadedForCurrentConversation?.(
+            activeWebChatPdfPaperContexts,
+          );
+        } else if (webchatSendPdf) {
+          deps.markWebChatPdfUploadStateUnknown?.();
+        }
+        if (!webchatSendSucceeded && webchatForceNewChat) {
+          deps.markWebChatForceNewChatIntent?.();
+        }
       }
       deps.refreshGlobalHistoryHeader();
     } finally {

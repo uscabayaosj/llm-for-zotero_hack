@@ -1,6 +1,7 @@
 import {
   buildZoteroMcpConfigValue,
   getZoteroMcpAllowedToolNames,
+  getZoteroMcpDirectPdfToolNames,
   getZoteroMcpServerName,
   getZoteroMcpServerUrl,
   invokeRegisteredZoteroMcpEndpoint,
@@ -28,6 +29,9 @@ export const REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES = [
   "library_retrieve",
   "paper_read",
 ] as const;
+export const REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES = [
+  "library_search",
+] as const;
 
 export type CodexNativeMcpSetupStatus = {
   enabled: boolean;
@@ -51,6 +55,7 @@ type SetupParams = {
   serverUrl?: string;
   scopeToken?: string;
   required?: boolean;
+  rawPdfMode?: boolean;
 };
 
 type PreflightCacheEntry =
@@ -242,10 +247,12 @@ export function buildCodexZoteroMcpPreflightCacheKey(params: {
   serverName: string;
   serverUrl: string;
   configValue: Record<string, unknown>;
+  rawPdfMode?: boolean;
 }): string {
   return JSON.stringify({
     serverName: params.serverName,
     serverUrl: params.serverUrl,
+    rawPdfMode: Boolean(params.rawPdfMode),
     config: buildPreflightConfigSignature(params.configValue),
   });
 }
@@ -344,15 +351,18 @@ export async function preflightCodexZoteroMcpServer(
     serverName?: string;
     scopeToken?: string;
     required?: boolean;
+    rawPdfMode?: boolean;
   } = {},
 ): Promise<CodexNativeMcpSetupStatus> {
   const serverName = params.serverName || ZOTERO_MCP_SERVER_NAME;
   const cacheConfigValue = buildZoteroMcpConfigValue({
     required: params.required,
+    rawPdfMode: params.rawPdfMode,
   });
   const configValue = buildZoteroMcpConfigValue({
     scopeToken: params.scopeToken,
     required: params.required,
+    rawPdfMode: params.rawPdfMode,
   });
   const serverUrl =
     typeof configValue.url === "string" && configValue.url.trim()
@@ -363,6 +373,7 @@ export async function preflightCodexZoteroMcpServer(
     serverName,
     serverUrl,
     configValue: cacheConfigValue,
+    rawPdfMode: params.rawPdfMode,
   });
   const now = Date.now();
   const cached = preflightCache.get(cacheKey);
@@ -413,15 +424,25 @@ export async function preflightCodexZoteroMcpServer(
         params: {},
       },
     });
+    const allToolNames = collectToolNames(toolsResult);
+    const allowedToolNames = params.rawPdfMode
+      ? getZoteroMcpDirectPdfToolNames()
+      : getZoteroMcpAllowedToolNames();
+    const unexpectedToolNames = allToolNames.filter(
+      (name) => !allowedToolNames.includes(name),
+    );
+    if (unexpectedToolNames.length) {
+      throw new Error(
+        `Zotero MCP exposed unexpected tools: ${unexpectedToolNames.join(", ")}`,
+      );
+    }
     const status: CodexNativeMcpSetupStatus = {
       enabled: true,
       serverName,
       serverUrl,
       configured: true,
       connected: true,
-      toolNames: collectToolNames(toolsResult).filter((name) =>
-        getZoteroMcpAllowedToolNames().includes(name),
-      ),
+      toolNames: allToolNames,
       config: buildStatusConfig(serverName, configValue),
       mcpStatus: toolsResult,
       errors: [],
@@ -550,6 +571,7 @@ export function buildCodexZoteroMcpThreadConfig(params: {
   scopeToken?: string;
   required?: boolean;
   enableShellTool?: boolean;
+  rawPdfMode?: boolean;
 }): { serverName: string; config: Record<string, unknown> } {
   const serverName = getZoteroMcpServerName(params.profileSignature);
   return {
@@ -562,6 +584,7 @@ export function buildCodexZoteroMcpThreadConfig(params: {
         [serverName]: buildZoteroMcpConfigValue({
           scopeToken: params.scopeToken,
           required: params.required,
+          rawPdfMode: params.rawPdfMode,
         }),
       },
     },
@@ -572,6 +595,7 @@ export function buildClaudeZoteroMcpServerConfig(params: {
   profileSignature?: string;
   scopeToken?: string;
   required?: boolean;
+  rawPdfMode?: boolean;
 }): {
   serverName: string;
   mcpServers: Record<string, Record<string, unknown>>;
@@ -581,6 +605,7 @@ export function buildClaudeZoteroMcpServerConfig(params: {
   const configValue = buildZoteroMcpConfigValue({
     scopeToken: params.scopeToken,
     required: params.required,
+    rawPdfMode: params.rawPdfMode,
   });
   const serverUrl =
     typeof configValue.url === "string" && configValue.url.trim()
@@ -595,16 +620,22 @@ export function buildClaudeZoteroMcpServerConfig(params: {
         headers: getConfigHeaders(configValue),
       },
     },
-    allowedTools: buildClaudeZoteroMcpAllowedToolNames(serverName),
+    allowedTools: buildClaudeZoteroMcpAllowedToolNames(
+      serverName,
+      params.rawPdfMode,
+    ),
   };
 }
 
 export function buildClaudeZoteroMcpAllowedToolNames(
   serverName: string,
+  rawPdfMode = false,
 ): string[] {
-  return getZoteroMcpAllowedToolNames().map(
-    (toolName) => `mcp__${serverName}__${toolName}`,
-  );
+  return (
+    rawPdfMode
+      ? getZoteroMcpDirectPdfToolNames()
+      : getZoteroMcpAllowedToolNames()
+  ).map((toolName) => `mcp__${serverName}__${toolName}`);
 }
 
 export function assertRequiredCodexZoteroMcpToolsReady(

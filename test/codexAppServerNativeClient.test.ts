@@ -7,7 +7,6 @@ import {
   buildCodexNativeApprovalResponseFromResolution,
   buildCodexNativeScopedMcpScopeForTests,
   buildCodexNativeVisibleTurnContextBlockForTests,
-  buildCodexNativeLocalPdfRuntimeOptionsForTests,
   buildZoteroEnvironmentManifest,
   compactCodexAppServerConversation,
   compactCodexAppServerThread,
@@ -16,6 +15,7 @@ import {
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
   resolveSafeCodexNativeApprovalRequest,
+  resetCodexNativePathSafetyStateForTests,
   runCodexAppServerNativeTurn,
 } from "../src/codexAppServer/nativeClient";
 import {
@@ -37,66 +37,916 @@ import { clearCodexNativeSkillClassifierCache } from "../src/codexAppServer/nati
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+function createNativeLifecycleTestProcess(params: {
+  newThreadIds: string[];
+  requests: Array<{ method: string; params: Record<string, any> }>;
+  deltaForTurn?: (turnNumber: number) => string;
+  skillsListResult?: unknown;
+}): CodexAppServerProcess {
+  let turnNumber = 0;
+  const threadIds = [...params.newThreadIds];
+  const proc = CodexAppServerProcess.forTest({
+    stdin: {
+      write: (chunk: string) => {
+        const request = JSON.parse(chunk) as {
+          id: number;
+          method: string;
+          params?: Record<string, any>;
+        };
+        const requestParams = request.params || {};
+        params.requests.push({ method: request.method, params: requestParams });
+        const handleMessage = (
+          proc as unknown as {
+            handleMessage: (message: Record<string, unknown>) => void;
+          }
+        ).handleMessage.bind(proc);
+        if (
+          request.method === "skills/list" &&
+          params.skillsListResult !== undefined
+        ) {
+          setTimeout(
+            () =>
+              handleMessage({
+                id: request.id,
+                result: params.skillsListResult,
+              }),
+            0,
+          );
+          return;
+        }
+        if (request.method === "thread/resume") {
+          setTimeout(
+            () =>
+              handleMessage({
+                id: request.id,
+                result: { thread: { id: requestParams.threadId } },
+              }),
+            0,
+          );
+          return;
+        }
+        if (request.method === "thread/start") {
+          const threadId = threadIds.shift() || "thread-native-test";
+          setTimeout(
+            () =>
+              handleMessage({
+                id: request.id,
+                result: { thread: { id: threadId } },
+              }),
+            0,
+          );
+          return;
+        }
+        if (
+          request.method === "thread/archive" ||
+          request.method === "thread/name/set" ||
+          request.method === "thread/read" ||
+          request.method === "thread/inject_items"
+        ) {
+          setTimeout(() => handleMessage({ id: request.id, result: {} }), 0);
+          return;
+        }
+        if (request.method === "turn/start") {
+          turnNumber += 1;
+          const turnId = `turn-lifecycle-${turnNumber}`;
+          setTimeout(
+            () =>
+              handleMessage({
+                id: request.id,
+                result: { turn: { id: turnId } },
+              }),
+            0,
+          );
+          const delta = params.deltaForTurn?.(turnNumber) || "";
+          if (delta) {
+            setTimeout(
+              () =>
+                handleMessage({
+                  method: "item/agentMessage/delta",
+                  params: { turnId, delta },
+                }),
+              2,
+            );
+          }
+          setTimeout(
+            () =>
+              handleMessage({
+                method: "turn/completed",
+                params: { turn: { id: turnId, status: "completed" } },
+              }),
+            5,
+          );
+        }
+      },
+    },
+    kill: () => {},
+  });
+  return proc;
+}
+
+function installDirectPathTestPrefs(skillMode: "native" | "off" = "off") {
+  const originalZotero = (globalThis as any).Zotero;
+  (globalThis as any).Zotero = {
+    ...(originalZotero || {}),
+    debug: () => undefined,
+    DataDirectory: { dir: "/tmp/lfz-direct-pdf-skill-data" },
+    Profile: { dir: "/tmp/lfz-direct-pdf-skill-profile" },
+    Prefs: {
+      get: (key: string) => {
+        if (key.endsWith(".codexAppServerZoteroMcpToolsEnabled")) return false;
+        if (key.endsWith(".codexNativeSkillMode")) return skillMode;
+        return undefined;
+      },
+    },
+  };
+  return () => {
+    (globalThis as any).Zotero = originalZotero;
+  };
+}
+
+function createDirectPdfSelection(params: {
+  itemId: number;
+  contextItemId: number;
+  title: string;
+  name: string;
+  absolutePath: string;
+}) {
+  return {
+    paper: {
+      itemId: params.itemId,
+      contextItemId: params.contextItemId,
+      title: params.title,
+      attachmentTitle: params.name,
+      contentSourceMode: "pdf" as const,
+    },
+    document: {
+      kind: "local_pdf" as const,
+      sourceKey: `zotero-pdf:${params.itemId}:${params.contextItemId}` as const,
+      itemId: params.itemId,
+      contextItemId: params.contextItemId,
+      title: params.title,
+      name: params.name,
+      mimeType: "application/pdf" as const,
+      absolutePath: params.absolutePath,
+    },
+  };
+}
+
 describe("Codex app-server native client", function () {
-  it("renders exact current-turn local PDF paths as authoritative context", function () {
-    const block = buildCodexNativeVisibleTurnContextBlockForTests({
+  it("renders exact original PDF paths and identities in selection order", function () {
+    const first = createDirectPdfSelection({
+      itemId: 10,
+      contextItemId: 12,
+      title: 'First "quoted" paper',
+      name: "first.pdf",
+      absolutePath: '/Users/example/Papers/First "quoted" paper.pdf',
+    });
+    const second = createDirectPdfSelection({
+      itemId: 20,
+      contextItemId: 22,
+      title: "Second paper",
+      name: "second.pdf",
+      absolutePath: "C:\\\\Research\\\\论文\\\\second.pdf",
+    });
+    const third = createDirectPdfSelection({
+      itemId: 30,
+      contextItemId: 32,
+      title: "UNC paper",
+      name: "third.pdf",
+      absolutePath: "\\\\\\\\server\\\\share\\\\third.pdf",
+    });
+
+    const context = buildCodexNativeVisibleTurnContextBlockForTests({
       scope: {
-        conversationKey: 42,
+        conversationKey: 6_000_000_040,
         libraryID: 1,
-        libraryName: "My Library",
-        kind: "paper",
-        activeItemId: 10,
+        kind: "global",
       },
       skillContext: {
-        pdfPaperContexts: [
+        pdfPaperContexts: [first.paper, second.paper, third.paper],
+        localDocuments: [first.document, second.document, third.document],
+      },
+    });
+
+    const firstLine = `1. sourceKey=${first.document.sourceKey}, itemId=10, contextItemId=12, title=${JSON.stringify(first.document.title)}, name=${JSON.stringify(first.document.name)}, path=${JSON.stringify(first.document.absolutePath)}`;
+    const secondLine = `2. sourceKey=${second.document.sourceKey}, itemId=20, contextItemId=22, title=${JSON.stringify(second.document.title)}, name=${JSON.stringify(second.document.name)}, path=${JSON.stringify(second.document.absolutePath)}`;
+    const thirdLine = `3. sourceKey=${third.document.sourceKey}, itemId=30, contextItemId=32, title=${JSON.stringify(third.document.title)}, name=${JSON.stringify(third.document.name)}, path=${JSON.stringify(third.document.absolutePath)}`;
+    assert.include(context, firstLine);
+    assert.include(context, secondLine);
+    assert.include(context, thirdLine);
+    assert.isBelow(context.indexOf(firstLine), context.indexOf(secondLine));
+    assert.isBelow(context.indexOf(secondLine), context.indexOf(thirdLine));
+    assert.include(context, "Read exactly these paths");
+    assert.notInclude(context, "raw_pdf_read");
+  });
+
+  it("uses exact direct paths on an ephemeral PDF thread and rebuilds a clean thread", async function () {
+    const processKey = "native-direct-pdf-clean-rebuild";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-pdf-ephemeral", "thread-clean-persistent"],
+      requests,
+      deltaForTurn: (turn) => (turn === 1 ? "pdf answer" : "clean answer"),
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    let storedThreadId: string | undefined = "thread-prior-persistent";
+    const persistedThreadIds: string[] = [];
+    let clearCount = 0;
+    CodexAppServerProcess.spawn = async () => proc;
+    const first = createDirectPdfSelection({
+      itemId: 10,
+      contextItemId: 11,
+      title: "PDF A",
+      name: "paper-a.pdf",
+      absolutePath: "/Users/example/Papers/PDF A/paper-a.pdf",
+    });
+    const second = createDirectPdfSelection({
+      itemId: 20,
+      contextItemId: 21,
+      title: "PDF B",
+      name: "paper-b.pdf",
+      absolutePath: "/Users/example/Papers/PDF B/paper-b.pdf",
+    });
+
+    try {
+      const pdfResult = await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-clean-rebuild",
+          conversationKey: 6_000_000_041,
+          libraryID: 1,
+          kind: "global",
+          title: "Direct PDF test",
+        },
+        model: "gpt-5.6",
+        messages: [
+          { role: "user", content: "Earlier question" },
+          { role: "assistant", content: "Earlier answer" },
+          { role: "user", content: "Compare the selected PDFs" },
+        ],
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => storedThreadId,
+          clearProviderSessionId: async () => {
+            clearCount += 1;
+            storedThreadId = undefined;
+          },
+          persistProviderSessionId: async (threadId) => {
+            persistedThreadIds.push(threadId);
+            storedThreadId = threadId;
+          },
+        },
+        skillContext: {
+          pdfPaperContexts: [first.paper, second.paper],
+          localDocuments: [first.document, second.document],
+        },
+      });
+      assert.equal(pdfResult.threadId, "thread-pdf-ephemeral");
+      assert.isFalse(pdfResult.resumed);
+      assert.equal(clearCount, 1);
+      assert.deepEqual(persistedThreadIds, []);
+
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-clean-rebuild",
+          conversationKey: 6_000_000_041,
+          libraryID: 1,
+          kind: "global",
+          title: "Direct PDF test",
+        },
+        model: "gpt-5.6",
+        messages: [
+          { role: "user", content: "Earlier question" },
+          { role: "assistant", content: "Earlier answer" },
+          { role: "user", content: "Compare the selected PDFs" },
+          { role: "assistant", content: "The comparison is complete." },
+          { role: "user", content: "Now answer without a PDF" },
+        ],
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => storedThreadId,
+          clearProviderSessionId: async () => {
+            clearCount += 1;
+            storedThreadId = undefined;
+          },
+          persistProviderSessionId: async (threadId) => {
+            persistedThreadIds.push(threadId);
+            storedThreadId = threadId;
+          },
+        },
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    const threadStarts = requests.filter(
+      (request) => request.method === "thread/start",
+    );
+    assert.lengthOf(threadStarts, 2);
+    assert.equal(threadStarts[0].params.ephemeral, true);
+    assert.equal(threadStarts[0].params.sandbox, "read-only");
+    assert.equal(threadStarts[0].params.config?.features?.shell_tool, true);
+    assert.notProperty(threadStarts[0].params, "runtimeWorkspaceRoots");
+    assert.include(
+      threadStarts[0].params.developerInstructions,
+      JSON.stringify(first.document.absolutePath),
+    );
+    assert.include(
+      threadStarts[0].params.developerInstructions,
+      JSON.stringify(second.document.absolutePath),
+    );
+    assert.isBelow(
+      threadStarts[0].params.developerInstructions.indexOf(
+        JSON.stringify(first.document.absolutePath),
+      ),
+      threadStarts[0].params.developerInstructions.indexOf(
+        JSON.stringify(second.document.absolutePath),
+      ),
+    );
+    assert.include(
+      threadStarts[0].params.developerInstructions,
+      "Raw PDF transport policy",
+    );
+    assert.notInclude(
+      threadStarts[0].params.developerInstructions,
+      "raw_pdf_read",
+    );
+    assert.equal(threadStarts[1].params.ephemeral, false);
+    assert.equal(threadStarts[1].params.sandbox, "read-only");
+    assert.equal(threadStarts[1].params.config?.features?.shell_tool, false);
+    assert.notInclude(
+      threadStarts[1].params.developerInstructions,
+      first.document.absolutePath,
+    );
+    assert.notInclude(
+      threadStarts[1].params.developerInstructions,
+      second.document.absolutePath,
+    );
+    assert.deepEqual(persistedThreadIds, ["thread-clean-persistent"]);
+    assert.isFalse(
+      requests.some((request) => request.method === "skills/list"),
+    );
+    assert.isFalse(
+      requests.some((request) => request.method === "thread/resume"),
+    );
+    const injectedHistory = requests.filter(
+      (request) => request.method === "thread/inject_items",
+    );
+    assert.lengthOf(injectedHistory, 2);
+    assert.include(
+      JSON.stringify(injectedHistory[0].params.items),
+      "Earlier question",
+    );
+    assert.include(
+      JSON.stringify(injectedHistory[0].params.items),
+      "Earlier answer",
+    );
+    assert.notInclude(
+      JSON.stringify(injectedHistory[1].params.items),
+      first.document.absolutePath,
+    );
+    assert.notInclude(
+      JSON.stringify(injectedHistory[1].params.items),
+      second.document.absolutePath,
+    );
+    assert.deepEqual(
+      requests
+        .filter((request) => request.method === "turn/start")
+        .map((request) => request.params.sandboxPolicy),
+      [
+        { type: "readOnly", networkAccess: false },
+        { type: "readOnly", networkAccess: false },
+      ],
+    );
+    assert.isTrue(
+      requests.some(
+        (request) =>
+          request.method === "thread/archive" &&
+          request.params.threadId === "thread-prior-persistent",
+      ),
+    );
+  });
+
+  it("keeps A and B paths isolated across consecutive PDF turns", async function () {
+    const processKey = "native-direct-pdf-a-b-isolation";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-pdf-a", "thread-pdf-b"],
+      requests,
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs();
+    CodexAppServerProcess.spawn = async () => proc;
+    const pdfA = createDirectPdfSelection({
+      itemId: 100,
+      contextItemId: 101,
+      title: "PDF A",
+      name: "same.pdf",
+      absolutePath: "/Users/example/A/same.pdf",
+    });
+    const pdfB = createDirectPdfSelection({
+      itemId: 200,
+      contextItemId: 201,
+      title: "PDF B",
+      name: "same.pdf",
+      absolutePath: "/Users/example/B/same.pdf",
+    });
+    const hooks = {
+      loadProviderSessionId: async () => undefined,
+      persistProviderSessionId: async () => {
+        throw new Error("An ephemeral PDF thread must not be persisted");
+      },
+    };
+
+    try {
+      const resultA = await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-a-b-isolation",
+          conversationKey: 6_000_000_042,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [{ role: "user", content: "Read A" }],
+        processKey,
+        hooks,
+        skillContext: {
+          pdfPaperContexts: [pdfA.paper],
+          localDocuments: [pdfA.document],
+        },
+      });
+      const resultB = await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-a-b-isolation",
+          conversationKey: 6_000_000_042,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [
+          { role: "user", content: "Read A" },
+          { role: "assistant", content: "A read is complete." },
+          { role: "user", content: "Read B" },
+        ],
+        processKey,
+        hooks,
+        skillContext: {
+          pdfPaperContexts: [pdfB.paper],
+          localDocuments: [pdfB.document],
+        },
+      });
+      assert.equal(resultA.threadId, "thread-pdf-a");
+      assert.equal(resultB.threadId, "thread-pdf-b");
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    const starts = requests.filter(
+      (request) => request.method === "thread/start",
+    );
+    assert.lengthOf(starts, 2);
+    assert.equal(starts[0].params.ephemeral, true);
+    assert.equal(starts[1].params.ephemeral, true);
+    assert.include(
+      starts[0].params.developerInstructions,
+      JSON.stringify(pdfA.document.absolutePath),
+    );
+    assert.notInclude(
+      starts[0].params.developerInstructions,
+      pdfB.document.absolutePath,
+    );
+    assert.include(
+      starts[1].params.developerInstructions,
+      JSON.stringify(pdfB.document.absolutePath),
+    );
+    assert.notInclude(
+      starts[1].params.developerInstructions,
+      pdfA.document.absolutePath,
+    );
+    assert.isTrue(
+      starts.every(
+        (request) => request.params.config?.features?.shell_tool === true,
+      ),
+    );
+    assert.isTrue(
+      starts.every((request) => !("runtimeWorkspaceRoots" in request.params)),
+    );
+  });
+
+  it("keeps automatic skill routing off on a PDF turn without an explicit skill", async function () {
+    setUserSkills([parseSkill(BUILTIN_SKILL_FILES["simple-paper-qa.md"])]);
+    const processKey = "native-direct-pdf-no-automatic-skill";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-pdf-no-automatic-skill"],
+      requests,
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    const activatedSkills: string[] = [];
+    CodexAppServerProcess.spawn = async () => proc;
+    const pdf = createDirectPdfSelection({
+      itemId: 290,
+      contextItemId: 291,
+      title: "Automatic skill candidate",
+      name: "paper.pdf",
+      absolutePath: "/Users/example/Papers/Automatic Candidate/paper.pdf",
+    });
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-no-automatic-skill",
+          conversationKey: 6_000_000_042,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [
           {
-            itemId: 10,
-            contextItemId: 20,
-            title: "Paper",
-            contentSourceMode: "pdf",
+            role: "user",
+            content: "Summarize the selected paper.",
           },
         ],
-        localDocuments: [
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => {
+            throw new Error("An ephemeral PDF thread must not be persisted");
+          },
+        },
+        skillContext: {
+          pdfPaperContexts: [pdf.paper],
+          localDocuments: [pdf.document],
+        },
+        onSkillActivated: (skillId) => activatedSkills.push(skillId),
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    assert.isFalse(
+      requests.some((request) => request.method === "skills/list"),
+    );
+    const threadStart = requests.find(
+      (request) => request.method === "thread/start",
+    );
+    assert.notProperty(threadStart?.params || {}, "cwd");
+    const turnStart = requests.find(
+      (request) => request.method === "turn/start",
+    );
+    assert.notProperty(turnStart?.params || {}, "cwd");
+    const turnInput = turnStart?.params.input as Record<string, unknown>[];
+    assert.isFalse(turnInput.some((input) => input.type === "skill"));
+    assert.deepEqual(activatedSkills, []);
+  });
+
+  it("activates only an explicitly selected skill on a PDF turn", async function () {
+    setUserSkills([
+      parseSkill(BUILTIN_SKILL_FILES["write-note.md"]),
+      parseSkill(BUILTIN_SKILL_FILES["simple-paper-qa.md"]),
+    ]);
+    const processKey = "native-direct-pdf-explicit-skill";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    const expectedCwd = getUserSkillsRuntimeRootDir();
+    const writeNoteSkillPath = `${expectedCwd}/.agents/skills/write-note/SKILL.md`;
+    const listedWriteNoteSkillPath = writeNoteSkillPath.replace(
+      /^\/tmp\//,
+      "/private/tmp/",
+    );
+    const simplePaperQaSkillPath = `${expectedCwd}/.agents/skills/simple-paper-qa/SKILL.md`;
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-pdf-explicit-skill"],
+      requests,
+      skillsListResult: {
+        data: [
           {
-            kind: "local_pdf",
-            sourceKey: "zotero-pdf:10:20",
-            itemId: 10,
-            contextItemId: 20,
-            title: "Paper",
-            name: "paper.pdf",
-            mimeType: "application/pdf",
-            absolutePath: "/papers/paper.pdf",
+            cwd: expectedCwd,
+            errors: [],
+            skills: [
+              {
+                name: "write-note",
+                path: "/tmp/unrelated-skills/write-note/SKILL.md",
+                enabled: true,
+              },
+              {
+                name: "write-note",
+                path: listedWriteNoteSkillPath,
+                enabled: true,
+              },
+              {
+                name: "simple-paper-qa",
+                path: simplePaperQaSkillPath,
+                enabled: true,
+              },
+            ],
           },
         ],
       },
     });
+    const activatedSkills: string[] = [];
+    let diagnostics: { skillIds: string[] } | undefined;
+    CodexAppServerProcess.spawn = async () => proc;
+    const pdf = createDirectPdfSelection({
+      itemId: 300,
+      contextItemId: 301,
+      title: "Explicit skill PDF",
+      name: "paper.pdf",
+      absolutePath: "/Users/example/Papers/Explicit Skill/paper.pdf",
+    });
 
-    assert.include(block, "zotero-pdf:10:20");
-    assert.include(block, "/papers/paper.pdf");
-    assert.include(block, "current-turn list is authoritative");
-    assert.include(block, "Do not substitute");
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-explicit-skill",
+          conversationKey: 6_000_000_043,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [
+          {
+            role: "user",
+            content: "Summarize the selected raw PDF and write a note.",
+          },
+        ],
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => {
+            throw new Error("An ephemeral PDF thread must not be persisted");
+          },
+        },
+        skillContext: {
+          forcedSkillIds: ["write-note"],
+          pdfPaperContexts: [pdf.paper],
+          localDocuments: [pdf.document],
+        },
+        onSkillActivated: (skillId) => activatedSkills.push(skillId),
+        onDiagnostics: (value) => {
+          diagnostics = value;
+        },
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    const skillsListRequests = requests.filter(
+      (request) => request.method === "skills/list",
+    );
+    assert.lengthOf(skillsListRequests, 1);
+    assert.deepEqual(skillsListRequests[0].params.cwds, [expectedCwd]);
+    const threadStart = requests.find(
+      (request) => request.method === "thread/start",
+    );
+    assert.equal(threadStart?.params.ephemeral, true);
+    assert.equal(threadStart?.params.cwd, expectedCwd);
+    const turnStart = requests.find(
+      (request) => request.method === "turn/start",
+    );
+    assert.equal(turnStart?.params.cwd, expectedCwd);
+    const turnInput = turnStart?.params.input as Record<string, unknown>[];
+    assert.include(JSON.stringify(turnInput), "$write-note");
+    assert.deepEqual(turnInput[0], {
+      type: "skill",
+      name: "write-note",
+      path: listedWriteNoteSkillPath,
+    });
+    assert.isFalse(
+      turnInput.some(
+        (input) => input.type === "skill" && input.name === "simple-paper-qa",
+      ),
+    );
+    assert.deepEqual(activatedSkills, ["write-note"]);
+    assert.deepEqual(diagnostics?.skillIds, ["write-note"]);
   });
 
-  it("scopes Codex local PDF turns to read-only current parent roots", function () {
-    const options = buildCodexNativeLocalPdfRuntimeOptionsForTests([
-      "/papers/a/paper.pdf",
-      "/papers/b/other.pdf",
-      "/papers/a/second.pdf",
-      "C:\\Papers\\windows.pdf",
-      "\\\\server\\share\\unc.pdf",
-    ]);
+  it("fails a PDF turn when an explicitly selected native skill cannot be loaded", async function () {
+    setUserSkills([parseSkill(BUILTIN_SKILL_FILES["write-note.md"])]);
+    const processKey = "native-direct-pdf-missing-explicit-skill";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-must-not-start"],
+      requests,
+      skillsListResult: { data: [] },
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    CodexAppServerProcess.spawn = async () => proc;
+    const pdf = createDirectPdfSelection({
+      itemId: 310,
+      contextItemId: 311,
+      title: "Missing explicit skill PDF",
+      name: "paper.pdf",
+      absolutePath: "/Users/example/Papers/Missing Skill/paper.pdf",
+    });
+    let error: unknown;
 
-    assert.equal(options.sandbox, "read-only");
-    assert.deepEqual(options.sandboxPolicy, { type: "readOnly" });
-    assert.deepEqual(options.runtimeWorkspaceRoots, [
-      "/papers/a",
-      "/papers/b",
-      "C:\\Papers",
-      "\\\\server\\share",
-    ]);
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-missing-explicit-skill",
+          conversationKey: 6_000_000_044,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [
+          {
+            role: "user",
+            content: "$write-note\n\nAnalyze the selected raw PDF.",
+          },
+        ],
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => {
+            throw new Error("An ephemeral PDF thread must not be persisted");
+          },
+        },
+        skillContext: {
+          forcedSkillIds: ["write-note"],
+          pdfPaperContexts: [pdf.paper],
+          localDocuments: [pdf.document],
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    assert.instanceOf(error, Error);
+    assert.include((error as Error).message, "write-note");
+    assert.isTrue(requests.some((request) => request.method === "skills/list"));
+    assert.isFalse(
+      requests.some((request) => request.method === "thread/start"),
+    );
+  });
+
+  it("fails a PDF turn when a persisted explicit skill selection is stale", async function () {
+    setUserSkills([]);
+    const processKey = "native-direct-pdf-stale-explicit-skill";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-must-not-start"],
+      requests,
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    CodexAppServerProcess.spawn = async () => proc;
+    const pdf = createDirectPdfSelection({
+      itemId: 320,
+      contextItemId: 321,
+      title: "Stale explicit skill PDF",
+      name: "paper.pdf",
+      absolutePath: "/Users/example/Papers/Stale Skill/paper.pdf",
+    });
+    let error: unknown;
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-stale-explicit-skill",
+          conversationKey: 6_000_000_045,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [
+          {
+            role: "user",
+            content: "Analyze the selected raw PDF.",
+          },
+        ],
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => {
+            throw new Error("An ephemeral PDF thread must not be persisted");
+          },
+        },
+        skillContext: {
+          forcedSkillIds: ["removed-custom-skill"],
+          pdfPaperContexts: [pdf.paper],
+          localDocuments: [pdf.document],
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    assert.instanceOf(error, Error);
+    assert.include((error as Error).message, "removed-custom-skill");
+    assert.isFalse(
+      requests.some((request) => request.method === "skills/list"),
+    );
+    assert.isFalse(
+      requests.some((request) => request.method === "thread/start"),
+    );
+  });
+
+  it("preserves a free-form skill marker on a PDF turn without fabricating a skill path", async function () {
+    const processKey = "native-direct-pdf-free-form-skill-marker";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-pdf-free-form-skill-marker"],
+      requests,
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    CodexAppServerProcess.spawn = async () => proc;
+    const pdf = createDirectPdfSelection({
+      itemId: 330,
+      contextItemId: 331,
+      title: "Free-form skill marker PDF",
+      name: "paper.pdf",
+      absolutePath: "/Users/example/Papers/Free Marker/paper.pdf",
+    });
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-direct-pdf-free-form-skill-marker",
+          conversationKey: 6_000_000_046,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.6",
+        messages: [
+          {
+            role: "user",
+            content: "$external-pdf-workflow\n\nAnalyze the raw PDF.",
+          },
+        ],
+        processKey,
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => {
+            throw new Error("An ephemeral PDF thread must not be persisted");
+          },
+        },
+        skillContext: {
+          pdfPaperContexts: [pdf.paper],
+          localDocuments: [pdf.document],
+        },
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    assert.isFalse(
+      requests.some((request) => request.method === "skills/list"),
+    );
+    const turnStart = requests.find(
+      (request) => request.method === "turn/start",
+    );
+    const turnInput = turnStart?.params.input as Record<string, unknown>[];
+    assert.include(JSON.stringify(turnInput), "$external-pdf-workflow");
+    assert.isFalse(turnInput.some((input) => input.type === "skill"));
   });
 
   afterEach(function () {
+    resetCodexNativePathSafetyStateForTests();
     clearCodexNativeReadLedger();
     clearCodexNativeSkillClassifierCache();
     setUserSkills([]);
@@ -869,6 +1719,17 @@ describe("Codex app-server native client", function () {
     }
 
     assert.isOk(turnStartParams);
+    assert.equal(threadResumeParams?.sandbox, "read-only");
+    assert.notProperty(threadResumeParams || {}, "persistExtendedHistory");
+    assert.notProperty(threadResumeParams || {}, "permissions");
+    assert.notProperty(threadResumeParams || {}, "runtimeWorkspaceRoots");
+    assert.deepEqual(turnStartParams?.sandboxPolicy, {
+      type: "readOnly",
+      networkAccess: false,
+    });
+    assert.notProperty(turnStartParams || {}, "persistExtendedHistory");
+    assert.notProperty(turnStartParams || {}, "permissions");
+    assert.notProperty(turnStartParams || {}, "runtimeWorkspaceRoots");
     const developerInstructions = String(
       threadResumeParams?.developerInstructions || "",
     );
@@ -1314,7 +2175,7 @@ describe("Codex app-server native client", function () {
     assert.deepEqual(activatedSkills, ["evidence-based-qa"]);
   });
 
-  it("converts explicit native skill text into structured skill input without duplication", async function () {
+  it("preserves explicit native skill text alongside structured skill input", async function () {
     setUserSkills([parseSkill(BUILTIN_SKILL_FILES["write-note.md"])]);
     const processKey = "native-explicit-skill-input-test";
     const originalSpawn = CodexAppServerProcess.spawn;
@@ -1451,7 +2312,109 @@ describe("Codex app-server native client", function () {
     });
     const turnStartText = JSON.stringify(turnStartParams);
     assert.include(turnStartText, "Draft a note.");
-    assert.notInclude(turnStartText, "$write-note");
+    assert.include(turnStartText, "$write-note");
+  });
+
+  it("does not duplicate an explicit skill marker when structured resolution falls back", async function () {
+    setUserSkills([parseSkill(BUILTIN_SKILL_FILES["write-note.md"])]);
+    const processKey = "native-explicit-skill-fallback-dedupe";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-explicit-skill-fallback"],
+      requests,
+      skillsListResult: { data: [] },
+    });
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    CodexAppServerProcess.spawn = async () => proc;
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-native-explicit-skill-fallback",
+          conversationKey: 6_000_000_034,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "$write-note\n\nDraft a note." }],
+        skillContext: { forcedSkillIds: ["write-note"] },
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => undefined,
+        },
+        processKey,
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    assert.isTrue(requests.some((request) => request.method === "skills/list"));
+    const turnStart = requests.find(
+      (request) => request.method === "turn/start",
+    );
+    const turnStartText = JSON.stringify(turnStart?.params.input);
+    assert.equal(turnStartText.split("$write-note").length - 1, 1);
+  });
+
+  it("applies a fallback skill marker to the current turn when legacy history contains an older marker", async function () {
+    setUserSkills([parseSkill(BUILTIN_SKILL_FILES["write-note.md"])]);
+    const processKey = "native-explicit-skill-fallback-current-turn";
+    const requests: Array<{
+      method: string;
+      params: Record<string, any>;
+    }> = [];
+    const proc = createNativeLifecycleTestProcess({
+      newThreadIds: ["thread-explicit-skill-fallback-current-turn"],
+      requests,
+      skillsListResult: { data: [] },
+    });
+    proc.setInjectItemsSupport("unsupported");
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const restorePrefs = installDirectPathTestPrefs("native");
+    CodexAppServerProcess.spawn = async () => proc;
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-native-explicit-skill-fallback-history",
+          conversationKey: 6_000_000_035,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.5",
+        messages: [
+          { role: "user", content: "$write-note\n\nEarlier request." },
+          { role: "assistant", content: "Earlier response." },
+          { role: "user", content: "Current request." },
+        ],
+        skillContext: { forcedSkillIds: ["write-note"] },
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => undefined,
+        },
+        processKey,
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+      restorePrefs();
+    }
+
+    const turnStart = requests.find(
+      (request) => request.method === "turn/start",
+    );
+    const textInputs = (turnStart?.params.input || []).filter(
+      (entry: Record<string, unknown>) => entry.type === "text",
+    );
+    const currentUserInput = textInputs.at(-1)?.text as string;
+    assert.include(currentUserInput, "User:\nCurrent request.");
+    assert.equal(currentUserInput.split("$write-note").length - 1, 1);
   });
 
   it("starts native Codex turns from the profile-scoped skills workspace and omits legacy skill injection", async function () {
@@ -1580,6 +2543,10 @@ describe("Codex app-server native client", function () {
     assert.notInclude(source, "resources-delta");
     assert.notInclude(source, "resources-changed");
     assert.notInclude(source, "CodexNativeLifecycle");
+    assert.notInclude(source, "raw_pdf_read");
+    assert.notInclude(source, "stageCodexRawPdfCapability");
+    assert.notInclude(source, "isolatedRawPdfMode");
+    assert.notInclude(source, "runtimeWorkspaceRoots");
   });
 
   it("builds Codex native scoped MCP payload with canonical paper contexts", function () {

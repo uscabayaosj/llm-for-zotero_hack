@@ -15,6 +15,10 @@ import {
   waitForCodexAppServerThreadCompacted,
   waitForCodexAppServerTurnCompletion,
 } from "../src/utils/codexAppServerProcess";
+import {
+  clearRememberedLocalDocumentPaths,
+  rememberLocalDocumentPaths,
+} from "../src/agent/privacy/localDocumentPathRedaction";
 
 function createProcess(): CodexAppServerProcess {
   return CodexAppServerProcess.forTest({
@@ -146,6 +150,13 @@ function createOneShotReader(value: string) {
       didRead = true;
       return value;
     },
+  };
+}
+
+function createChunkReader(values: string[]) {
+  let index = 0;
+  return {
+    readString: async () => values[index++] || "",
   };
 }
 
@@ -362,6 +373,60 @@ describe("codexAppServerProcess", function () {
     destroyCachedCodexAppServerProcess("missing-cache-key", proc);
 
     assert.isTrue(killed);
+  });
+
+  it("reports teardown incomplete when the child process does not exit", async function () {
+    let killed = false;
+    const proc = CodexAppServerProcess.forTest({
+      stdin: { write: () => {} },
+      kill: () => {
+        killed = true;
+      },
+      wait: () => new Promise<never>(() => undefined),
+    });
+
+    const drained = await proc.destroyAndWait(5);
+
+    assert.isTrue(killed);
+    assert.isFalse(drained);
+  });
+
+  it("reports teardown incomplete when diagnostic pipes do not drain after exit", async function () {
+    const proc = CodexAppServerProcess.forTest({
+      stdin: { write: () => {} },
+      kill: () => {},
+      wait: async () => ({ exitCode: 0 }),
+    });
+    (
+      proc as unknown as {
+        readLoopPromise: Promise<void>;
+        stderrLoopPromise: Promise<void>;
+      }
+    ).readLoopPromise = Promise.resolve();
+    (
+      proc as unknown as {
+        readLoopPromise: Promise<void>;
+        stderrLoopPromise: Promise<void>;
+      }
+    ).stderrLoopPromise = new Promise<void>(() => undefined);
+
+    assert.isFalse(await proc.destroyAndWait(5));
+  });
+
+  it("reports teardown complete only after both process and diagnostic pipes settle", async function () {
+    const proc = CodexAppServerProcess.forTest({
+      stdin: { write: () => {} },
+      kill: () => {},
+      wait: async () => ({ exitCode: 0 }),
+    });
+    const internal = proc as unknown as {
+      readLoopPromise: Promise<void>;
+      stderrLoopPromise: Promise<void>;
+    };
+    internal.readLoopPromise = Promise.resolve();
+    internal.stderrLoopPromise = Promise.reject(new Error("pipe closed"));
+
+    assert.isTrue(await proc.destroyAndWait(20));
   });
 
   it("responds to server-initiated JSON-RPC requests via registered handlers", async function () {
@@ -1836,6 +1901,47 @@ describe("codexAppServerProcess", function () {
     );
   });
 
+  it("kills and waits for a subprocess whose initialize handshake fails", async function () {
+    let killed = 0;
+    let waited = 0;
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "/opt/codex/bin/codex" },
+        platform: "macos",
+        subprocessCall: async () => ({
+          stdout: createOneShotReader(
+            `${JSON.stringify({
+              id: 1,
+              error: { message: "initialize rejected" },
+            })}\n`,
+          ),
+          stderr: { readString: async () => "" },
+          stdin: { write: () => {} },
+          kill: () => {
+            killed += 1;
+          },
+          wait: async () => {
+            waited += 1;
+            return { exitCode: 1 };
+          },
+        }),
+      },
+      async () => {
+        let caught: unknown;
+        try {
+          await CodexAppServerProcess.spawn();
+        } catch (error) {
+          caught = error;
+        }
+        assert.instanceOf(caught, Error);
+        assert.include((caught as Error).message, "initialize rejected");
+      },
+    );
+
+    assert.equal(killed, 1);
+    assert.equal(waited, 1);
+  });
+
   it("includes non-json stdout diagnostics when the child closes during initialization", async function () {
     let stdoutReadCount = 0;
     await withRuntimeStubs(
@@ -1867,6 +1973,115 @@ describe("codexAppServerProcess", function () {
         }
       },
     );
+  });
+
+  it("redacts a selected PDF file URL from a partial stdout line when the child crashes", async function () {
+    const conversationKey = 7_930_001;
+    const rawPath = "C:\\CodexPartialCrash7930001\\Selected.pdf";
+    const fileUrl = "FILE:///c:/codexpartialcrash7930001/selected.pdf";
+    rememberLocalDocumentPaths(conversationKey, [
+      {
+        kind: "local_pdf",
+        sourceKey: "zotero-pdf:10:11",
+        itemId: 10,
+        contextItemId: 11,
+        title: "Selected",
+        name: "Selected.pdf",
+        mimeType: "application/pdf",
+        absolutePath: rawPath,
+      },
+    ]);
+
+    try {
+      await withRuntimeStubs(
+        {
+          env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.cmd" },
+          platform: "windows",
+          subprocessCall: async () => ({
+            stdout: createOneShotReader(
+              `partial-json={"path":"${fileUrl}","state":`,
+            ),
+            stderr: { readString: async () => "" },
+            stdin: { write: () => {} },
+            kill: () => {},
+          }),
+        },
+        async () => {
+          try {
+            await CodexAppServerProcess.spawn();
+            assert.fail("Expected spawn to fail during initialization");
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            assert.notInclude(message, rawPath);
+            assert.notInclude(message, fileUrl);
+            assert.notInclude(
+              message.toLowerCase(),
+              "codexpartialcrash7930001",
+            );
+            assert.include(message, "[raw_pdf_path:zotero-pdf:10:11]");
+          }
+        },
+      );
+    } finally {
+      clearRememberedLocalDocumentPaths(conversationKey);
+    }
+  });
+
+  it("redacts a selected PDF path split at every stderr chunk boundary", async function () {
+    this.timeout(10_000);
+    const conversationKey = 7_930_002;
+    const rawPath = "/Users/Alice Doe/Private Papers/Selected.pdf";
+    rememberLocalDocumentPaths(conversationKey, [
+      {
+        kind: "local_pdf",
+        sourceKey: "zotero-pdf:20:21",
+        itemId: 20,
+        contextItemId: 21,
+        title: "Selected",
+        name: "Selected.pdf",
+        mimeType: "application/pdf",
+        absolutePath: rawPath,
+      },
+    ]);
+
+    try {
+      for (let split = 1; split < rawPath.length; split += 1) {
+        await withRuntimeStubs(
+          {
+            env: { CODEX_PATH: "/opt/codex/bin/codex" },
+            platform: "macos",
+            subprocessCall: async () => ({
+              stdout: { readString: async () => "" },
+              stderr: createChunkReader([
+                `startup failed at ${rawPath.slice(0, split)}`,
+                rawPath.slice(split),
+              ]),
+              stdin: { write: () => {} },
+              kill: () => {},
+            }),
+          },
+          async () => {
+            try {
+              await CodexAppServerProcess.spawn();
+              assert.fail("Expected spawn to fail during initialization");
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              assert.notInclude(message, rawPath, `split ${split}`);
+              assert.notInclude(message, "/Users/Alice Doe", `split ${split}`);
+              assert.include(
+                message,
+                "[raw_pdf_path:zotero-pdf:20:21]",
+                `split ${split}`,
+              );
+            }
+          },
+        );
+      }
+    } finally {
+      clearRememberedLocalDocumentPaths(conversationKey);
+    }
   });
 
   it("runs explicit Windows exe paths directly even when they contain spaces", async function () {

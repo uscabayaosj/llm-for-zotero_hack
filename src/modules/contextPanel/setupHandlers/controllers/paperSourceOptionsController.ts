@@ -52,6 +52,15 @@ export function resolvePaperPdfSupportForConversation(params: {
     : params.basePdfSupport;
 }
 
+export function shouldDowngradePdfSourceForConversation(params: {
+  basePdfSupport: PdfSupport;
+  isClaudeCode: boolean;
+  isCodex: boolean;
+}): boolean {
+  const support = resolvePaperPdfSupportForConversation(params);
+  return support !== "native" && support !== "local_path";
+}
+
 export function canRevealMineruCacheForSourceOption(
   option: Pick<
     PaperSourceOption,
@@ -284,6 +293,74 @@ function resolveMineruOptionState(
   return state;
 }
 
+function buildPdfAttachmentSourceOptions(params: {
+  baseContext: PaperContextRef;
+  attachment: Zotero.Item;
+  picker: BuildPaperSourceOptionsParams;
+  translate: (text: string) => string;
+}): PaperSourceOption[] {
+  const { baseContext, attachment, picker, translate } = params;
+  const attachmentTitle = getAttachmentCardTitle(attachment);
+  const pdfOption: PaperSourceOption = {
+    mode: "pdf",
+    badge: getContextSourceModeBadgeLabel("pdf") || "PDF",
+    paperContext: { ...baseContext, contentSourceMode: "pdf" },
+    title: baseContext.title,
+    description: `${attachmentTitle} - ${getContextSourceModeHumanLabel("pdf")}`,
+    disabledReason:
+      picker.pdfSupport === "native" ||
+      picker.pdfSupport === "local_path" ||
+      picker.webChatMode
+        ? undefined
+        : picker.fullPdfUnsupportedMessage,
+  };
+  if (picker.webChatMode) return [pdfOption];
+
+  const mineruOptionState = resolveMineruOptionState(baseContext, picker);
+  const mineruDisabledReason = shouldDisableMineruParsingAction({
+    action: mineruOptionState.action,
+    isMineruEnabled: picker.isMineruEnabled,
+  })
+    ? picker.mineruDisabledParsingMessage
+    : undefined;
+  const options: PaperSourceOption[] = [
+    {
+      mode: "mineru",
+      badge: getContextSourceModeBadgeLabel("mineru") || "MD",
+      paperContext: { ...baseContext, contentSourceMode: "mineru" },
+      title: baseContext.title,
+      description: getMineruSourceDescription({
+        attachmentTitle,
+        state: mineruOptionState.state,
+        disabledReason: mineruDisabledReason,
+        translate,
+      }),
+      disabledReason: mineruDisabledReason,
+      mineruState: mineruOptionState.state,
+      mineruAction: mineruOptionState.action,
+      mineruActionTitle: getMineruActionTitle({
+        state: mineruOptionState.state,
+        disabledReason: mineruDisabledReason,
+        isMineruEnabled: picker.isMineruEnabled,
+        mineruDisabledParsingMessage: picker.mineruDisabledParsingMessage,
+        translate,
+      }),
+      hideTextSource: mineruOptionState.hideTextSource,
+    },
+  ];
+  if (!mineruOptionState.hideTextSource) {
+    options.push({
+      mode: "text",
+      badge: getContextSourceModeBadgeLabel("text") || "Text",
+      paperContext: { ...baseContext, contentSourceMode: "text" },
+      title: baseContext.title,
+      description: `${attachmentTitle} - ${getContextSourceModeHumanLabel("text")}`,
+    });
+  }
+  options.push(pdfOption);
+  return options;
+}
+
 export function buildPaperSourceOptions(
   params: BuildPaperSourceOptionsParams,
 ): PaperSourceOption[] {
@@ -293,6 +370,33 @@ export function buildPaperSourceOptions(
     params.getItemById,
   );
   if (!parentItem) {
+    const standaloneAttachment =
+      params.paperContext.itemId === params.paperContext.contextItemId
+        ? params.getItemById(params.paperContext.contextItemId) || null
+        : null;
+    if (
+      standaloneAttachment?.isAttachment?.() &&
+      !standaloneAttachment.parentID &&
+      resolveContextAttachmentSupport(standaloneAttachment)?.kind === "pdf"
+    ) {
+      const standaloneId = Math.floor(Number(standaloneAttachment.id));
+      const baseContext: PaperContextRef = {
+        ...params.paperContext,
+        itemId: standaloneId,
+        contextItemId: standaloneId,
+        title:
+          sanitizeText(params.paperContext.title).trim() ||
+          getAttachmentCardTitle(standaloneAttachment),
+        attachmentTitle: getAttachmentCardTitle(standaloneAttachment),
+        contentSourceMode: "text",
+      };
+      return buildPdfAttachmentSourceOptions({
+        baseContext,
+        attachment: standaloneAttachment,
+        picker: params,
+        translate,
+      });
+    }
     const fallbackMode = params.webChatMode
       ? "pdf"
       : params.paperContext.contentSourceMode || "text";
@@ -326,67 +430,14 @@ export function buildPaperSourceOptions(
         "text",
       );
       if (!baseContext) continue;
-      const pdfOption: PaperSourceOption = {
-        mode: "pdf",
-        badge: getContextSourceModeBadgeLabel("pdf") || "PDF",
-        paperContext: { ...baseContext, contentSourceMode: "pdf" },
-        title: baseContext.title,
-        description: `${attachmentTitle} - ${getContextSourceModeHumanLabel(
-          "pdf",
-        )}`,
-        disabledReason:
-          params.pdfSupport === "native" ||
-          params.pdfSupport === "local_path" ||
-          params.webChatMode
-            ? undefined
-            : params.fullPdfUnsupportedMessage,
-      };
-      if (params.webChatMode) {
-        options.push(pdfOption);
-        continue;
-      }
-      const mineruOptionState = resolveMineruOptionState(baseContext, params);
-      const mineruDisabledReason = shouldDisableMineruParsingAction({
-        action: mineruOptionState.action,
-        isMineruEnabled: params.isMineruEnabled,
-      })
-        ? params.mineruDisabledParsingMessage
-        : undefined;
-      options.push({
-        mode: "mineru",
-        badge: getContextSourceModeBadgeLabel("mineru") || "MD",
-        paperContext: { ...baseContext, contentSourceMode: "mineru" },
-        title: baseContext.title,
-        description: getMineruSourceDescription({
-          attachmentTitle,
-          state: mineruOptionState.state,
-          disabledReason: mineruDisabledReason,
+      options.push(
+        ...buildPdfAttachmentSourceOptions({
+          baseContext,
+          attachment,
+          picker: params,
           translate,
         }),
-        disabledReason: mineruDisabledReason,
-        mineruState: mineruOptionState.state,
-        mineruAction: mineruOptionState.action,
-        mineruActionTitle: getMineruActionTitle({
-          state: mineruOptionState.state,
-          disabledReason: mineruDisabledReason,
-          isMineruEnabled: params.isMineruEnabled,
-          mineruDisabledParsingMessage: params.mineruDisabledParsingMessage,
-          translate,
-        }),
-        hideTextSource: mineruOptionState.hideTextSource,
-      });
-      if (!mineruOptionState.hideTextSource) {
-        options.push({
-          mode: "text",
-          badge: getContextSourceModeBadgeLabel("text") || "Text",
-          paperContext: { ...baseContext, contentSourceMode: "text" },
-          title: baseContext.title,
-          description: `${attachmentTitle} - ${getContextSourceModeHumanLabel(
-            "text",
-          )}`,
-        });
-      }
-      options.push(pdfOption);
+      );
       continue;
     }
     if (attachmentSupport?.kind !== "text") continue;

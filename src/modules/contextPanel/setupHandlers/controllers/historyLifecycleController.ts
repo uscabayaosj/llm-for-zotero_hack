@@ -2732,22 +2732,11 @@ export function createHistoryLifecycleController(
       return;
     }
 
-    let codexSourceProviderSessionId: string | undefined;
-    if (activeSystem === "codex") {
-      const sourceEntry = await conversationRepository.getCatalogEntry({
-        system: "codex",
-        kind,
-        conversationKey: sourceConversationKey,
-      });
-      codexSourceProviderSessionId = sourceEntry?.providerSessionId;
-    }
     const executionEligibility = evaluateConversationForkEligibility({
       system: activeSystem,
       assistantTimestamp,
       assistantMessage: turnPair.assistantMessage,
       history: sourceHistory,
-      requireProviderSession: activeSystem === "codex",
-      sourceProviderSessionId: codexSourceProviderSessionId,
     });
     if (!executionEligibility.allowed) {
       if (status)

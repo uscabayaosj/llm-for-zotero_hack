@@ -109,6 +109,10 @@ function createDeps(params: {
       selectedTexts: requestParams.selectedTexts,
       selectedTextSources: requestParams.selectedTextSources,
       selectedTextNoteContexts: requestParams.selectedTextNoteContexts,
+      selectedPaperContexts: requestParams.paperContexts,
+      pdfPaperContexts: requestParams.pdfPaperContexts,
+      fullTextPaperContexts: requestParams.fullTextPaperContexts,
+      localDocuments: requestParams.localDocuments,
       history: requestParams.history,
     }),
     resolveLocalPdfResources: async () => [],
@@ -142,6 +146,7 @@ function createDeps(params: {
       question: "",
       screenshotImages: [],
       paperContexts: [],
+      pdfPaperContexts: [],
       fullTextPaperContexts: [],
       selectedCollectionContexts: [],
       selectedTagContexts: [],
@@ -249,6 +254,209 @@ describe("agent engine final UI release", function () {
     assert.deepEqual(capturedRequest?.selectedTextNoteContexts, [noteContext]);
   });
 
+  it("preserves raw PDF identity in every initial full-row lifecycle update", async function () {
+    const conversationKey = 4701;
+    const pdfContext = {
+      itemId: 10,
+      contextItemId: 12,
+      title: "Selected raw PDF",
+      contentSourceMode: "pdf" as const,
+    };
+    const storedUpdates: Array<Record<string, unknown>> = [];
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: {
+        onStart?: (runId: string) => Promise<void> | void;
+        onEvent?: (event: any) => Promise<void> | void;
+      }) => {
+        await params.onStart?.("run-pdf-initial");
+        await params.onEvent?.({
+          type: "tool_result",
+          callId: "paper-read",
+          name: "paper_read",
+          ok: true,
+          content: {
+            paperContext: {
+              itemId: 99,
+              contextItemId: 100,
+              title: "Tool citation",
+              contentSourceMode: "text",
+            },
+          },
+        });
+        return {
+          kind: "completed",
+          runId: "run-pdf-initial",
+          text: "Done.",
+          usedFallback: false,
+        } as AgentRuntimeOutcome;
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.updateStoredLatestUserMessage = async (_key, update) => {
+      storedUpdates.push(update as unknown as Record<string, unknown>);
+    };
+
+    await sendAgentTurn(
+      {
+        body: {} as Element,
+        item: fakeItem(conversationKey),
+        question: "Analyze the selected PDF.",
+        pdfPaperContexts: [pdfContext],
+        localDocuments: [
+          {
+            kind: "local_pdf",
+            sourceKey: "zotero-pdf:10:12",
+            itemId: 10,
+            contextItemId: 12,
+            title: "Selected raw PDF",
+            name: "selected.pdf",
+            mimeType: "application/pdf",
+            absolutePath: "/papers/selected.pdf",
+          },
+        ],
+      },
+      deps,
+    );
+
+    assert.isAtLeast(storedUpdates.length, 3);
+    for (const update of storedUpdates) {
+      assert.deepEqual(update.pdfPaperContexts, [pdfContext]);
+    }
+  });
+
+  it("preserves raw PDF identity in retry start and tool-result full-row updates", async function () {
+    const conversationKey = 4702;
+    const pdfContext = {
+      itemId: 20,
+      contextItemId: 22,
+      title: "Retry raw PDF",
+      contentSourceMode: "pdf" as const,
+    };
+    const userMessage = {
+      role: "user" as const,
+      text: "Analyze the selected PDF.",
+      timestamp: 100,
+      runMode: "agent" as const,
+      pdfPaperContexts: [pdfContext],
+    };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "Old answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+    };
+    const storedUpdates: Array<Record<string, unknown>> = [];
+    let capturedRuntimeRequest: Record<string, unknown> | undefined;
+    const runtime = {
+      getCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        multimodal: false,
+      }),
+      runTurn: async (params: {
+        request?: Record<string, unknown>;
+        onStart?: (runId: string) => Promise<void> | void;
+        onEvent?: (event: any) => Promise<void> | void;
+      }) => {
+        capturedRuntimeRequest = params.request;
+        await params.onStart?.("run-pdf-retry");
+        await params.onEvent?.({
+          type: "tool_result",
+          callId: "paper-read",
+          name: "paper_read",
+          ok: true,
+          content: {
+            paperContext: {
+              itemId: 199,
+              contextItemId: 200,
+              title: "Retry tool citation",
+              contentSourceMode: "text",
+            },
+          },
+        });
+        return {
+          kind: "completed",
+          runId: "run-pdf-retry",
+          text: "New answer.",
+          usedFallback: false,
+        } as AgentRuntimeOutcome;
+      },
+    } as unknown as AgentRuntime;
+    const deps = createDeps({
+      runtime,
+      pendingWrites: [],
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: userMessage.pdfPaperContexts || [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
+    });
+    deps.resolveLocalPdfResources = async () => [
+      {
+        kind: "local_pdf",
+        sourceKey: "zotero-pdf:20:22",
+        itemId: 20,
+        contextItemId: 22,
+        title: "Retry raw PDF",
+        name: "retry.pdf",
+        mimeType: "application/pdf",
+        absolutePath: "/papers/retry.pdf",
+      },
+    ];
+    deps.updateStoredLatestUserMessage = async (_key, update) => {
+      storedUpdates.push(update as unknown as Record<string, unknown>);
+    };
+
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.lengthOf(storedUpdates, 2);
+    for (const update of storedUpdates) {
+      assert.deepEqual(update.pdfPaperContexts, [pdfContext]);
+    }
+    assert.deepEqual(capturedRuntimeRequest?.paperContexts || [], []);
+    assert.deepEqual(capturedRuntimeRequest?.pdfPaperContexts, [pdfContext]);
+    assert.lengthOf(
+      (capturedRuntimeRequest?.localDocuments as unknown[]) || [],
+      1,
+    );
+  });
+
   it("preserves the previous assistant response when raw PDF retry preflight fails", async function () {
     const conversationKey = 4812;
     const pendingWrites: Array<[number, number]> = [];
@@ -283,6 +491,15 @@ describe("agent engine final UI release", function () {
       userIndex: 0,
       userMessage,
       assistantMessage,
+    });
+    deps.reconstructRetryPayload = () => ({
+      question: userMessage.text,
+      screenshotImages: [],
+      paperContexts: [],
+      pdfPaperContexts: userMessage.pdfPaperContexts,
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [],
+      selectedTagContexts: [],
     });
     deps.resolveLocalPdfResources = async () => {
       throw new Error("Selected PDF file is missing or unreadable.");

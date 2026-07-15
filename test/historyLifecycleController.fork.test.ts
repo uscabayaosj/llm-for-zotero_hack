@@ -769,7 +769,7 @@ describe("historyLifecycleController fork behavior", function () {
     );
   });
 
-  it("allows Codex latest native agent turns to fork", async function () {
+  it("allows Codex latest local-only raw-PDF turns to fork without a provider session", async function () {
     const forkCalls: Array<
       Parameters<typeof conversationRepository.forkConversation>[0]
     > = [];
@@ -787,7 +787,7 @@ describe("historyLifecycleController fork behavior", function () {
         kind: params.kind,
         libraryID: LIBRARY_ID,
         system: "codex",
-        providerSessionId: "thread-source",
+        providerSessionId: undefined,
       });
     conversationRepository.forkConversation = async (params) => {
       forkCalls.push(params);

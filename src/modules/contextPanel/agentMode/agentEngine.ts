@@ -395,6 +395,7 @@ type ReconstructedRetryPayload = {
   question: string;
   screenshotImages: string[];
   paperContexts: PaperContextRef[];
+  pdfPaperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts: CollectionContextRef[];
@@ -1139,6 +1140,7 @@ export async function sendAgentTurn(
             selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
             screenshotImages: userMessage.screenshotImages,
             paperContexts: userMessage.paperContexts,
+            pdfPaperContexts: userMessage.pdfPaperContexts,
             fullTextPaperContexts: userMessage.fullTextPaperContexts,
             citationPaperContexts: userMessage.citationPaperContexts,
             selectedCollectionContexts: userMessage.selectedCollectionContexts,
@@ -1296,6 +1298,7 @@ export async function sendAgentTurn(
                   userMessage.selectedTextPaperContexts,
                 selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
                 paperContexts: userMessage.paperContexts,
+                pdfPaperContexts: userMessage.pdfPaperContexts,
                 fullTextPaperContexts: userMessage.fullTextPaperContexts,
                 citationPaperContexts: userMessage.citationPaperContexts,
                 selectedCollectionContexts:
@@ -1588,12 +1591,13 @@ export async function retryAgentTurn(
     }
     return;
   }
+  const reconstructedRetryPayload = deps.reconstructRetryPayload(
+    retryPair.userMessage,
+  );
 
   let retryLocalDocuments: readonly LocalDocumentResource[] | undefined;
   try {
-    const pdfPaperContexts = deps.normalizePaperContexts(
-      retryPair.userMessage.pdfPaperContexts,
-    );
+    const pdfPaperContexts = reconstructedRetryPayload.pdfPaperContexts;
     if (pdfPaperContexts.length) {
       retryLocalDocuments =
         await deps.resolveLocalPdfResources(pdfPaperContexts);
@@ -1690,10 +1694,20 @@ export async function retryAgentTurn(
     question,
     screenshotImages,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
-  } = deps.reconstructRetryPayload(retryPair.userMessage);
+  } = reconstructedRetryPayload;
+  retryPair.userMessage.paperContexts = paperContexts.length
+    ? paperContexts
+    : undefined;
+  retryPair.userMessage.pdfPaperContexts = pdfPaperContexts.length
+    ? pdfPaperContexts
+    : undefined;
+  retryPair.userMessage.fullTextPaperContexts = fullTextPaperContexts.length
+    ? fullTextPaperContexts
+    : undefined;
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
     deps.setPendingRequestId(conversationKey, 0);
@@ -1764,7 +1778,7 @@ export async function retryAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsRaw,
     selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
     paperContexts,
-    pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     citationPaperContexts: retryPair.userMessage.citationPaperContexts,
     selectedCollectionContexts,
@@ -1849,6 +1863,7 @@ export async function retryAgentTurn(
             retryPair.userMessage.selectedTextNoteContexts,
           screenshotImages: retryPair.userMessage.screenshotImages,
           paperContexts: retryPair.userMessage.paperContexts,
+          pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
           fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
           citationPaperContexts: retryPair.userMessage.citationPaperContexts,
           selectedCollectionContexts:
@@ -2011,6 +2026,7 @@ export async function retryAgentTurn(
               selectedTextNoteContexts:
                 retryPair.userMessage.selectedTextNoteContexts,
               paperContexts: retryPair.userMessage.paperContexts,
+              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
               fullTextPaperContexts:
                 retryPair.userMessage.fullTextPaperContexts,
               citationPaperContexts:

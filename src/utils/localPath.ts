@@ -83,6 +83,15 @@ export function isWindowsDriveAbsolutePath(path: string | undefined): boolean {
   return parseLocalPath(path).kind === "windows-drive";
 }
 
+export function isAbsoluteLocalPath(path: string | undefined): boolean {
+  if (!path) return false;
+  return (
+    path.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(path) ||
+    /^(?:\\\\|\/\/)[^\\/]+[\\/]+[^\\/]+/.test(path)
+  );
+}
+
 export function joinLocalPath(...parts: string[]): string {
   const filtered = parts.filter((part) => Boolean(part));
   if (!filtered.length) return "";

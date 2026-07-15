@@ -7,8 +7,16 @@ import {
   hasPaperChipSourceMenuOption,
   isPaperContextFullTextOnlySourceMode,
   isPaperContextReaderFocusableSourceMode,
+  resolvePaperContextForcedSendMode,
   resolvePaperContextAttachmentLabel,
 } from "../src/modules/contextPanel/setupHandlers/controllers/composeContextController";
+import {
+  clearPaperContentSourceOverrides,
+  clearPaperModeOverrides,
+  getPaperModeOverride,
+  setPaperContentSourceOverride,
+  setPaperModeOverride,
+} from "../src/modules/contextPanel/contexts/paperContextState";
 
 type MockAttachment = Zotero.Item & {
   titleText: string;
@@ -70,6 +78,11 @@ describe("composeContextController paper card attachment labels", function () {
   after(function () {
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
       originalZotero;
+  });
+
+  afterEach(function () {
+    clearPaperModeOverrides(9001);
+    clearPaperContentSourceOverrides(9001);
   });
 
   it("shows the live attachment title for MinerU cards and tooltips", function () {
@@ -146,6 +159,34 @@ describe("composeContextController paper card attachment labels", function () {
     assert.isTrue(
       hasPaperChipSourceMenuOption([{ mode: "html", paperContext }]),
     );
+  });
+
+  it("forces raw PDF to full-file mode outside WebChat", function () {
+    assert.equal(
+      resolvePaperContextForcedSendMode("pdf", false),
+      "full-sticky",
+    );
+    assert.isNull(resolvePaperContextForcedSendMode("pdf", true));
+    assert.equal(
+      resolvePaperContextForcedSendMode("html", false),
+      "full-sticky",
+    );
+    assert.isNull(resolvePaperContextForcedSendMode("text", false));
+  });
+
+  it("masks but preserves the prior Text send-mode override", function () {
+    const paperContext = makePaperContext({ contextItemId: 101 });
+    setPaperModeOverride(9001, paperContext, "retrieval");
+
+    setPaperContentSourceOverride(9001, paperContext, "pdf");
+    assert.equal(
+      resolvePaperContextForcedSendMode("pdf", false),
+      "full-sticky",
+    );
+    assert.equal(getPaperModeOverride(9001, paperContext), "retrieval");
+
+    setPaperContentSourceOverride(9001, paperContext, "text");
+    assert.equal(getPaperModeOverride(9001, paperContext), "retrieval");
   });
 
   it("keeps the paper chip menu available when there is a real source switch", function () {

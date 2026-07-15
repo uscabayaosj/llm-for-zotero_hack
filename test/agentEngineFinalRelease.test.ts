@@ -2,7 +2,10 @@ import { assert } from "chai";
 
 import type { AgentRuntime } from "../src/agent/runtime";
 import type { AgentEngineDeps } from "../src/modules/contextPanel/agentMode/agentEngine";
-import { sendAgentTurn } from "../src/modules/contextPanel/agentMode/agentEngine";
+import {
+  retryAgentTurn,
+  sendAgentTurn,
+} from "../src/modules/contextPanel/agentMode/agentEngine";
 import type {
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
@@ -108,6 +111,8 @@ function createDeps(params: {
       selectedTextNoteContexts: requestParams.selectedTextNoteContexts,
       history: requestParams.history,
     }),
+    resolveLocalPdfResources: async () => [],
+    preflightLocalPdfCapability: async () => undefined,
     resolveEffectiveRequestConfig: () => ({
       model: "deepseek-v4-pro",
       apiBase: "https://example.invalid/v1",
@@ -242,5 +247,64 @@ describe("agent engine final UI release", function () {
 
     assert.deepEqual(capturedRequest?.selectedTextSources, ["note-edit"]);
     assert.deepEqual(capturedRequest?.selectedTextNoteContexts, [noteContext]);
+  });
+
+  it("preserves the previous assistant response when raw PDF retry preflight fails", async function () {
+    const conversationKey = 4812;
+    const pendingWrites: Array<[number, number]> = [];
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "Previous grounded answer.",
+      timestamp: 200,
+      runMode: "agent" as const,
+    };
+    const userMessage = {
+      role: "user" as const,
+      text: "Analyze this PDF.",
+      timestamp: 100,
+      runMode: "agent" as const,
+      pdfPaperContexts: [
+        {
+          itemId: 10,
+          contextItemId: 11,
+          title: "Exact PDF",
+          contentSourceMode: "pdf" as const,
+        },
+      ],
+    };
+    const deps = createDeps({
+      runtime: createFinalThenHangingRuntime(() => undefined),
+      pendingWrites,
+      idleRestores: [],
+      statuses: [],
+    });
+    deps.chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    deps.findLatestRetryPair = () => ({
+      userIndex: 0,
+      userMessage,
+      assistantMessage,
+    });
+    deps.resolveLocalPdfResources = async () => {
+      throw new Error("Selected PDF file is missing or unreadable.");
+    };
+
+    await retryAgentTurn(
+      {} as Element,
+      fakeItem(conversationKey),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.equal(assistantMessage.text, "Previous grounded answer.");
+    assert.deepEqual(pendingWrites, []);
   });
 });

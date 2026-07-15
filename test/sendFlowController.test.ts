@@ -8,10 +8,14 @@ import type {
   SelectedTextContext,
   TagContextRef,
 } from "../src/modules/contextPanel/types";
-import { includeAutoLoadedPaperContextForTests } from "../src/modules/contextPanel/chat";
+import {
+  includeAutoLoadedPaperContextForTests,
+  normalizeStoredPaperContextRoutesForTests,
+} from "../src/modules/contextPanel/chat";
 import { createSendFlowController } from "../src/modules/contextPanel/setupHandlers/controllers/sendFlowController";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSupportMessages";
 import { setUserSkills, type AgentSkill } from "../src/agent/skills";
+import type { LocalDocumentResource } from "../src/shared/types";
 
 describe("sendFlowController", function () {
   const item = { id: 101 } as unknown as Zotero.Item;
@@ -112,6 +116,55 @@ describe("sendFlowController", function () {
     assert.equal(result.fullTextPaperContexts[0].contentSourceMode, "markdown");
   });
 
+  it("keeps an auto-loaded raw PDF out of ordinary paper pipelines", function () {
+    const currentItem = {
+      id: 707,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+    const pdfContext: PaperContextRef = {
+      itemId: 707,
+      contextItemId: 808,
+      title: "Raw PDF paper",
+      contentSourceMode: "pdf",
+    };
+
+    const result = includeAutoLoadedPaperContextForTests(
+      currentItem,
+      [],
+      [],
+      new Set(["707:808"]),
+      {
+        contextItem: null,
+        paperContext: pdfContext,
+        statusText: "using the selected PDF",
+      },
+    );
+
+    assert.deepEqual(result.paperContexts, []);
+    assert.deepEqual(result.fullTextPaperContexts, []);
+  });
+
+  it("repairs legacy stored rows that duplicated a raw PDF into text routes", function () {
+    const pdfContext: PaperContextRef = {
+      itemId: 707,
+      contextItemId: 808,
+      title: "Raw PDF paper",
+      contentSourceMode: "pdf",
+    };
+
+    const normalized = normalizeStoredPaperContextRoutesForTests({
+      paperContexts: [pdfContext],
+      pdfPaperContexts: [pdfContext],
+      fullTextPaperContexts: [pdfContext],
+    });
+
+    assert.deepEqual(normalized.paperContexts, []);
+    assert.deepEqual(normalized.fullTextPaperContexts, []);
+    assert.lengthOf(normalized.pdfPaperContexts, 1);
+    assert.deepInclude(normalized.pdfPaperContexts[0], pdfContext);
+  });
+
   function createBaseDeps(overrides: Record<string, unknown> = {}) {
     const inputBox = {
       value: "ask question",
@@ -139,6 +192,8 @@ describe("sendFlowController", function () {
     let lastSentModelAttachments: ChatAttachment[] | undefined;
     let lastSentForcedSkillIds: string[] | undefined;
     let lastSentContextSource: ResolvedContextSource | null | undefined;
+    let lastSentPdfPaperContexts: PaperContextRef[] | undefined;
+    let lastSentLocalDocuments: readonly LocalDocumentResource[] | undefined;
     let lastEditRuntimeMode = "";
     let lastEditDisplayQuestion = "";
     let lastEditImages: string[] | undefined;
@@ -171,6 +226,8 @@ describe("sendFlowController", function () {
       getFullTextPaperContexts: () => [selectedPaper],
       getPdfModePaperContexts: () => [],
       resolvePdfPaperAttachments: async () => [],
+      resolveLocalPdfResources: async () => [],
+      preflightLocalPdfCapability: async () => undefined,
       renderPdfPagesAsImages: async () => [],
       getModelPdfSupport: () => "none" as const,
       uploadPdfForProvider: async () => null,
@@ -235,6 +292,8 @@ describe("sendFlowController", function () {
         lastSentCollectionContexts = opts.selectedCollectionContexts;
         lastSentTagContexts = opts.selectedTagContexts;
         lastSentContextSource = opts.contextSource;
+        lastSentPdfPaperContexts = opts.pdfPaperContexts;
+        lastSentLocalDocuments = opts.localDocuments;
       },
       retainPinnedImageState: () => {
         retainImageCalled += 1;
@@ -305,6 +364,8 @@ describe("sendFlowController", function () {
         lastSentCollectionContexts,
         lastSentTagContexts,
         lastSentContextSource,
+        lastSentPdfPaperContexts,
+        lastSentLocalDocuments,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
       getLastEditDisplayQuestion: () => lastEditDisplayQuestion,
@@ -1534,48 +1595,153 @@ describe("sendFlowController", function () {
     });
   });
 
-  it("blocks PDF-mode papers in Codex native app-server", async function () {
-    const pdfAttachment: ChatAttachment = {
-      id: "pdf-paper-34-1",
+  it("sends PDF-mode papers to Codex as exact local resources", async function () {
+    const localPdf: LocalDocumentResource = {
+      kind: "local_pdf",
+      sourceKey: "zotero-pdf:12:34",
+      itemId: 12,
+      contextItemId: 34,
+      title: "Pinned paper",
       name: "paper.pdf",
       mimeType: "application/pdf",
-      sizeBytes: 1024,
-      category: "pdf",
-      storedPath: "/tmp/paper.pdf",
+      absolutePath: "/tmp/paper.pdf",
     };
-    const { controller, getCounts, getLastStatus, getStatuses } =
-      createBaseDeps({
-        getSelectedTextContextEntries: () => [],
-        getSelectedFiles: () => [],
-        getSelectedImages: () => [],
-        getFullTextPaperContexts: () => [],
-        getPdfModePaperContexts: () => [selectedPaper],
-        getSelectedProfile: () => ({
-          entryId: "entry-1",
-          model: "gpt-5.4",
-          apiBase: "https://chatgpt.com/backend-api/codex/responses",
-          apiKey: "",
-          providerLabel: "Codex",
-          authMode: "codex_app_server",
-          providerProtocol: "codex_responses",
-        }),
-        getModelPdfSupport: () => "none" as const,
-        resolvePdfPaperAttachments: async () => [pdfAttachment],
-        renderPdfPagesAsImages: async () => {
-          throw new Error("should not render full PDF pages");
-        },
-      });
+    const { controller, getCounts, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "gpt-5.4",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      getModelPdfSupport: () => "local_path" as const,
+      resolveLocalPdfResources: async () => [localPdf],
+      renderPdfPagesAsImages: async () => {
+        throw new Error("should not render full PDF pages");
+      },
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(getLastSend().lastSentPdfPaperContexts, [selectedPaper]);
+    assert.deepEqual(getLastSend().lastSentLocalDocuments, [localPdf]);
+    assert.deepEqual(getLastSend().lastSentAttachments, undefined);
+    assert.deepEqual(getLastSend().lastSentModelAttachments, undefined);
+  });
+
+  it("preserves the Claude draft when local PDF bridge capability is missing", async function () {
+    const localPdf: LocalDocumentResource = {
+      kind: "local_pdf",
+      sourceKey: "zotero-pdf:12:34",
+      itemId: 12,
+      contextItemId: 34,
+      title: "Pinned paper",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      absolutePath: "/tmp/paper.pdf",
+    };
+    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      isClaudeConversationSystem: () => true,
+      getModelPdfSupport: () => "local_path" as const,
+      resolveLocalPdfResources: async () => [localPdf],
+      preflightLocalPdfCapability: async () => {
+        throw new Error("Update and restart the Claude bridge.");
+      },
+    });
 
     await controller.doSend();
 
     assert.equal(getCounts().sendCalled, 0);
+    assert.equal(inputBox.value, "ask question");
     assert.deepEqual(getLastStatus(), {
-      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      message: "Update and restart the Claude bridge.",
       level: "error",
     });
-    assert.notInclude(
-      getStatuses().map((status) => status.message),
-      "Codex native app-server does not support pinned PDF or binary file attachments directly (paper.pdf). Remove them and try again.",
+  });
+
+  it("uses a raw-PDF default prompt for a path-only send", async function () {
+    const localPdf: LocalDocumentResource = {
+      kind: "local_pdf",
+      sourceKey: "zotero-pdf:12:34",
+      itemId: 12,
+      contextItemId: 34,
+      title: "Pinned paper",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      absolutePath: "/tmp/paper.pdf",
+    };
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      isCodexConversationSystem: () => true,
+      getModelPdfSupport: () => "local_path" as const,
+      resolveLocalPdfResources: async () => [localPdf],
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "";
+
+    await controller.doSend();
+
+    assert.equal(
+      getLastSend().lastSentQuestion,
+      "Please analyze the selected raw PDF.",
+    );
+  });
+
+  it("keeps the plural raw-PDF default when scope context is also selected", async function () {
+    const pdfPaperContexts = [
+      selectedPaper,
+      { itemId: 56, contextItemId: 78, title: "Second paper" },
+    ];
+    const localDocuments: LocalDocumentResource[] = pdfPaperContexts.map(
+      (paperContext, index) => ({
+        kind: "local_pdf",
+        sourceKey: `zotero-pdf:${paperContext.itemId}:${paperContext.contextItemId}`,
+        itemId: paperContext.itemId,
+        contextItemId: paperContext.contextItemId,
+        title: paperContext.title,
+        name: `paper-${index + 1}.pdf`,
+        mimeType: "application/pdf",
+        absolutePath: `/tmp/paper-${index + 1}.pdf`,
+      }),
+    );
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getSelectedCollectionContexts: () => [selectedCollection],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => pdfPaperContexts,
+      isCodexConversationSystem: () => true,
+      getModelPdfSupport: () => "local_path" as const,
+      resolveLocalPdfResources: async () => localDocuments,
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "";
+
+    await controller.doSend();
+
+    assert.equal(
+      getLastSend().lastSentQuestion,
+      "Please analyze the selected raw PDFs.",
     );
   });
 

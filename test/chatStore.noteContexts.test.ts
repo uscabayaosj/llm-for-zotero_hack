@@ -4,7 +4,11 @@ import {
   appendCodexMessage,
   loadCodexConversation,
 } from "../src/codexAppServer/store";
-import { CODEX_GLOBAL_CONVERSATION_KEY_BASE } from "../src/shared/conversationKeySpace";
+import { appendClaudeMessage } from "../src/claudeCode/store";
+import {
+  CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
+  CODEX_GLOBAL_CONVERSATION_KEY_BASE,
+} from "../src/shared/conversationKeySpace";
 import { buildConversationID } from "../src/shared/conversationRegistry";
 
 describe("chatStore note contexts", function () {
@@ -84,6 +88,39 @@ describe("chatStore note contexts", function () {
     );
   });
 
+  it("persists PDF paper identity without a local path", async function () {
+    const queries = installAppendMessageDbFixture();
+
+    await appendMessage(42, {
+      role: "user",
+      text: "Read the raw PDF",
+      timestamp: 100,
+      pdfPaperContexts: [
+        {
+          itemId: 10,
+          contextItemId: 20,
+          title: "Paper",
+          contentSourceMode: "pdf",
+        },
+      ],
+    });
+
+    const insert = findChatMessageInsert(queries);
+    assert.include(insert.sql, "pdf_paper_contexts_json");
+    assert.include(
+      insert.params,
+      JSON.stringify([
+        {
+          itemId: 10,
+          contextItemId: 20,
+          title: "Paper",
+          contentSourceMode: "pdf",
+        },
+      ]),
+    );
+    assert.notInclude(JSON.stringify(insert.params), "/papers/paper.pdf");
+  });
+
   it("persists context usage fields when appending a message", async function () {
     const queries = installAppendMessageDbFixture();
 
@@ -96,9 +133,9 @@ describe("chatStore note contexts", function () {
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 33);
-    assert.equal(insert.params[31], 1234);
-    assert.equal(insert.params[32], 200000);
+    assert.lengthOf(insert.params, 34);
+    assert.equal(insert.params[32], 1234);
+    assert.equal(insert.params[33], 200000);
   });
 
   it("persists forced skill ids when appending a user message", async function () {
@@ -147,6 +184,84 @@ describe("chatStore note contexts", function () {
     assert.deepEqual(messages[0]?.forcedSkillIds, ["write-note"]);
   });
 
+  it("loads persisted PDF identities without constructing paths", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (
+            sql.includes("FROM llm_for_zotero_chat_messages") &&
+            sql.includes("ORDER BY timestamp ASC")
+          ) {
+            return [
+              {
+                role: "user",
+                text: "Read it",
+                timestamp: 100,
+                pdfPaperContextsJson: JSON.stringify([
+                  {
+                    itemId: 10,
+                    contextItemId: 20,
+                    title: "Paper",
+                    contentSourceMode: "pdf",
+                  },
+                ]),
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const messages = await loadConversation(42, 20);
+
+    assert.lengthOf(messages[0]?.pdfPaperContexts || [], 1);
+    assert.deepInclude(messages[0]?.pdfPaperContexts?.[0] || {}, {
+      itemId: 10,
+      contextItemId: 20,
+      title: "Paper",
+      contentSourceMode: "pdf",
+    });
+    assert.notProperty(messages[0] || {}, "localDocuments");
+  });
+
+  it("persists PDF identity without paths in Claude and Codex stores", async function () {
+    const queries = installAppendMessageDbFixture();
+    const message = {
+      role: "user" as const,
+      text: "Read it",
+      timestamp: 100,
+      pdfPaperContexts: [
+        {
+          itemId: 10,
+          contextItemId: 20,
+          title: "Paper",
+          contentSourceMode: "pdf" as const,
+        },
+      ],
+    };
+
+    await appendClaudeMessage(CLAUDE_GLOBAL_CONVERSATION_KEY_BASE + 1, message);
+    await appendCodexMessage(CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1, message);
+
+    for (const table of [
+      "llm_for_zotero_claude_messages",
+      "llm_for_zotero_codex_messages",
+    ]) {
+      const insert = queries.find(({ sql }) =>
+        sql.includes(`INSERT INTO ${table}`),
+      );
+      assert.isOk(insert, `expected insert into ${table}`);
+      assert.include(insert?.sql || "", "pdf_paper_contexts_json");
+      assert.include(
+        insert?.params || [],
+        JSON.stringify(message.pdfPaperContexts),
+      );
+      assert.notInclude(JSON.stringify(insert?.params || []), "/papers/");
+    }
+  });
+
   it("persists an explicit empty model attachment split", async function () {
     const queries = installAppendMessageDbFixture();
 
@@ -193,7 +308,7 @@ describe("chatStore note contexts", function () {
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "generated_images_json");
     assert.equal(
-      insert.params[23],
+      insert.params[24],
       JSON.stringify([
         {
           id: "img-1",
@@ -204,7 +319,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[20],
+      insert.params[21],
       JSON.stringify(["data:image/png;base64,user-input"]),
     );
   });
@@ -304,7 +419,7 @@ describe("chatStore note contexts", function () {
     assert.include(insert.sql, "collection_contexts_json");
     assert.include(insert.sql, "tag_contexts_json");
     assert.equal(
-      insert.params[18],
+      insert.params[19],
       JSON.stringify([
         {
           collectionId: 55,
@@ -314,7 +429,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[19],
+      insert.params[20],
       JSON.stringify([
         {
           name: "Stability",

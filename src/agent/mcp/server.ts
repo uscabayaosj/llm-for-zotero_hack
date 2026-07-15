@@ -106,6 +106,14 @@ const MCP_READ_DEDUPE_TOOL_NAMES = new Set([
   "library_retrieve",
   "paper_read",
 ]);
+const RAW_PDF_RETRIEVAL_TOOL_NAMES = new Set([
+  "paper_read",
+  "read_paper",
+  "search_paper",
+  "view_pdf_pages",
+  "read_attachment",
+  "library_retrieve",
+]);
 const MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY = new Set([
   "run_command",
   "file_io",
@@ -136,6 +144,7 @@ export type ZoteroMcpActiveScope = {
   >;
   paperContext?: PaperContextRef;
   selectedPaperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -575,6 +584,9 @@ function normalizeActiveScope(
         : "unavailable",
     paperContext,
     selectedPaperContexts: normalizePaperContexts(scope.selectedPaperContexts),
+    pdfPaperContexts: (
+      normalizePaperContexts(scope.pdfPaperContexts) || []
+    ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const })),
     fullTextPaperContexts: normalizePaperContexts(scope.fullTextPaperContexts),
     pinnedPaperContexts: normalizePaperContexts(scope.pinnedPaperContexts),
     selectedCollectionContexts: normalizeCollectionContexts(
@@ -724,6 +736,53 @@ function getCachedMcpReadResult(key: string | null): McpToolCallResult | null {
   const cached = mcpReadDedupeCache.get(key);
   if (!cached) return null;
   return cloneMcpResultWithDuplicateMarker(cached.result);
+}
+
+function collectPaperIdentities(value: unknown): Array<{
+  itemId?: number;
+  contextItemId?: number;
+}> {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap(collectPaperIdentities);
+  const record = value as Record<string, unknown>;
+  const itemId = normalizePositiveInt(record.itemId ?? record.itemID);
+  const contextItemId = normalizePositiveInt(
+    record.contextItemId ?? record.contextItemID,
+  );
+  const current = itemId || contextItemId ? [{ itemId, contextItemId }] : [];
+  return [...current, ...Object.values(record).flatMap(collectPaperIdentities)];
+}
+
+function shouldBlockRawPdfRetrieval(params: {
+  toolName: string;
+  rawArgs: unknown;
+  scope: ZoteroMcpActiveScope | null;
+}): boolean {
+  if (!RAW_PDF_RETRIEVAL_TOOL_NAMES.has(params.toolName)) return false;
+  const rawPdfs = normalizePaperContexts(params.scope?.pdfPaperContexts) || [];
+  if (!rawPdfs.length) return false;
+  const identities = collectPaperIdentities(params.rawArgs);
+  if (!identities.length) {
+    const activeItemId = normalizePositiveInt(
+      params.scope?.activeItemId ?? params.scope?.paperItemID,
+    );
+    const activeContextItemId = normalizePositiveInt(
+      params.scope?.activeContextItemId,
+    );
+    return rawPdfs.some(
+      (paper) =>
+        paper.itemId === activeItemId &&
+        paper.contextItemId === activeContextItemId,
+    );
+  }
+  return identities.some((identity) =>
+    rawPdfs.some(
+      (paper) =>
+        (!identity.contextItemId ||
+          paper.contextItemId === identity.contextItemId) &&
+        (!identity.itemId || paper.itemId === identity.itemId),
+    ),
+  );
 }
 
 function rememberMcpReadResult(
@@ -1111,6 +1170,9 @@ function createToolContext(
   const selectedPaperContexts = normalizePaperContexts(
     scope?.selectedPaperContexts,
   );
+  const pdfPaperContexts = (
+    normalizePaperContexts(scope?.pdfPaperContexts) || []
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const fullTextPaperContexts = normalizePaperContexts(
     scope?.fullTextPaperContexts,
   );
@@ -1119,6 +1181,7 @@ function createToolContext(
   );
   const hasExplicitPaperScope = Boolean(
     selectedPaperContexts?.length ||
+    pdfPaperContexts.length ||
     fullTextPaperContexts?.length ||
     pinnedPaperContexts?.length,
   );
@@ -1155,6 +1218,7 @@ function createToolContext(
     selectedPaperContexts:
       selectedPaperContexts ||
       (!hasExplicitPaperScope && paperContext ? [paperContext] : undefined),
+    pdfPaperContexts: pdfPaperContexts.length ? pdfPaperContexts : undefined,
     fullTextPaperContexts:
       fullTextPaperContexts ||
       (!hasExplicitPaperScope && paperContext ? [paperContext] : undefined),
@@ -1338,6 +1402,27 @@ async function handleToolsCall(
         {
           type: "text",
           text: `Zotero MCP tool is not available in Codex native mode: ${name}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  if (
+    shouldBlockRawPdfRetrieval({
+      toolName: name,
+      rawArgs,
+      scope: resolveScopedMcpScope(headers),
+    })
+  ) {
+    const error =
+      "This paper is in raw PDF mode. Read the exact current-turn local PDF path, or switch to Text/MinerU to use Zotero retrieval.";
+    completeActivity({ ok: false, error });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: false, error }),
         },
       ],
       isError: true,

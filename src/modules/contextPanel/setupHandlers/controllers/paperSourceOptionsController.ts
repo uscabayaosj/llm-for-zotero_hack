@@ -42,6 +42,16 @@ export type PaperSourceOption = {
   hideTextSource?: boolean;
 };
 
+export function resolvePaperPdfSupportForConversation(params: {
+  basePdfSupport: PdfSupport;
+  isClaudeCode: boolean;
+  isCodex: boolean;
+}): PdfSupport {
+  return params.isClaudeCode || params.isCodex
+    ? "local_path"
+    : params.basePdfSupport;
+}
+
 export function canRevealMineruCacheForSourceOption(
   option: Pick<
     PaperSourceOption,
@@ -325,7 +335,9 @@ export function buildPaperSourceOptions(
           "pdf",
         )}`,
         disabledReason:
-          params.pdfSupport === "native" || params.webChatMode
+          params.pdfSupport === "native" ||
+          params.pdfSupport === "local_path" ||
+          params.webChatMode
             ? undefined
             : params.fullPdfUnsupportedMessage,
       };

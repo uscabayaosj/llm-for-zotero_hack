@@ -11,7 +11,11 @@ import {
   isContextSourceModeTextLikeAttachment,
 } from "../../contextSourceModes";
 import { sanitizeText } from "../../textUtils";
-import type { PaperContextRef, PaperContentSourceMode } from "../../types";
+import type {
+  PaperContextRef,
+  PaperContextSendMode,
+  PaperContentSourceMode,
+} from "../../types";
 
 export function normalizePaperContextEntries(
   value: unknown,
@@ -39,6 +43,15 @@ export function isPaperContextFullTextOnlySourceMode(
   mode?: PaperContentSourceMode | null,
 ): boolean {
   return isTextLikeAttachmentSourceMode(mode);
+}
+
+export function resolvePaperContextForcedSendMode(
+  mode: PaperContentSourceMode | null | undefined,
+  webChatMode: boolean,
+): PaperContextSendMode | null {
+  if (mode === "pdf" && !webChatMode) return "full-sticky";
+  if (isPaperContextFullTextOnlySourceMode(mode)) return "full-sticky";
+  return null;
 }
 
 export function isPaperContextReaderFocusableSourceMode(

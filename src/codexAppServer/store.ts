@@ -106,6 +106,7 @@ const CODEX_MESSAGE_SELECT_COLUMNS_SQL = `id,
             selected_text_note_contexts_json AS selectedTextNoteContextsJson,
             forced_skill_ids_json AS forcedSkillIdsJson,
             paper_contexts_json AS paperContextsJson,
+            pdf_paper_contexts_json AS pdfPaperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson,
             quote_citations_json AS quoteCitationsJson,
@@ -486,6 +487,7 @@ const MESSAGE_TRANSFER_COLUMNS = [
   "selected_text_note_contexts_json",
   "forced_skill_ids_json",
   "paper_contexts_json",
+  "pdf_paper_contexts_json",
   "full_text_paper_contexts_json",
   "citation_paper_contexts_json",
   "quote_citations_json",
@@ -518,6 +520,7 @@ const CODEX_MESSAGE_COPY_COLUMNS = [
   "selected_text_note_contexts_json",
   "forced_skill_ids_json",
   "paper_contexts_json",
+  "pdf_paper_contexts_json",
   "full_text_paper_contexts_json",
   "citation_paper_contexts_json",
   "quote_citations_json",
@@ -844,6 +847,7 @@ async function getCodexMessagePaperContextRows(
 ): Promise<PaperContextJsonColumns[]> {
   return ((await Zotero.DB.queryAsync(
     `SELECT paper_contexts_json AS paperContextsJson,
+            pdf_paper_contexts_json AS pdfPaperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson
@@ -851,6 +855,7 @@ async function getCodexMessagePaperContextRows(
      WHERE conversation_key = ?
        AND (
          paper_contexts_json IS NOT NULL OR
+         pdf_paper_contexts_json IS NOT NULL OR
          full_text_paper_contexts_json IS NOT NULL OR
          selected_text_paper_contexts_json IS NOT NULL OR
          citation_paper_contexts_json IS NOT NULL
@@ -1083,6 +1088,7 @@ export async function initCodexAppServerStore(): Promise<void> {
         selected_text_note_contexts_json TEXT,
         forced_skill_ids_json TEXT,
         paper_contexts_json TEXT,
+        pdf_paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
         citation_paper_contexts_json TEXT,
         quote_citations_json TEXT,
@@ -1148,6 +1154,15 @@ export async function initCodexAppServerStore(): Promise<void> {
         (column) => column?.name === "citation_paper_contexts_json",
       ),
     );
+    const hasPdfPaperContextsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "pdf_paper_contexts_json"),
+    );
+    if (!hasPdfPaperContextsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CODEX_MESSAGES_TABLE}
+         ADD COLUMN pdf_paper_contexts_json TEXT`,
+      );
+    }
     if (!hasCitationPaperContextsJsonColumn) {
       await Zotero.DB.queryAsync(
         `ALTER TABLE ${CODEX_MESSAGES_TABLE}
@@ -1265,6 +1280,9 @@ export async function appendCodexMessage(
     (context) => context.noteContext,
   );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
+  const pdfPaperContexts = normalizePaperContextRefs(
+    message.pdfPaperContexts,
+  ).map((context) => ({ ...context, contentSourceMode: "pdf" as const }));
   const fullTextPaperContexts = normalizePaperContextRefs(
     message.fullTextPaperContexts,
   );
@@ -1292,8 +1310,8 @@ export async function appendCodexMessage(
   await Zotero.DB.executeTransaction(async () => {
     await Zotero.DB.queryAsync(
       `INSERT INTO ${CODEX_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conversationID,
         normalizedKey,
@@ -1318,6 +1336,7 @@ export async function appendCodexMessage(
           ? serializeForcedSkillIds(message.forcedSkillIds)
           : null,
         paperContexts.length ? JSON.stringify(paperContexts) : null,
+        pdfPaperContexts.length ? JSON.stringify(pdfPaperContexts) : null,
         fullTextPaperContexts.length
           ? JSON.stringify(fullTextPaperContexts)
           : null,
@@ -1530,6 +1549,24 @@ export async function loadCodexConversation(
         return undefined;
       }
     })();
+    const pdfPaperContexts = (() => {
+      if (
+        typeof row.pdfPaperContextsJson !== "string" ||
+        !row.pdfPaperContextsJson
+      )
+        return undefined;
+      try {
+        const normalized = normalizePaperContextRefs(
+          JSON.parse(row.pdfPaperContextsJson) as unknown,
+        ).map((context) => ({
+          ...context,
+          contentSourceMode: "pdf" as const,
+        }));
+        return normalized.length ? normalized : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
     const fullTextPaperContexts = (() => {
       if (
         typeof row.fullTextPaperContextsJson !== "string" ||
@@ -1658,6 +1695,7 @@ export async function loadCodexConversation(
       forcedSkillIds:
         role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
       paperContexts,
+      pdfPaperContexts,
       fullTextPaperContexts,
       citationPaperContexts,
       quoteCitations,
@@ -1827,6 +1865,7 @@ export async function updateLatestCodexUserMessage(
     | "selectedTextNoteContexts"
     | "forcedSkillIds"
     | "paperContexts"
+    | "pdfPaperContexts"
     | "fullTextPaperContexts"
     | "citationPaperContexts"
     | "screenshotImages"
@@ -1873,6 +1912,7 @@ export async function updateLatestCodexUserMessage(
            selected_text_note_contexts_json = ?,
            forced_skill_ids_json = ?,
            paper_contexts_json = ?,
+           pdf_paper_contexts_json = ?,
            full_text_paper_contexts_json = ?,
            citation_paper_contexts_json = ?,
            screenshot_images = ?,
@@ -1904,6 +1944,16 @@ export async function updateLatestCodexUserMessage(
         serializeForcedSkillIds(message.forcedSkillIds),
         message.paperContexts?.length
           ? JSON.stringify(normalizePaperContextRefs(message.paperContexts))
+          : null,
+        message.pdfPaperContexts?.length
+          ? JSON.stringify(
+              normalizePaperContextRefs(message.pdfPaperContexts).map(
+                (context) => ({
+                  ...context,
+                  contentSourceMode: "pdf" as const,
+                }),
+              ),
+            )
           : null,
         message.fullTextPaperContexts?.length
           ? JSON.stringify(

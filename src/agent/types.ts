@@ -8,6 +8,7 @@ import type {
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
+  LocalDocumentResource,
   ResolvedSelectedTextAnchor,
   SelectedTextContext,
   SelectedTextSource,
@@ -36,6 +37,8 @@ export type AgentRequest = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   selectedPaperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
+  localDocuments?: readonly LocalDocumentResource[];
   fullTextPaperContexts?: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];

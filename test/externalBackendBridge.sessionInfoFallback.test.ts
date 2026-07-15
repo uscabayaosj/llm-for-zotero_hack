@@ -3,6 +3,9 @@ import { describe, it } from "mocha";
 import {
   buildExternalBridgeContextSignatureForTests,
   buildExternalBridgeContextEnvelopeForTests,
+  buildBridgeRuntimeRequestForTests,
+  buildClaudeBridgeCustomInstructionForTests,
+  supportsClaudeBridgeLocalPdfPathsForTests,
   fetchExternalBridgeSessionInfo,
 } from "../src/agent/externalBackendBridge";
 import {
@@ -19,6 +22,70 @@ function paper(index: number) {
 }
 
 describe("external bridge session-info fallback", function () {
+  it("makes the raw PDF policy authoritative after Claude skill guidance", function () {
+    const previousZotero = (globalThis as { Zotero?: unknown }).Zotero;
+    (globalThis as { Zotero?: unknown }).Zotero = {
+      Prefs: { get: () => "" },
+    };
+    let instruction = "";
+    try {
+      instruction = buildClaudeBridgeCustomInstructionForTests(true);
+    } finally {
+      (globalThis as { Zotero?: unknown }).Zotero = previousZotero;
+    }
+
+    assert.notInclude(
+      instruction,
+      "paper-content questions before relying on filesystem exploration",
+    );
+    assert.match(
+      instruction.trim(),
+      /Raw PDF transport policy[\s\S]*Never fall back to extracted or retrieved paper text\.$/,
+    );
+  });
+
+  it("preserves exact local PDF resources in the bridge request", async function () {
+    const localDocuments = [
+      {
+        kind: "local_pdf" as const,
+        sourceKey: "zotero-pdf:10:20" as const,
+        itemId: 10,
+        contextItemId: 20,
+        title: "Paper",
+        name: "paper.pdf",
+        mimeType: "application/pdf" as const,
+        absolutePath: "/papers/paper.pdf",
+      },
+    ];
+
+    const request = await buildBridgeRuntimeRequestForTests({
+      conversationKey: 42,
+      mode: "agent",
+      userText: "read it",
+      localDocuments,
+    });
+
+    assert.deepEqual(request.localDocuments, localDocuments);
+  });
+
+  it("fails closed for bridge health responses without local PDF capability", function () {
+    assert.isTrue(
+      supportsClaudeBridgeLocalPdfPathsForTests({
+        ok: true,
+        protocolVersion: 2,
+        capabilities: ["local_pdf_paths"],
+      }),
+    );
+    assert.isFalse(supportsClaudeBridgeLocalPdfPathsForTests({ ok: true }));
+    assert.isFalse(
+      supportsClaudeBridgeLocalPdfPathsForTests({
+        ok: true,
+        protocolVersion: 1,
+        capabilities: ["local_pdf_paths"],
+      }),
+    );
+  });
+
   it("continues probing after a 404 from an earlier candidate", async function () {
     const originalFetch = globalThis.fetch;
     const calls: string[] = [];

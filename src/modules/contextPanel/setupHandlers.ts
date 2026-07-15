@@ -369,10 +369,10 @@ import {
   formatPaperContextChipLabel,
   formatPaperContextChipTitle,
   hasPaperChipSourceMenuOption,
-  isPaperContextFullTextOnlySourceMode,
   isPaperContextReaderFocusableSourceMode,
   normalizePaperContextEntries,
   resolvePaperContextDisplayMetadata,
+  resolvePaperContextForcedSendMode,
 } from "./setupHandlers/controllers/composeContextController";
 import { getPaperContextCollapseState } from "./setupHandlers/controllers/paperContextCollapseController";
 import {
@@ -401,6 +401,7 @@ import { buildInlineEditRetryContextSnapshot } from "./setupHandlers/controllers
 import { attachAssistantSelectionPopup } from "./setupHandlers/controllers/assistantSelectionPopupController";
 import { attachMenuActionController } from "./setupHandlers/controllers/menuActionController";
 import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pdfPaperAttachmentResolver";
+import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
 import { resolvePdfModeModelInputs } from "./setupHandlers/controllers/pdfPaperModelInputController";
 import { createWebChatHistoryController } from "./setupHandlers/controllers/webChatHistoryController";
 import { createHistoryLifecycleController } from "./setupHandlers/controllers/historyLifecycleController";
@@ -420,6 +421,7 @@ import {
 import {
   buildPaperSourceOptions as buildPaperSourceOptionsController,
   canRevealMineruCacheForSourceOption,
+  resolvePaperPdfSupportForConversation,
   type MineruSourceAction,
   type MineruSourceUiState,
   type PaperSourceOption,
@@ -2165,13 +2167,11 @@ export function setupHandlers(
     itemId: number,
     paperContext: PaperContextRef,
   ): PaperContextSendMode => {
-    if (
-      isPaperContextFullTextOnlySourceMode(
-        resolvePaperContentSourceMode(itemId, paperContext),
-      )
-    ) {
-      return "full-sticky";
-    }
+    const forcedMode = resolvePaperContextForcedSendMode(
+      resolvePaperContentSourceMode(itemId, paperContext),
+      isWebChatMode(),
+    );
+    if (forcedMode) return forcedMode;
     const explicitMode = getPaperModeOverride(itemId, paperContext);
     if (explicitMode) return explicitMode;
     const autoLoadedPaperContext =
@@ -2669,13 +2669,17 @@ export function setupHandlers(
     const inputMode = getAdvancedModelParamsForEntry(
       selectedProfile?.entryId,
     )?.inputMode;
-    return getModelPdfSupport(
-      modelName,
-      selectedProfile?.providerProtocol,
-      selectedProfile?.authMode,
-      selectedProfile?.apiBase,
-      inputMode,
-    );
+    return resolvePaperPdfSupportForConversation({
+      basePdfSupport: getModelPdfSupport(
+        modelName,
+        selectedProfile?.providerProtocol,
+        selectedProfile?.authMode,
+        selectedProfile?.apiBase,
+        inputMode,
+      ),
+      isClaudeCode: isClaudeConversationSystem(),
+      isCodex: isCodexConversationSystem(),
+    });
   };
 
   const getMineruDisabledParsingMessage = (): string =>
@@ -6366,6 +6370,7 @@ export function setupHandlers(
       ztoolkit.log(message, ...args);
     },
   });
+  const localPdfResourceResolver = createLocalPdfResourceResolver();
 
   const sendFlowController = createSendFlowController({
     body,
@@ -6398,9 +6403,25 @@ export function setupHandlers(
     hasUploadedPdfInCurrentWebChatConversation,
     markWebChatPdfUploadedForCurrentConversation,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
+    resolveLocalPdfResources: localPdfResourceResolver.resolve,
+    preflightLocalPdfCapability: async () => {
+      const { preflightClaudeBridgeLocalPdfCapability } =
+        await import("../../agent/externalBackendBridge");
+      await preflightClaudeBridgeLocalPdfCapability();
+    },
     renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
     getModelPdfSupport: (modelName, protocol, authMode, apiBase, inputMode) =>
-      getModelPdfSupport(modelName, protocol, authMode, apiBase, inputMode),
+      resolvePaperPdfSupportForConversation({
+        basePdfSupport: getModelPdfSupport(
+          modelName,
+          protocol,
+          authMode,
+          apiBase,
+          inputMode,
+        ),
+        isClaudeCode: isClaudeConversationSystem(),
+        isCodex: isCodexConversationSystem(),
+      }),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
@@ -6656,11 +6677,13 @@ export function setupHandlers(
         currentItem.id,
         currentItem.id === item?.id ? resolveAutoLoadedPaperContext() : null,
       );
-      // Agent mode always uses text/MinerU pipeline — it fetches PDF pages on demand
+      // The original plugin agent keeps text/MinerU behavior; Claude Code can
+      // explicitly receive raw PDF paths.
       const isAgent = getCurrentRuntimeMode() === "agent";
-      const pdfModePapers = isAgent
-        ? []
-        : getEffectivePdfModePaperContexts(currentItem, allPaperContexts);
+      const pdfModePapers =
+        isAgent && !isClaudeConversationSystem()
+          ? []
+          : getEffectivePdfModePaperContexts(currentItem, allPaperContexts);
       const pdfModeKeys = new Set(
         pdfModePapers.map((p) => `${p.itemId}:${p.contextItemId}`),
       );
@@ -6697,9 +6720,27 @@ export function setupHandlers(
             ztoolkit.log(message, ...args);
           },
           isScreenshotUnsupportedModel,
-          getModelPdfSupport,
+          getModelPdfSupport: (
+            modelName,
+            protocol,
+            authMode,
+            apiBase,
+            inputMode,
+          ) =>
+            resolvePaperPdfSupportForConversation({
+              basePdfSupport: getModelPdfSupport(
+                modelName,
+                protocol,
+                authMode,
+                apiBase,
+                inputMode,
+              ),
+              isClaudeCode: isClaudeConversationSystem(),
+              isCodex: isCodexConversationSystem(),
+            }),
           resolvePdfPaperAttachments:
             pdfPaperResolver.resolvePdfPaperAttachments,
+          resolveLocalPdfResources: localPdfResourceResolver.resolve,
           renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
           uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
           resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
@@ -6727,7 +6768,26 @@ export function setupHandlers(
         modelFiles,
         pdfPageImageDataUrls,
         pdfUploadSystemMessages,
+        localDocuments,
       } = pdfInputs;
+      if (localDocuments.length && isClaudeConversationSystem()) {
+        try {
+          const { preflightClaudeBridgeLocalPdfCapability } =
+            await import("../../agent/externalBackendBridge");
+          await preflightClaudeBridgeLocalPdfCapability();
+        } catch (error) {
+          if (status) {
+            setStatus(
+              status,
+              error instanceof Error && error.message.trim()
+                ? error.message
+                : "Claude bridge does not support raw local PDF paths.",
+              "error",
+            );
+          }
+          return;
+        }
+      }
       const images = [
         ...(isScreenshotUnsupportedModel(
           activeModelName,
@@ -6769,9 +6829,11 @@ export function setupHandlers(
           selectedTagContexts,
           screenshotImages: images,
           paperContexts: selectedPaperContexts,
+          pdfPaperContexts: pdfModePapers,
           fullTextPaperContexts,
           attachments: selectedFiles,
           modelAttachments: modelFiles,
+          localDocuments,
           pdfUploadSystemMessages: pdfUploadSystemMessages.length
             ? pdfUploadSystemMessages
             : undefined,

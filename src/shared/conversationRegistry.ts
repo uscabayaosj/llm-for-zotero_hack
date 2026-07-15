@@ -45,6 +45,7 @@ export type ConversationScopeValidationDetails = {
 
 export type PaperContextJsonColumns = {
   paperContextsJson?: unknown;
+  pdfPaperContextsJson?: unknown;
   fullTextPaperContextsJson?: unknown;
   selectedTextPaperContextsJson?: unknown;
   citationPaperContextsJson?: unknown;
@@ -682,6 +683,7 @@ export function getPaperContextOwnershipEvidenceFromRows(
   const ids = new Set<number>();
   for (const row of rows) {
     collectPaperIdsFromValue(row.paperContextsJson, ids);
+    collectPaperIdsFromValue(row.pdfPaperContextsJson, ids);
     collectPaperIdsFromValue(row.fullTextPaperContextsJson, ids);
     collectPaperIdsFromValue(row.selectedTextPaperContextsJson, ids);
     collectPaperIdsFromValue(row.citationPaperContextsJson, ids);

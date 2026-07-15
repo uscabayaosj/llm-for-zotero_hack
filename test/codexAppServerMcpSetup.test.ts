@@ -455,6 +455,21 @@ describe("Codex app-server MCP setup", function () {
     );
   });
 
+  it("enables the native shell only when a local PDF turn requests it", function () {
+    const withPdf = buildCodexZoteroMcpThreadConfig({
+      profileSignature: "profile-pdf",
+      scopeToken: "scope-token",
+      enableShellTool: true,
+    });
+
+    assert.deepEqual(withPdf.config.features, { shell_tool: true });
+    const withoutPdf = buildCodexZoteroMcpThreadConfig({
+      profileSignature: "profile-text",
+      scopeToken: "scope-token",
+    });
+    assert.deepEqual(withoutPdf.config.features, { shell_tool: false });
+  });
+
   it("rejects native turns when required Zotero MCP tools are missing", function () {
     assert.throws(
       () =>

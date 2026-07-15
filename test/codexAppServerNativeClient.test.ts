@@ -7,6 +7,7 @@ import {
   buildCodexNativeApprovalResponseFromResolution,
   buildCodexNativeScopedMcpScopeForTests,
   buildCodexNativeVisibleTurnContextBlockForTests,
+  buildCodexNativeLocalPdfRuntimeOptionsForTests,
   buildZoteroEnvironmentManifest,
   compactCodexAppServerConversation,
   compactCodexAppServerThread,
@@ -37,6 +38,64 @@ import { clearCodexNativeSkillClassifierCache } from "../src/codexAppServer/nati
 const here = dirname(fileURLToPath(import.meta.url));
 
 describe("Codex app-server native client", function () {
+  it("renders exact current-turn local PDF paths as authoritative context", function () {
+    const block = buildCodexNativeVisibleTurnContextBlockForTests({
+      scope: {
+        conversationKey: 42,
+        libraryID: 1,
+        libraryName: "My Library",
+        kind: "paper",
+        activeItemId: 10,
+      },
+      skillContext: {
+        pdfPaperContexts: [
+          {
+            itemId: 10,
+            contextItemId: 20,
+            title: "Paper",
+            contentSourceMode: "pdf",
+          },
+        ],
+        localDocuments: [
+          {
+            kind: "local_pdf",
+            sourceKey: "zotero-pdf:10:20",
+            itemId: 10,
+            contextItemId: 20,
+            title: "Paper",
+            name: "paper.pdf",
+            mimeType: "application/pdf",
+            absolutePath: "/papers/paper.pdf",
+          },
+        ],
+      },
+    });
+
+    assert.include(block, "zotero-pdf:10:20");
+    assert.include(block, "/papers/paper.pdf");
+    assert.include(block, "current-turn list is authoritative");
+    assert.include(block, "Do not substitute");
+  });
+
+  it("scopes Codex local PDF turns to read-only current parent roots", function () {
+    const options = buildCodexNativeLocalPdfRuntimeOptionsForTests([
+      "/papers/a/paper.pdf",
+      "/papers/b/other.pdf",
+      "/papers/a/second.pdf",
+      "C:\\Papers\\windows.pdf",
+      "\\\\server\\share\\unc.pdf",
+    ]);
+
+    assert.equal(options.sandbox, "read-only");
+    assert.deepEqual(options.sandboxPolicy, { type: "readOnly" });
+    assert.deepEqual(options.runtimeWorkspaceRoots, [
+      "/papers/a",
+      "/papers/b",
+      "C:\\Papers",
+      "\\\\server\\share",
+    ]);
+  });
+
   afterEach(function () {
     clearCodexNativeReadLedger();
     clearCodexNativeSkillClassifierCache();
@@ -515,6 +574,35 @@ describe("Codex app-server native client", function () {
     );
     assert.notInclude(manifest, "page N");
     assert.notInclude(manifest, "use shell creatively");
+  });
+
+  it("replaces ordinary paper retrieval guidance for raw PDF turns", function () {
+    const manifest = buildZoteroEnvironmentManifest({
+      scope: {
+        conversationKey: 1,
+        libraryID: 1,
+        kind: "paper",
+        paperItemID: 42,
+        activeItemId: 42,
+        activeContextItemId: 43,
+        paperTitle: "Native Paper",
+      },
+      mcpEnabled: true,
+      mcpReady: true,
+      rawPdfMode: true,
+      skillInstructionBlock:
+        "Skill: simple-paper-qa\nCall paper_read overview.",
+    });
+
+    assert.notInclude(
+      manifest,
+      "Paper content: use paper_read overview for broad single-paper summaries",
+    );
+    assert.include(manifest, "Skill: simple-paper-qa");
+    assert.match(
+      manifest,
+      /Raw PDF transport policy[\s\S]*Do not use `paper_read`[\s\S]*$/,
+    );
   });
 
   it("renders selected tag resources in Codex native visible context", function () {

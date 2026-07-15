@@ -1,5 +1,8 @@
 import { MAX_SELECTED_IMAGES } from "../../constants";
-import type { ModelInputMode } from "../../../../shared/types";
+import type {
+  LocalDocumentResource,
+  ModelInputMode,
+} from "../../../../shared/types";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import type { PdfSupport } from "../../../../providers";
 import type {
@@ -89,6 +92,10 @@ type SendFlowControllerDeps = {
   resolvePdfPaperAttachments: (
     paperContexts: PaperContextRef[],
   ) => Promise<ChatAttachment[]>;
+  resolveLocalPdfResources: (
+    paperContexts: PaperContextRef[],
+  ) => Promise<readonly LocalDocumentResource[]>;
+  preflightLocalPdfCapability?: () => Promise<void>;
   renderPdfPagesAsImages: (
     paperContexts: PaperContextRef[],
     maxImages?: number,
@@ -331,6 +338,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           isScreenshotUnsupportedModel: deps.isScreenshotUnsupportedModel,
           getModelPdfSupport: deps.getModelPdfSupport,
           resolvePdfPaperAttachments: deps.resolvePdfPaperAttachments,
+          resolveLocalPdfResources: deps.resolveLocalPdfResources,
           renderPdfPagesAsImages: deps.renderPdfPagesAsImages,
           uploadPdfForProvider: deps.uploadPdfForProvider,
           resolvePdfBytes: deps.resolvePdfBytes,
@@ -351,7 +359,21 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         modelFiles,
         pdfPageImageDataUrls,
         pdfUploadSystemMessages,
+        localDocuments,
       } = pdfInputs;
+      if (localDocuments.length && deps.isClaudeConversationSystem()) {
+        try {
+          await deps.preflightLocalPdfCapability?.();
+        } catch (error) {
+          deps.setStatusMessage?.(
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : "Claude bridge does not support raw local PDF paths.",
+            "error",
+          );
+          return;
+        }
+      }
       const hasImageInputs =
         selectedImages.length > 0 || pdfPageImageDataUrls.length > 0;
       if (
@@ -377,6 +399,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         !selectedCollectionContexts.length &&
         !selectedTagContexts.length &&
         !selectedFiles.length &&
+        !localDocuments.length &&
         !hasImageInputs
       ) {
         return;
@@ -384,6 +407,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
 
       const hasNonImageAttachments =
         selectedFiles.length > 0 ||
+        localDocuments.length > 0 ||
         selectedPaperContexts.length > 0 ||
         selectedCollectionContexts.length > 0 ||
         selectedTagContexts.length > 0;
@@ -397,6 +421,12 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       if (!resolvedPromptText && hasImageInputs) {
         resolvedPromptText = "Please analyze the attached images.";
       }
+      if (!resolvedPromptText && localDocuments.length) {
+        resolvedPromptText =
+          localDocuments.length === 1
+            ? "Please analyze the selected raw PDF."
+            : "Please analyze the selected raw PDFs.";
+      }
       if (!resolvedPromptText) return;
 
       const selectedScopeContextCount =
@@ -408,6 +438,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         !primarySelectedText &&
         selectedScopeContextCount > 0 &&
         !selectedFiles.length &&
+        !localDocuments.length &&
         !hasImageInputs
       ) {
         resolvedPromptText = selectedPaperContexts.length
@@ -543,11 +574,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
             : undefined,
           screenshotImages: images,
           paperContexts: selectedPaperContexts,
+          pdfPaperContexts: pdfModePaperContexts,
           fullTextPaperContexts,
           selectedCollectionContexts,
           selectedTagContexts,
           attachments: selectedFiles.length ? selectedFiles : undefined,
           modelAttachments: selectedFiles.length ? modelFiles : undefined,
+          localDocuments: localDocuments.length ? localDocuments : undefined,
           pdfUploadSystemMessages: pdfUploadSystemMessages.length
             ? pdfUploadSystemMessages
             : undefined,
@@ -689,13 +722,14 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         conversationKey: textContextConversationKey,
         conversationKind: activeNoteScope?.conversationKind,
         paperContexts: selectedPaperContexts,
+        pdfPaperContexts: pdfModePaperContexts,
         fullTextPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
         attachments: selectedFiles.length ? selectedFiles : undefined,
         modelAttachments: selectedFiles.length ? modelFiles : undefined,
+        localDocuments: localDocuments.length ? localDocuments : undefined,
         runtimeMode,
-        pdfModePaperKeys: pdfModeKeySet.size > 0 ? pdfModeKeySet : undefined,
         forcedSkillIds: forcedSkillIds.length ? forcedSkillIds : undefined,
         pdfUploadSystemMessages: pdfUploadSystemMessages.length
           ? pdfUploadSystemMessages

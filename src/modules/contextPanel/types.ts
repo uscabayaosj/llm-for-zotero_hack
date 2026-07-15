@@ -13,6 +13,7 @@ import type {
   SelectedTextAnchorResolution,
   ResolvedSelectedTextAnchor,
   PaperContextRef,
+  LocalDocumentResource,
   QuoteCitation,
   NoteContextRef,
   OtherContextRef,
@@ -39,6 +40,7 @@ export type {
   SelectedTextAnchorResolution,
   ResolvedSelectedTextAnchor,
   PaperContextRef,
+  LocalDocumentResource,
   QuoteCitation,
   NoteContextRef,
   OtherContextRef,
@@ -64,6 +66,7 @@ export interface Message {
   selectedTextExpandedIndex?: number;
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   quoteCitations?: QuoteCitation[];
@@ -439,6 +442,7 @@ export type SendQuestionOptions = {
   scopeId?: string;
   scopeLabel?: string;
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
@@ -449,7 +453,7 @@ export type SendQuestionOptions = {
   runtimeMode?: ChatRuntimeMode;
   agentRunId?: string;
   skipAgentDispatch?: boolean;
-  pdfModePaperKeys?: Set<string>;
+  localDocuments?: readonly LocalDocumentResource[];
   /** Skill IDs force-activated via slash menu selection. */
   forcedSkillIds?: string[];
   /** System messages injected by provider-side PDF upload (Qwen fileid://, Kimi extracted text). */
@@ -475,6 +479,7 @@ export type EditRetryOptions = {
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
@@ -482,6 +487,7 @@ export type EditRetryOptions = {
   attachments?: ChatAttachment[];
   /** Provider-resolved attachments sent to the retry request. Defaults to `attachments`. */
   modelAttachments?: ChatAttachment[];
+  localDocuments?: readonly LocalDocumentResource[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
   expected?: {

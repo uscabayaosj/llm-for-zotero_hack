@@ -3,6 +3,7 @@ import type {
   ChatAttachment,
   PaperContextRef,
 } from "../src/modules/contextPanel/types";
+import type { LocalDocumentResource } from "../src/shared/types";
 import {
   resolvePdfModeModelInputs,
   type PdfPaperModelInputDeps,
@@ -32,6 +33,16 @@ describe("pdfPaperModelInputController", function () {
     category: "pdf",
     storedPath: "/tmp/paper.pdf",
   };
+  const localPdf: LocalDocumentResource = {
+    kind: "local_pdf",
+    sourceKey: "zotero-pdf:10:20",
+    itemId: 10,
+    contextItemId: 20,
+    title: "Paper",
+    name: "paper.pdf",
+    mimeType: "application/pdf",
+    absolutePath: "/papers/paper.pdf",
+  };
 
   function createDeps(
     overrides: Partial<PdfPaperModelInputDeps> = {},
@@ -48,6 +59,7 @@ describe("pdfPaperModelInputController", function () {
       isScreenshotUnsupportedModel: () => false,
       getModelPdfSupport: () => "native",
       resolvePdfPaperAttachments: async () => [paperPdf],
+      resolveLocalPdfResources: async () => [localPdf],
       renderPdfPagesAsImages: async () => ["data:image/png;base64,PAGE"],
       uploadPdfForProvider: async () => ({
         systemMessageContent: "uploaded context",
@@ -115,6 +127,64 @@ describe("pdfPaperModelInputController", function () {
     assert.isFalse(result.ok);
     assert.deepInclude(deps.statuses, {
       message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
+    });
+  });
+
+  it("routes paper PDFs by local path without creating model attachments", async function () {
+    const deps = createDeps({ getModelPdfSupport: () => "local_path" });
+
+    const result = await resolvePdfModeModelInputs({
+      deps,
+      paperContexts: [paperContext],
+      selectedBaseFiles: [],
+      selectedImageCountForBudget: 0,
+      profile: { model: "codex", authMode: "codex_app_server" },
+      currentModelName: "codex",
+    });
+
+    assert.isTrue(result.ok);
+    if (!result.ok) return;
+    assert.deepEqual(result.localDocuments, [localPdf]);
+    assert.deepEqual(result.selectedFiles, []);
+    assert.deepEqual(result.modelFiles, []);
+  });
+
+  it("does not treat local-path support as direct PDF upload support", async function () {
+    const deps = createDeps({ getModelPdfSupport: () => "local_path" });
+
+    const result = await resolvePdfModeModelInputs({
+      deps,
+      paperContexts: [],
+      selectedBaseFiles: [directPdf],
+      selectedImageCountForBudget: 0,
+      profile: { model: "codex", authMode: "codex_app_server" },
+      currentModelName: "codex",
+    });
+
+    assert.isFalse(result.ok);
+  });
+
+  it("fails the whole local-path batch when resolution throws", async function () {
+    const deps = createDeps({
+      getModelPdfSupport: () => "local_path",
+      resolveLocalPdfResources: async () => {
+        throw new Error("Selected PDF attachment no longer exists.");
+      },
+    });
+
+    const result = await resolvePdfModeModelInputs({
+      deps,
+      paperContexts: [paperContext],
+      selectedBaseFiles: [],
+      selectedImageCountForBudget: 0,
+      profile: { model: "codex", authMode: "codex_app_server" },
+      currentModelName: "codex",
+    });
+
+    assert.isFalse(result.ok);
+    assert.deepInclude(deps.statuses, {
+      message: "Selected PDF attachment no longer exists.",
       level: "error",
     });
   });

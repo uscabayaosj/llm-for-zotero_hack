@@ -1,5 +1,8 @@
 import type { PdfSupport } from "../../../../providers";
-import type { ModelInputMode } from "../../../../shared/types";
+import type {
+  LocalDocumentResource,
+  ModelInputMode,
+} from "../../../../shared/types";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import type { ChatAttachment, PaperContextRef } from "../../types";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../../pdfSupportMessages";
@@ -35,6 +38,9 @@ export type PdfPaperModelInputDeps = {
   resolvePdfPaperAttachments: (
     paperContexts: PaperContextRef[],
   ) => Promise<ChatAttachment[]>;
+  resolveLocalPdfResources: (
+    paperContexts: PaperContextRef[],
+  ) => Promise<readonly LocalDocumentResource[]>;
   renderPdfPagesAsImages: (
     paperContexts: PaperContextRef[],
     maxImages?: number,
@@ -63,6 +69,7 @@ export type PdfPaperModelInputResult =
       selectedNonPdfFiles: ChatAttachment[];
       pdfPageImageDataUrls: string[];
       pdfUploadSystemMessages: string[];
+      localDocuments: readonly LocalDocumentResource[];
     }
   | {
       ok: false;
@@ -128,14 +135,40 @@ export async function resolvePdfModeModelInputs(params: {
   let modelSelectedPdfAttachments = selectedPdfFiles;
   const pdfPageImageDataUrls: string[] = [];
   const pdfUploadSystemMessages: string[] = [];
-  const hasProviderProcessedPdfs = paperContexts.length > 0 && !isWebChat;
+  let localDocuments: readonly LocalDocumentResource[] = [];
+  const hasProviderProcessedPdfs =
+    paperContexts.length > 0 && !isWebChat && pdfSupport === "native";
 
   if (
     !isWebChat &&
-    pdfSupport !== "native" &&
-    (paperContexts.length > 0 || selectedPdfFiles.length > 0)
+    ((paperContexts.length > 0 &&
+      pdfSupport !== "native" &&
+      pdfSupport !== "local_path") ||
+      (selectedPdfFiles.length > 0 && pdfSupport !== "native"))
   ) {
     return fail(deps, pdfSupport, FULL_PDF_UNSUPPORTED_MESSAGE);
+  }
+
+  if (!isWebChat && pdfSupport === "local_path" && paperContexts.length > 0) {
+    try {
+      localDocuments = await deps.resolveLocalPdfResources(paperContexts);
+    } catch (error) {
+      return fail(
+        deps,
+        pdfSupport,
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Could not resolve the selected paper PDF attachment.",
+      );
+    }
+    if (localDocuments.length !== paperContexts.length) {
+      return fail(
+        deps,
+        pdfSupport,
+        "Could not resolve the selected paper PDF attachment.",
+      );
+    }
+    deps.setStatusMessage?.(`Sending raw PDF path to ${modelName}...`, "ready");
   }
 
   if (hasProviderProcessedPdfs) {
@@ -177,5 +210,6 @@ export async function resolvePdfModeModelInputs(params: {
     selectedNonPdfFiles,
     pdfPageImageDataUrls,
     pdfUploadSystemMessages,
+    localDocuments,
   };
 }

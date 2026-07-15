@@ -92,6 +92,7 @@ export type StoredChatMessage = {
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   forcedSkillIds?: string[];
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   quoteCitations?: QuoteCitation[];
@@ -160,6 +161,7 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             selected_text_note_contexts_json AS selectedTextNoteContextsJson,
             forced_skill_ids_json AS forcedSkillIdsJson,
             paper_contexts_json AS paperContextsJson,
+            pdf_paper_contexts_json AS pdfPaperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson,
             quote_citations_json AS quoteCitationsJson,
@@ -410,6 +412,7 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "selected_text_note_contexts_json",
   "forced_skill_ids_json",
   "paper_contexts_json",
+  "pdf_paper_contexts_json",
   "full_text_paper_contexts_json",
   "citation_paper_contexts_json",
   "quote_citations_json",
@@ -577,6 +580,7 @@ async function getUpstreamMessagePaperContextRows(
 ): Promise<PaperContextJsonColumns[]> {
   return ((await Zotero.DB.queryAsync(
     `SELECT paper_contexts_json AS paperContextsJson,
+            pdf_paper_contexts_json AS pdfPaperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson
@@ -584,6 +588,7 @@ async function getUpstreamMessagePaperContextRows(
      WHERE conversation_key = ?
        AND (
          paper_contexts_json IS NOT NULL OR
+         pdf_paper_contexts_json IS NOT NULL OR
          full_text_paper_contexts_json IS NOT NULL OR
          selected_text_paper_contexts_json IS NOT NULL OR
          citation_paper_contexts_json IS NOT NULL
@@ -1112,6 +1117,7 @@ export async function initChatStore(): Promise<void> {
         selected_text_note_contexts_json TEXT,
         forced_skill_ids_json TEXT,
         paper_contexts_json TEXT,
+        pdf_paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
         citation_paper_contexts_json TEXT,
         quote_citations_json TEXT,
@@ -1300,6 +1306,12 @@ export async function initChatStore(): Promise<void> {
       messageColumns,
       "forced_skill_ids_json",
       "forced_skill_ids_json TEXT",
+    );
+    await ensureColumn(
+      CHAT_MESSAGES_TABLE,
+      messageColumns,
+      "pdf_paper_contexts_json",
+      "pdf_paper_contexts_json TEXT",
     );
     if (!hasPaperContextsJsonColumn) {
       await Zotero.DB.queryAsync(
@@ -1559,6 +1571,7 @@ export async function loadConversation(
         selectedTextNoteContextsJson?: unknown;
         forcedSkillIdsJson?: unknown;
         paperContextsJson?: unknown;
+        pdfPaperContextsJson?: unknown;
         fullTextPaperContextsJson?: unknown;
         citationPaperContextsJson?: unknown;
         quoteCitationsJson?: unknown;
@@ -1699,6 +1712,23 @@ export async function loadConversation(
       }
     }
     let fullTextPaperContexts: PaperContextRef[] | undefined;
+    let pdfPaperContexts: PaperContextRef[] | undefined;
+    if (
+      typeof row.pdfPaperContextsJson === "string" &&
+      row.pdfPaperContextsJson
+    ) {
+      try {
+        const normalized = normalizePaperContextRefs(
+          JSON.parse(row.pdfPaperContextsJson) as unknown,
+        ).map((context) => ({
+          ...context,
+          contentSourceMode: "pdf" as const,
+        }));
+        if (normalized.length) pdfPaperContexts = normalized;
+      } catch (_err) {
+        pdfPaperContexts = undefined;
+      }
+    }
     if (
       typeof row.fullTextPaperContextsJson === "string" &&
       row.fullTextPaperContextsJson
@@ -1849,6 +1879,7 @@ export async function loadConversation(
       forcedSkillIds:
         role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
       paperContexts,
+      pdfPaperContexts,
       fullTextPaperContexts,
       citationPaperContexts,
       quoteCitations,
@@ -1945,6 +1976,9 @@ export async function appendMessage(
     (context) => context.noteContext,
   );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
+  const pdfPaperContexts = normalizePaperContextRefs(
+    message.pdfPaperContexts,
+  ).map((context) => ({ ...context, contentSourceMode: "pdf" as const }));
   const fullTextPaperContexts = normalizePaperContextRefs(
     message.fullTextPaperContexts,
   );
@@ -1972,8 +2006,8 @@ export async function appendMessage(
   await Zotero.DB.executeTransaction(async () => {
     await Zotero.DB.queryAsync(
       `INSERT INTO ${CHAT_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conversationID,
         normalizedKey,
@@ -1998,6 +2032,7 @@ export async function appendMessage(
           ? serializeForcedSkillIds(message.forcedSkillIds)
           : null,
         paperContexts.length ? JSON.stringify(paperContexts) : null,
+        pdfPaperContexts.length ? JSON.stringify(pdfPaperContexts) : null,
         fullTextPaperContexts.length
           ? JSON.stringify(fullTextPaperContexts)
           : null,
@@ -2049,6 +2084,7 @@ export async function updateLatestUserMessage(
     | "selectedTextNoteContexts"
     | "forcedSkillIds"
     | "paperContexts"
+    | "pdfPaperContexts"
     | "fullTextPaperContexts"
     | "citationPaperContexts"
     | "selectedCollectionContexts"
@@ -2085,6 +2121,9 @@ export async function updateLatestUserMessage(
     (context) => context.noteContext,
   );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
+  const pdfPaperContexts = normalizePaperContextRefs(
+    message.pdfPaperContexts,
+  ).map((context) => ({ ...context, contentSourceMode: "pdf" as const }));
   const fullTextPaperContexts = normalizePaperContextRefs(
     message.fullTextPaperContexts,
   );
@@ -2125,6 +2164,7 @@ export async function updateLatestUserMessage(
            selected_text_note_contexts_json = ?,
            forced_skill_ids_json = ?,
            paper_contexts_json = ?,
+           pdf_paper_contexts_json = ?,
            full_text_paper_contexts_json = ?,
            citation_paper_contexts_json = ?,
            collection_contexts_json = ?,
@@ -2162,6 +2202,7 @@ export async function updateLatestUserMessage(
           : null,
         serializeForcedSkillIds(message.forcedSkillIds),
         paperContexts.length ? JSON.stringify(paperContexts) : null,
+        pdfPaperContexts.length ? JSON.stringify(pdfPaperContexts) : null,
         fullTextPaperContexts.length
           ? JSON.stringify(fullTextPaperContexts)
           : null,

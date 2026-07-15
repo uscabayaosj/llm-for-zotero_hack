@@ -272,6 +272,62 @@ describe("Codex native skills", function () {
     assert.deepEqual(request.screenshots, ["data:image/png;base64,AAAA"]);
   });
 
+  it("carries raw PDF identity into skill routing and makes its policy final", function () {
+    const localDocument = {
+      kind: "local_pdf" as const,
+      sourceKey: "zotero-pdf:42:99" as const,
+      itemId: 42,
+      contextItemId: 99,
+      title: "Native Skills Paper",
+      name: "paper.pdf",
+      mimeType: "application/pdf" as const,
+      absolutePath: "/papers/paper.pdf",
+    };
+    const request = buildCodexNativeSkillRequest({
+      scope: {
+        conversationKey: 123,
+        libraryID: 7,
+        kind: "paper",
+        paperItemID: 42,
+        activeContextItemId: 99,
+        paperTitle: "Native Skills Paper",
+      },
+      userText: "Summarize this paper.",
+      model: "gpt-5.6-sol",
+      apiBase: "",
+      skillContext: {
+        pdfPaperContexts: [
+          {
+            itemId: 42,
+            contextItemId: 99,
+            title: "Native Skills Paper",
+            contentSourceMode: "pdf",
+          },
+        ],
+        localDocuments: [localDocument],
+      },
+    });
+    const block = buildCodexNativeSkillInstructionBlock(
+      ["simple-paper-qa"],
+      [makeSkill("simple-paper-qa", /summarize/i, "Call paper_read overview.")],
+      { rawPdfMode: true },
+    );
+
+    assert.deepEqual(
+      request.pdfPaperContexts?.map((paper) => [
+        paper.itemId,
+        paper.contextItemId,
+      ]),
+      [[42, 99]],
+    );
+    assert.deepEqual(request.localDocuments, [localDocument]);
+    assert.include(block, "Call paper_read overview.");
+    assert.match(
+      block,
+      /Raw PDF transport policy[\s\S]*Do not use `paper_read`[\s\S]*$/,
+    );
+  });
+
   it("omits the skill block when matched IDs do not resolve to loaded skills", function () {
     assert.equal(
       buildCodexNativeSkillInstructionBlock(["missing-skill"], []),

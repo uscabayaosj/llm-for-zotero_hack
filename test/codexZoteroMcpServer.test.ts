@@ -247,6 +247,95 @@ describe("Zotero MCP server", function () {
     });
   });
 
+  it("blocks paper retrieval for the exact raw PDF but allows another paper", async function () {
+    let executionCount = 0;
+    const registry = new AgentToolRegistry();
+    const paperRead = createReadTool("paper_read");
+    paperRead.execute = async (input) => {
+      executionCount += 1;
+      return { input };
+    };
+    registry.register(paperRead);
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope({
+      profileSignature: "profile-dev",
+      conversationKey: 789,
+      libraryID: 7,
+      kind: "paper",
+      activeItemId: 42,
+      activeContextItemId: 99,
+      pdfPaperContexts: [
+        {
+          itemId: 42,
+          contextItemId: 99,
+          title: "Raw PDF",
+          contentSourceMode: "pdf",
+        },
+      ],
+    });
+
+    try {
+      const blocked = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              target: { paperContext: { itemId: 42, contextItemId: 99 } },
+            },
+          },
+        },
+      });
+      const blockedPayload = JSON.parse(blocked[2]);
+      const blockedContent = JSON.parse(blockedPayload.result.content[0].text);
+      assert.equal(blockedPayload.result.isError, true);
+      assert.include(blockedContent.error, "raw PDF mode");
+      assert.equal(executionCount, 0);
+
+      const implicitBlocked = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "paper_read", arguments: {} },
+        },
+      });
+      const implicitBlockedPayload = JSON.parse(implicitBlocked[2]);
+      assert.equal(implicitBlockedPayload.result.isError, true);
+      assert.equal(executionCount, 0);
+
+      const allowed = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: {
+              target: { paperContext: { itemId: 42, contextItemId: 100 } },
+            },
+          },
+        },
+      });
+      const allowedPayload = JSON.parse(allowed[2]);
+      assert.isNotTrue(allowedPayload.result.isError);
+      assert.equal(executionCount, 1);
+    } finally {
+      scoped.clear();
+    }
+  });
+
   it("emits exact MCP tool activity for native Codex trace fallback", async function () {
     const registry = new AgentToolRegistry();
     registry.register(createReadTool("library_read"));

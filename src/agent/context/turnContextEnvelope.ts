@@ -3,6 +3,7 @@ import type {
   ActiveNoteContext,
   ChatAttachment,
   CollectionContextRef,
+  LocalDocumentResource,
   NoteContextRef,
   PaperContextRef,
   ResolvedSelectedTextAnchor,
@@ -17,6 +18,8 @@ export type TurnContextEnvelopeInput = Pick<
   | "attachments"
   | "conversationKind"
   | "fullTextPaperContexts"
+  | "pdfPaperContexts"
+  | "localDocuments"
   | "libraryID"
   | "pinnedPaperContexts"
   | "screenshots"
@@ -62,6 +65,7 @@ export type TurnContextEnvelope = {
   }>;
   screenshotCount: number;
   attachments: ChatAttachment[];
+  localDocuments: readonly LocalDocumentResource[];
   activeNote?: Pick<
     ActiveNoteContext,
     "noteId" | "noteKind" | "parentItemId" | "title"
@@ -206,6 +210,9 @@ export function buildTurnContextEnvelope(
   for (const paper of input.fullTextPaperContexts || []) {
     pushPaper(papers, indexByKey, paper, "full-text");
   }
+  for (const paper of input.pdfPaperContexts || []) {
+    pushPaper(papers, indexByKey, paper, "raw PDF");
+  }
   for (const paper of input.pinnedPaperContexts || []) {
     pushPaper(papers, indexByKey, paper, "pinned");
   }
@@ -279,6 +286,7 @@ export function buildTurnContextEnvelope(
     selectedTextNotes,
     screenshotCount: (input.screenshots || []).filter(Boolean).length,
     attachments: (input.attachments || []).filter(Boolean),
+    localDocuments: (input.localDocuments || []).filter(Boolean),
     activeNote,
   };
 }
@@ -394,6 +402,17 @@ export function renderTurnContextEnvelopeForModel(
             ])}`,
         )
         .join(" | ")}`,
+    );
+  }
+
+  if (envelope.localDocuments.length) {
+    lines.push(
+      "Raw PDFs explicitly selected for this turn:",
+      ...envelope.localDocuments.map(
+        (document, index) =>
+          `${index + 1}. sourceKey=${document.sourceKey}, title=${JSON.stringify(document.title)}, name=${JSON.stringify(document.name)}, path=${document.absolutePath}`,
+      ),
+      "Read exactly these paths. The current-turn list is authoritative. Do not substitute other Zotero attachments, MinerU full.md, extracted text, generic attachments, or PDF paths from earlier turns.",
     );
   }
 

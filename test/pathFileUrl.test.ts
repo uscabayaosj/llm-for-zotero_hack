@@ -4,8 +4,16 @@ import {
   pathToFileUrl,
   toFileUrl,
 } from "../src/utils/pathFileUrl";
+import { isAbsoluteLocalPath } from "../src/utils/localPath";
 
 describe("pathFileUrl", function () {
+  it("should recognize supported absolute local path forms", function () {
+    assert.isTrue(isAbsoluteLocalPath("/tmp/paper.pdf"));
+    assert.isTrue(isAbsoluteLocalPath("C:\\Papers\\paper.pdf"));
+    assert.isTrue(isAbsoluteLocalPath("\\\\server\\share\\paper.pdf"));
+    assert.isFalse(isAbsoluteLocalPath("papers/paper.pdf"));
+  });
+
   it("should convert POSIX path to file URL", function () {
     assert.equal(toFileUrl("/tmp/my file.md"), "file:///tmp/my%20file.md");
   });

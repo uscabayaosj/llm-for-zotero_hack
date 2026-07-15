@@ -83,6 +83,7 @@ import type {
   AdvancedModelParams,
   ChatAttachment,
   CollectionContextRef,
+  LocalDocumentResource,
   NoteContextRef,
   PaperContextRef,
   QuoteCitation,
@@ -371,11 +372,13 @@ type BuildAgentRuntimeRequestParamsShape = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
+  localDocuments?: readonly LocalDocumentResource[];
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
   effectiveRequestConfig: EffectiveRequestConfigShape;
@@ -500,6 +503,10 @@ export type AgentEngineDeps = {
   buildAgentRuntimeRequest: (
     params: BuildAgentRuntimeRequestParamsShape,
   ) => AgentRuntimeRequest | Promise<AgentRuntimeRequest>;
+  resolveLocalPdfResources: (
+    paperContexts: PaperContextRef[],
+  ) => Promise<readonly LocalDocumentResource[]>;
+  preflightLocalPdfCapability: () => Promise<void>;
   resolveEffectiveRequestConfig: (params: {
     item: Zotero.Item;
     model?: string;
@@ -683,11 +690,13 @@ export async function sendAgentTurn(
     selectedTextPaperContexts?: (PaperContextRef | undefined)[];
     selectedTextNoteContexts?: (NoteContextRef | undefined)[];
     paperContexts?: PaperContextRef[];
+    pdfPaperContexts?: PaperContextRef[];
     fullTextPaperContexts?: PaperContextRef[];
     selectedCollectionContexts?: CollectionContextRef[];
     selectedTagContexts?: TagContextRef[];
     attachments?: ChatAttachment[];
     modelAttachments?: ChatAttachment[];
+    localDocuments?: readonly LocalDocumentResource[];
     forcedSkillIds?: string[];
   },
   deps: AgentEngineDeps,
@@ -715,11 +724,13 @@ export async function sendAgentTurn(
     selectedTextPaperContexts,
     selectedTextNoteContexts,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments,
     modelAttachments,
+    localDocuments,
     forcedSkillIds,
   } = opts;
   const conversationKey = deps.getConversationKey(item);
@@ -759,6 +770,9 @@ export async function sendAgentTurn(
     selectedTextSourcesForMessage,
     selectedTextPaperContextsForMessage,
   );
+  const pdfPaperContextsForMessage = deps
+    .normalizePaperContexts(pdfPaperContexts)
+    .map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const shownQuestion = displayQuestion || question;
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
@@ -799,6 +813,9 @@ export async function sendAgentTurn(
     citationPaperContexts: mergeCitationPaperContexts(
       selectedTextPaperContextsForMessage,
     ),
+    pdfPaperContexts: pdfPaperContextsForMessage.length
+      ? pdfPaperContextsForMessage
+      : undefined,
     selectedTextExpandedIndex: -1,
     paperContextsExpanded: false,
     screenshotImages: screenshotImagesForMessage.length
@@ -833,6 +850,7 @@ export async function sendAgentTurn(
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
       forcedSkillIds: userMessage.forcedSkillIds,
       citationPaperContexts: userMessage.citationPaperContexts,
+      pdfPaperContexts: userMessage.pdfPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       selectedTagContexts: userMessage.selectedTagContexts,
       screenshotImages: userMessage.screenshotImages,
@@ -936,7 +954,13 @@ export async function sendAgentTurn(
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
-    undefined,
+    pdfPaperContextsForMessage.length
+      ? new Set(
+          pdfPaperContextsForMessage.map(
+            (paper) => `${paper.itemId}:${paper.contextItemId}`,
+          ),
+        )
+      : undefined,
     contextSource,
   );
   userMessage.paperContexts = paperContextsForMessage.length
@@ -963,6 +987,7 @@ export async function sendAgentTurn(
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
       forcedSkillIds: userMessage.forcedSkillIds,
       paperContexts: userMessage.paperContexts,
+      pdfPaperContexts: userMessage.pdfPaperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
       citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
@@ -986,11 +1011,13 @@ export async function sendAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsForMessage,
     selectedTextNoteContexts: selectedTextNoteContextsForMessage,
     paperContexts: paperContextsForMessage,
+    pdfPaperContexts: pdfPaperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
     citationPaperContexts: userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments: modelAttachments ?? attachments,
+    localDocuments,
     screenshots: images,
     forcedSkillIds,
     effectiveRequestConfig,
@@ -1562,6 +1589,29 @@ export async function retryAgentTurn(
     return;
   }
 
+  let retryLocalDocuments: readonly LocalDocumentResource[] | undefined;
+  try {
+    const pdfPaperContexts = deps.normalizePaperContexts(
+      retryPair.userMessage.pdfPaperContexts,
+    );
+    if (pdfPaperContexts.length) {
+      retryLocalDocuments =
+        await deps.resolveLocalPdfResources(pdfPaperContexts);
+      if (retryLocalDocuments.length !== pdfPaperContexts.length) {
+        throw new Error("Could not resolve every selected raw PDF.");
+      }
+      await deps.preflightLocalPdfCapability();
+    }
+  } catch (error) {
+    if (ui.status) {
+      ui.status.textContent =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Could not resolve the selected raw PDF.";
+    }
+    return;
+  }
+
   const thisRequestId = deps.nextRequestId();
   deps.setPendingRequestId(conversationKey, thisRequestId);
   deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent retry...");
@@ -1714,11 +1764,13 @@ export async function retryAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsRaw,
     selectedTextNoteContexts: retryPair.userMessage.selectedTextNoteContexts,
     paperContexts,
+    pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
     fullTextPaperContexts,
     citationPaperContexts: retryPair.userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments: retryModelAttachments,
+    localDocuments: retryLocalDocuments,
     screenshots: screenshotImages,
     effectiveRequestConfig,
     history: historyForLLM,

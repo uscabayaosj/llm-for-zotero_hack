@@ -4,6 +4,7 @@ import {
   buildPaperSourceOptions,
   canRevealMineruCacheForSourceOption,
   filterPaperSourceOptionsForWebChat,
+  resolvePaperPdfSupportForConversation,
   resolveMineruSourceOptionState,
 } from "../src/modules/contextPanel/setupHandlers/controllers/paperSourceOptionsController";
 import { getContextSourceModeDescriptor } from "../src/modules/contextPanel/contextSourceModes";
@@ -11,6 +12,7 @@ import type {
   PaperContentSourceMode,
   PaperContextRef,
 } from "../src/modules/contextPanel/types";
+import type { PdfSupport } from "../src/providers";
 
 function makeParentItem(params: {
   id: number;
@@ -55,13 +57,14 @@ function buildOptionsForItems(params: {
   items: Zotero.Item[];
   webChatMode?: boolean;
   mineruCachedIds?: number[];
+  pdfSupport?: PdfSupport;
 }) {
   const itemsById = new Map(params.items.map((item) => [item.id, item]));
   return buildPaperSourceOptions({
     paperContext: params.paperContext,
     getItemById: (itemId) => itemsById.get(itemId) || null,
     webChatMode: params.webChatMode === true,
-    pdfSupport: "native",
+    pdfSupport: params.pdfSupport || "native",
     isMineruEnabled: true,
     getItemStatus: (contextItemId) =>
       params.mineruCachedIds?.includes(contextItemId)
@@ -76,6 +79,49 @@ function buildOptionsForItems(params: {
 }
 
 describe("paper source MinerU option state", function () {
+  it("uses local-path PDF support only for Claude Code and Codex conversations", function () {
+    assert.equal(
+      resolvePaperPdfSupportForConversation({
+        basePdfSupport: "none",
+        isClaudeCode: true,
+        isCodex: false,
+      }),
+      "local_path",
+    );
+    assert.equal(
+      resolvePaperPdfSupportForConversation({
+        basePdfSupport: "native",
+        isClaudeCode: false,
+        isCodex: false,
+      }),
+      "native",
+    );
+  });
+
+  it("enables the PDF source for local-path agent runtimes", function () {
+    const parent = makeParentItem({ id: 10, attachmentIds: [20] });
+    const attachment = makeAttachment({
+      id: 20,
+      parentID: 10,
+      filename: "paper.pdf",
+      contentType: "application/pdf",
+    });
+
+    const options = buildOptionsForItems({
+      paperContext: {
+        itemId: 10,
+        contextItemId: 20,
+        title: "Paper",
+      },
+      items: [parent, attachment],
+      pdfSupport: "local_path",
+    });
+
+    const pdf = options.find((option) => option.mode === "pdf");
+    assert.isDefined(pdf);
+    assert.isUndefined(pdf?.disabledReason);
+  });
+
   it("describes source modes with one shared descriptor", function () {
     const expectations: Array<{
       mode: PaperContentSourceMode;

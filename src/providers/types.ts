@@ -1,6 +1,6 @@
 import type { ModelInputMode } from "../shared/types";
 
-export type PdfSupport = "native" | "upload" | "vision" | "none";
+export type PdfSupport = "native" | "local_path" | "upload" | "vision" | "none";
 
 export type ProviderTier =
   | "native"

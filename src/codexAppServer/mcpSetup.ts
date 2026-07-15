@@ -549,13 +549,14 @@ export function buildCodexZoteroMcpThreadConfig(params: {
   profileSignature?: string;
   scopeToken?: string;
   required?: boolean;
+  enableShellTool?: boolean;
 }): { serverName: string; config: Record<string, unknown> } {
   const serverName = getZoteroMcpServerName(params.profileSignature);
   return {
     serverName,
     config: {
       features: {
-        shell_tool: false,
+        shell_tool: params.enableShellTool === true,
       },
       mcp_servers: {
         [serverName]: buildZoteroMcpConfigValue({

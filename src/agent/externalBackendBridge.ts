@@ -52,6 +52,7 @@ import type {
   AgentRuntimeRequest,
 } from "./types";
 import type {
+  LocalDocumentResource,
   NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
@@ -64,6 +65,7 @@ import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,
 } from "./context/turnContextEnvelope";
+import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 
 export type RunTurnParams = {
   request: AgentRuntimeRequest;
@@ -390,6 +392,7 @@ type BridgeRuntimeRequest = {
   pinnedPaperContexts?: BridgePaperContext[];
   selectedCollectionContexts?: BridgeCollectionContext[];
   selectedTagContexts?: BridgeTagContext[];
+  localDocuments?: readonly LocalDocumentResource[];
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   history?: Array<{ role: string; content: string }>;
@@ -456,6 +459,46 @@ async function resolveClaudeProviderSessionHint(
 function getBridgeHealthUrl(baseUrl?: string): string {
   const normalized = normalizeBaseUrl(baseUrl || "");
   return `${normalized || "http://127.0.0.1:19787"}/healthz`;
+}
+
+function supportsClaudeBridgeLocalPdfPaths(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const record = payload as Record<string, unknown>;
+  return (
+    record.ok === true &&
+    Number(record.protocolVersion) >= 2 &&
+    Array.isArray(record.capabilities) &&
+    record.capabilities.includes("local_pdf_paths")
+  );
+}
+
+async function assertClaudeBridgeLocalPdfCapability(
+  baseUrl: string,
+): Promise<void> {
+  const response = await fetch(getBridgeHealthUrl(baseUrl));
+  if (!response.ok) {
+    throw new Error(`Bridge HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (!supportsClaudeBridgeLocalPdfPaths(payload)) {
+    throw new Error(
+      "Claude bridge does not support raw local PDF paths. Update and restart the Claude bridge.",
+    );
+  }
+}
+
+export async function preflightClaudeBridgeLocalPdfCapability(): Promise<void> {
+  const bridgeUrl = normalizeBaseUrl(getClaudeBridgeUrl());
+  if (!bridgeUrl) {
+    throw new Error("Claude bridge URL is empty.");
+  }
+  await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
+}
+
+export function supportsClaudeBridgeLocalPdfPathsForTests(
+  payload: unknown,
+): boolean {
+  return supportsClaudeBridgeLocalPdfPaths(payload);
 }
 
 export function getBridgeQuickFixHint(baseUrl?: string): string {
@@ -586,17 +629,30 @@ function buildClaudeBridgeNotesDirectoryInstruction(): string {
   ].join("\n");
 }
 
-function buildClaudeBridgeCustomInstruction(): string {
+function buildClaudeBridgeCustomInstruction(
+  options: {
+    rawPdfMode?: boolean;
+  } = {},
+): string {
   return [
     getClaudeCustomInstructionPref(),
     buildOriginalAgentModeInstructionBlock(),
-    "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
+    options.rawPdfMode
+      ? "Claude Code receives Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
+      : "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
     'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
     buildClaudeBridgeNotesDirectoryInstruction(),
+    options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
   ]
     .map((entry) => entry.trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+export function buildClaudeBridgeCustomInstructionForTests(
+  rawPdfMode = false,
+): string {
+  return buildClaudeBridgeCustomInstruction({ rawPdfMode });
 }
 
 function isClaudeCodeModeEnabled(): boolean {
@@ -940,7 +996,9 @@ async function runExternalBridgeTurn(
       claudeSettingSources: getClaudeSettingSourcesByPref(),
       settingSources: getClaudeSettingSourcesCsvByPref(),
       ...buildAgentPermissionMetadata(),
-      customInstruction: buildClaudeBridgeCustomInstruction(),
+      customInstruction: buildClaudeBridgeCustomInstruction({
+        rawPdfMode: Boolean(params.request.localDocuments?.length),
+      }),
       providerIdentity,
       providerIdentityStack,
       model:
@@ -1163,6 +1221,10 @@ function buildClaudeZoteroMcpScope(
     request.fullTextPaperContexts,
     MAX_FULL_TEXT_PAPER_CONTEXTS,
   );
+  const pdfPaperContexts = normalizePaperRefs(
+    request.pdfPaperContexts,
+    MAX_SELECTED_PAPER_CONTEXTS,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const pinnedPaperContexts = normalizePaperRefs(
     request.pinnedPaperContexts,
     MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -1170,7 +1232,8 @@ function buildClaudeZoteroMcpScope(
   const selectedPaper =
     selectedPaperContexts[0] ||
     fullTextPaperContexts[0] ||
-    pinnedPaperContexts[0];
+    pinnedPaperContexts[0] ||
+    pdfPaperContexts[0];
   const kind = request.conversationKind === "paper" ? "paper" : "global";
   const activeItemId =
     normalizePositiveInt(request.activeItemId) ||
@@ -1203,6 +1266,7 @@ function buildClaudeZoteroMcpScope(
     selectedPaperContexts: selectedPaperContexts.length
       ? selectedPaperContexts
       : undefined,
+    pdfPaperContexts: pdfPaperContexts.length ? pdfPaperContexts : undefined,
     fullTextPaperContexts: fullTextPaperContexts.length
       ? fullTextPaperContexts
       : undefined,
@@ -1749,6 +1813,9 @@ async function buildBridgeRuntimeRequest(
       20,
     ),
     selectedTagContexts: normalizeTagRefs(request.selectedTagContexts, 20),
+    localDocuments: request.localDocuments?.length
+      ? request.localDocuments
+      : undefined,
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
     activeNoteContext: request.activeNoteContext
@@ -1767,6 +1834,12 @@ async function buildBridgeRuntimeRequest(
         }))
       : undefined,
   };
+}
+
+export function buildBridgeRuntimeRequestForTests(
+  request: AgentRuntimeRequest,
+): Promise<BridgeRuntimeRequest> {
+  return buildBridgeRuntimeRequest(request);
 }
 
 export function buildExternalBridgeContextEnvelopeForTests(
@@ -2561,6 +2634,9 @@ export function createExternalBackendBridgeRuntime(options: {
         throw new Error(
           "Claude bridge URL is empty. Set Bridge URL to http://127.0.0.1:19787.",
         );
+      }
+      if (params.request.localDocuments?.length) {
+        await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
       }
       let persistedRunId = "";
       let persistedRunCreated = false;

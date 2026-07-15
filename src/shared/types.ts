@@ -64,6 +64,17 @@ export type PaperContextRef = {
   mineruCacheDir?: string;
 };
 
+export type LocalDocumentResource = Readonly<{
+  kind: "local_pdf";
+  sourceKey: `zotero-pdf:${number}:${number}`;
+  itemId: number;
+  contextItemId: number;
+  title: string;
+  name: string;
+  mimeType: "application/pdf";
+  absolutePath: string;
+}>;
+
 export type QuoteCitation = {
   id: string;
   quoteText: string;

@@ -335,10 +335,11 @@ describe("conversation registry", function () {
         {
           paperContextsJson: JSON.stringify([{ itemId: 3196 }]),
           citationPaperContextsJson: JSON.stringify([{ itemId: 3340 }]),
+          pdfPaperContextsJson: JSON.stringify([{ itemId: 4000 }]),
         },
       ]),
       {
-        paperItemIDs: [3196, 3340],
+        paperItemIDs: [3196, 3340, 4000],
         singlePaperItemID: null,
       },
     );

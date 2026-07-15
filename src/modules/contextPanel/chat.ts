@@ -61,6 +61,7 @@ import {
   type CodexNativeDiagnostics,
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
+import { preflightClaudeBridgeLocalPdfCapability } from "../../agent/externalBackendBridge";
 import {
   callLLMStream,
   type ChatParams,
@@ -344,6 +345,8 @@ import {
 import { getConversationKey } from "./conversationIdentity";
 import { recordContextCacheTelemetry } from "../../contextCache/manager";
 import { resolveContextAttachmentSupportFromMetadata } from "./contextAttachmentSupport";
+import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
+import { setPaperContentSourceOverride } from "./contexts/paperContextState";
 import {
   getConversationScopeValidationDetails,
   type ConversationRegistryScope,
@@ -496,6 +499,7 @@ function storedMessagesMatchActivePaper(
   const ids = new Set<number>();
   for (const message of storedMessages) {
     collectMessagePaperContextIds(message.paperContexts, ids);
+    collectMessagePaperContextIds(message.pdfPaperContexts, ids);
     collectMessagePaperContextIds(message.fullTextPaperContexts, ids);
     collectMessagePaperContextIds(message.citationPaperContexts, ids);
     collectMessagePaperContextIds(message.selectedTextPaperContexts, ids);
@@ -1653,6 +1657,35 @@ async function persistConversationMessage(
   }
 }
 
+function normalizeStoredPaperContextRoutes(params: {
+  paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
+  fullTextPaperContexts?: PaperContextRef[];
+}): {
+  paperContexts: PaperContextRef[];
+  pdfPaperContexts: PaperContextRef[];
+  fullTextPaperContexts: PaperContextRef[];
+} {
+  const pdfPaperContexts = normalizePaperContexts(params.pdfPaperContexts).map(
+    (paper) => ({ ...paper, contentSourceMode: "pdf" as const }),
+  );
+  const pdfKeys = new Set(
+    pdfPaperContexts.map((paper) => `${paper.itemId}:${paper.contextItemId}`),
+  );
+  const excludePdf = (papers?: PaperContextRef[]) =>
+    normalizePaperContexts(papers).filter(
+      (paper) => !pdfKeys.has(`${paper.itemId}:${paper.contextItemId}`),
+    );
+  return {
+    paperContexts: excludePdf(params.paperContexts),
+    pdfPaperContexts,
+    fullTextPaperContexts: excludePdf(params.fullTextPaperContexts),
+  };
+}
+
+export const normalizeStoredPaperContextRoutesForTests =
+  normalizeStoredPaperContextRoutes;
+
 function toPanelMessage(message: StoredChatMessage): Message {
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
@@ -1700,10 +1733,8 @@ function toPanelMessage(message: StoredChatMessage): Message {
     (context) => context.noteContext,
   );
   const forcedSkillIds = normalizeForcedSkillIds(message.forcedSkillIds);
-  const paperContexts = normalizePaperContexts(message.paperContexts);
-  const fullTextPaperContexts = normalizePaperContexts(
-    message.fullTextPaperContexts,
-  );
+  const { paperContexts, pdfPaperContexts, fullTextPaperContexts } =
+    normalizeStoredPaperContextRoutes(message);
   const selectedCollectionContexts = normalizeCollectionContexts(
     message.selectedCollectionContexts,
   );
@@ -1736,6 +1767,7 @@ function toPanelMessage(message: StoredChatMessage): Message {
     forcedSkillIds: forcedSkillIds.length ? forcedSkillIds : undefined,
     selectedTextExpandedIndex: -1,
     paperContexts: paperContexts.length ? paperContexts : undefined,
+    pdfPaperContexts: pdfPaperContexts.length ? pdfPaperContexts : undefined,
     fullTextPaperContexts: fullTextPaperContexts.length
       ? fullTextPaperContexts
       : undefined,
@@ -2908,6 +2940,8 @@ function buildCodexNativeSkillContext(params: {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
+  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -2939,6 +2973,12 @@ function buildCodexNativeSkillContext(params: {
       : undefined,
     selectedPaperContexts: params.paperContexts?.length
       ? params.paperContexts
+      : undefined,
+    pdfPaperContexts: params.pdfPaperContexts?.length
+      ? params.pdfPaperContexts
+      : undefined,
+    localDocuments: params.localDocuments?.length
+      ? params.localDocuments
       : undefined,
     fullTextPaperContexts: params.fullTextPaperContexts?.length
       ? params.fullTextPaperContexts
@@ -3079,7 +3119,7 @@ async function buildContextPlanForRequest(params: {
   recentPaperContexts: PaperContextRef[];
   history: ChatMessage[];
   effectiveRequestConfig: EffectiveRequestConfig;
-  pdfModePaperKeys?: Set<string>;
+  pdfPaperContexts?: PaperContextRef[];
   pdfUploadSystemMessages?: string[];
   signal?: AbortSignal;
   setStatusSafely: (
@@ -3087,6 +3127,11 @@ async function buildContextPlanForRequest(params: {
     kind: Parameters<typeof setStatus>[2],
   ) => void;
 }): Promise<ContextPlanForRequest> {
+  const pdfModePaperKeys = new Set(
+    (params.pdfPaperContexts || []).map(
+      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    ),
+  );
   const explicitPaperContext = normalizePaperContexts(
     params.contextSource?.paperContext
       ? [params.contextSource.paperContext]
@@ -3113,13 +3158,13 @@ async function buildContextPlanForRequest(params: {
   // If the active paper is in PDF mode (sent as file attachment),
   // exclude it from the text retrieval pipeline entirely.
   const activeContextItemInPdfMode = (() => {
-    if (!rawActiveContextItem || !params.pdfModePaperKeys?.size) return false;
+    if (!rawActiveContextItem || !pdfModePaperKeys.size) return false;
     const autoLoaded = resolveAutoLoadedPaperContextForItem(
       params.item,
       contextSource,
     );
     if (!autoLoaded) return false;
-    return params.pdfModePaperKeys.has(
+    return pdfModePaperKeys.has(
       `${autoLoaded.itemId}:${autoLoaded.contextItemId}`,
     );
   })();
@@ -3136,10 +3181,9 @@ async function buildContextPlanForRequest(params: {
     question: params.question,
     contextPrefix: "",
     // Exclude PDF-mode papers from the text retrieval pipeline
-    paperContexts: params.pdfModePaperKeys?.size
+    paperContexts: pdfModePaperKeys.size
       ? params.paperContexts.filter(
-          (p) =>
-            !params.pdfModePaperKeys!.has(`${p.itemId}:${p.contextItemId}`),
+          (p) => !pdfModePaperKeys.has(`${p.itemId}:${p.contextItemId}`),
         )
       : params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
@@ -4845,7 +4889,13 @@ function reconstructRetryPayload(
         .filter(Boolean)
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  const paperContexts = normalizePaperContexts(userMessage.paperContexts);
+  const pdfPaperContexts = normalizePaperContexts(
+    userMessage.pdfPaperContexts,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
+  const paperContexts = normalizePaperContexts([
+    ...(userMessage.paperContexts || []),
+    ...pdfPaperContexts,
+  ]);
   const fullTextPaperContexts = normalizePaperContexts(
     userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
   );
@@ -5245,34 +5295,6 @@ function normalizeEditablePaperContexts(
   return normalizePaperContexts(paperContexts);
 }
 
-/**
- * Derive paper keys that are being sent as PDF file attachments (native or page images).
- * These papers should be excluded from the text retrieval pipeline to avoid double-processing.
- */
-function derivePdfModePaperKeys(
-  attachments: ChatAttachment[] | undefined,
-  item: Zotero.Item,
-  contextSource?: ResolvedContextSource | null,
-): Set<string> {
-  const keys = new Set<string>();
-  if (!Array.isArray(attachments)) return keys;
-  for (const a of attachments) {
-    if (typeof a?.id !== "string") continue;
-    const m = a.id.match(/^pdf-(?:paper|page)-(\d+)-/);
-    if (!m) continue;
-    const contextItemId = Number(m[1]);
-    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
-    const autoLoaded = resolveAutoLoadedPaperContextForItem(
-      item,
-      contextSource,
-    );
-    if (autoLoaded && autoLoaded.contextItemId === contextItemId) {
-      keys.add(`${autoLoaded.itemId}:${autoLoaded.contextItemId}`);
-    }
-  }
-  return keys;
-}
-
 function normalizeEditableFullTextPaperContexts(
   fullTextPaperContexts?: PaperContextRef[],
 ): PaperContextRef[] {
@@ -5327,10 +5349,12 @@ function includeAutoLoadedPaperContext(
   const autoKey = `${autoLoadedPaperContext.itemId}:${autoLoadedPaperContext.contextItemId}`;
   const isExcludedFromTextPipeline = excludePaperKeys?.has(autoKey) === true;
   return {
-    paperContexts: normalizePaperContexts([
-      autoLoadedPaperContext,
-      ...normalizedPaperContexts,
-    ]),
+    paperContexts: isExcludedFromTextPipeline
+      ? normalizedPaperContexts
+      : normalizePaperContexts([
+          autoLoadedPaperContext,
+          ...normalizedPaperContexts,
+        ]),
     fullTextPaperContexts: isExcludedFromTextPipeline
       ? limitFullTextPaperContexts(normalizedFullTextPaperContexts)
       : fullTextPaperContexts === undefined
@@ -5384,7 +5408,13 @@ function syncComposeContextForInlineEdit(
     selectedFileAttachmentCache.delete(item.id);
   }
 
-  const paperContexts = normalizePaperContexts(userMessage.paperContexts);
+  const pdfPaperContexts = normalizePaperContexts(
+    userMessage.pdfPaperContexts,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
+  const paperContexts = normalizePaperContexts([
+    ...(userMessage.paperContexts || []),
+    ...pdfPaperContexts,
+  ]);
   const fullTextPaperContexts = normalizePaperContexts(
     userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
   );
@@ -5430,6 +5460,9 @@ function syncComposeContextForInlineEdit(
       "full-next",
     );
   }
+  for (const paperContext of pdfPaperContexts) {
+    setPaperContentSourceOverride(item.id, paperContext, "pdf");
+  }
 
   activeContextPanelStateSync.get(body)?.();
 }
@@ -5449,11 +5482,13 @@ export async function editLatestUserMessageAndRetry(
     selectedTextNoteContexts,
     screenshotImages,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments,
     modelAttachments,
+    localDocuments: _localDocuments,
     pdfUploadSystemMessages,
     targetRuntimeMode,
     expected,
@@ -5548,6 +5583,9 @@ export async function editLatestUserMessageAndRetry(
       (paper): paper is PaperContextRef => Boolean(paper),
     ),
   ]);
+  const normalizedPdfPaperContexts = normalizePaperContexts(
+    pdfPaperContexts,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
@@ -5555,10 +5593,10 @@ export async function editLatestUserMessageAndRetry(
   );
   const selectedTagContextsForMessage =
     normalizeTagContexts(selectedTagContexts);
-  const pdfExcludeKeys = derivePdfModePaperKeys(
-    attachments,
-    item,
-    contextSource,
+  const pdfExcludeKeys = new Set(
+    normalizedPdfPaperContexts.map(
+      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    ),
   );
   let {
     paperContexts: paperContextsForMessage,
@@ -5624,6 +5662,9 @@ export async function editLatestUserMessageAndRetry(
   retryPair.userMessage.paperContexts = paperContextsForMessage.length
     ? paperContextsForMessage
     : undefined;
+  retryPair.userMessage.pdfPaperContexts = normalizedPdfPaperContexts.length
+    ? normalizedPdfPaperContexts
+    : undefined;
   retryPair.userMessage.fullTextPaperContexts =
     fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
@@ -5677,6 +5718,7 @@ export async function editLatestUserMessageAndRetry(
         forcedSkillIds: retryPair.userMessage.forcedSkillIds,
         screenshotImages: retryPair.userMessage.screenshotImages,
         paperContexts: retryPair.userMessage.paperContexts,
+        pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
         fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
         citationPaperContexts: retryPair.userMessage.citationPaperContexts,
         selectedCollectionContexts:
@@ -5994,13 +6036,19 @@ export async function retryLatestAssistantResponse(
   }
 
   try {
+    const retryLocalDocuments = retryPair.userMessage.pdfPaperContexts?.length
+      ? await createLocalPdfResourceResolver().resolve(
+          retryPair.userMessage.pdfPaperContexts,
+        )
+      : undefined;
+    if (
+      retryLocalDocuments?.length &&
+      effectiveConversationSystem === "claude_code"
+    ) {
+      await preflightClaudeBridgeLocalPdfCapability();
+    }
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
-    const retryPdfKeys = derivePdfModePaperKeys(
-      retryPair.userMessage.attachments,
-      item,
-    );
-
     // Create AbortController early so the signal is available during context
     // planning.
     const AbortControllerCtor = getAbortControllerCtor();
@@ -6030,7 +6078,7 @@ export async function retryLatestAssistantResponse(
           recentPaperContexts,
           history: llmHistory,
           effectiveRequestConfig,
-          pdfModePaperKeys: retryPdfKeys.size > 0 ? retryPdfKeys : undefined,
+          pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
           pdfUploadSystemMessages: retryPdfUploadSystemMessages.length
             ? retryPdfUploadSystemMessages
             : undefined,
@@ -6072,6 +6120,7 @@ export async function retryLatestAssistantResponse(
           retryPair.userMessage.selectedTextPaperContexts,
         screenshotImages: retryPair.userMessage.screenshotImages,
         paperContexts: retryPair.userMessage.paperContexts,
+        pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
         fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
         citationPaperContexts: retryPair.userMessage.citationPaperContexts,
         selectedCollectionContexts:
@@ -6230,6 +6279,8 @@ export async function retryLatestAssistantResponse(
               selectedTextNoteContexts:
                 retryPair.userMessage.selectedTextNoteContexts,
               paperContexts: contextPlan.paperContexts,
+              pdfPaperContexts: retryPair.userMessage.pdfPaperContexts,
+              localDocuments: retryLocalDocuments,
               fullTextPaperContexts: contextPlan.fullTextPaperContexts,
               pinnedPaperContexts: retryPair.userMessage.pinnedPaperContexts,
               selectedCollectionContexts,
@@ -6457,11 +6508,13 @@ export async function editUserTurnAndRetry(opts: {
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments?: ChatAttachment[];
   modelAttachments?: ChatAttachment[];
+  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
   model?: string;
@@ -6493,11 +6546,13 @@ export async function editUserTurnAndRetry(opts: {
     selectedTextNoteContexts,
     screenshotImages,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments,
     modelAttachments,
+    localDocuments: _localDocuments,
     pdfUploadSystemMessages,
     targetRuntimeMode,
     model,
@@ -6638,6 +6693,9 @@ export async function editUserTurnAndRetry(opts: {
       (paper): paper is PaperContextRef => Boolean(paper),
     ),
   ]);
+  const normalizedPdfPaperContexts = normalizePaperContexts(
+    pdfPaperContexts,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
@@ -6645,10 +6703,10 @@ export async function editUserTurnAndRetry(opts: {
   );
   const selectedTagContextsForMessage =
     normalizeTagContexts(selectedTagContexts);
-  const pdfExcludeKeysEdit = derivePdfModePaperKeys(
-    attachments,
-    item,
-    contextSource,
+  const pdfExcludeKeysEdit = new Set(
+    normalizedPdfPaperContexts.map(
+      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    ),
   );
   const {
     paperContexts: paperContextsForMessage,
@@ -6693,6 +6751,9 @@ export async function editUserTurnAndRetry(opts: {
   userMsg.paperContexts = paperContextsForMessage.length
     ? paperContextsForMessage
     : undefined;
+  userMsg.pdfPaperContexts = normalizedPdfPaperContexts.length
+    ? normalizedPdfPaperContexts
+    : undefined;
   userMsg.fullTextPaperContexts = fullTextPaperContextsForMessage.length
     ? fullTextPaperContextsForMessage
     : undefined;
@@ -6736,6 +6797,7 @@ export async function editUserTurnAndRetry(opts: {
         forcedSkillIds: userMsg.forcedSkillIds,
         screenshotImages: userMsg.screenshotImages,
         paperContexts: userMsg.paperContexts,
+        pdfPaperContexts: userMsg.pdfPaperContexts,
         fullTextPaperContexts: userMsg.fullTextPaperContexts,
         citationPaperContexts: getMessageCitationPaperContexts(userMsg),
         selectedCollectionContexts: userMsg.selectedCollectionContexts,
@@ -6800,11 +6862,13 @@ export type BuildAgentRuntimeRequestParams = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
+  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
   effectiveRequestConfig: EffectiveRequestConfig;
@@ -7103,6 +7167,25 @@ function buildAgentAttachmentResourcePool(params: {
 async function buildAgentRuntimeRequest(
   params: BuildAgentRuntimeRequestParams,
 ): Promise<AgentRuntimeRequest> {
+  const normalizedPdfPaperContexts = normalizePaperContexts(
+    params.pdfPaperContexts,
+  );
+  const localDocuments = params.localDocuments;
+  if (normalizedPdfPaperContexts.length !== (localDocuments?.length || 0)) {
+    throw new Error("Raw PDF identities and local resources do not match.");
+  }
+  for (let index = 0; index < normalizedPdfPaperContexts.length; index += 1) {
+    const paper = normalizedPdfPaperContexts[index];
+    const document = localDocuments?.[index];
+    if (
+      !document ||
+      document.itemId !== paper.itemId ||
+      document.contextItemId !== paper.contextItemId ||
+      document.sourceKey !== `zotero-pdf:${paper.itemId}:${paper.contextItemId}`
+    ) {
+      throw new Error("Raw PDF identities and local resources do not match.");
+    }
+  }
   const [enrichedPaperContexts, enrichedFullTextPapers] = await Promise.all([
     enrichPaperContextsWithMineruCache(params.paperContexts),
     enrichPaperContextsWithMineruCache(params.fullTextPaperContexts),
@@ -7130,6 +7213,11 @@ async function buildAgentRuntimeRequest(
     selectedTextPaperContexts: params.selectedTextPaperContexts,
     selectedTextNoteContexts: params.selectedTextNoteContexts,
     selectedPaperContexts: enrichedPaperContexts,
+    pdfPaperContexts: normalizedPdfPaperContexts.map((paper) => ({
+      ...paper,
+      contentSourceMode: "pdf" as const,
+    })),
+    localDocuments,
     fullTextPaperContexts: enrichedFullTextPapers,
     citationPaperContexts: normalizePaperContexts(params.citationPaperContexts),
     selectedCollectionContexts: normalizeCollectionContexts(
@@ -7211,6 +7299,13 @@ function buildAgentEngineDeps(
     getConversationKey,
     buildLLMHistoryMessages,
     buildAgentRuntimeRequest,
+    resolveLocalPdfResources: (paperContexts) =>
+      createLocalPdfResourceResolver().resolve(paperContexts),
+    preflightLocalPdfCapability: async () => {
+      if (getEffectiveConversationSystem() === "claude_code") {
+        await preflightClaudeBridgeLocalPdfCapability();
+      }
+    },
     resolveEffectiveRequestConfig,
     getConversationSystem: () => getEffectiveConversationSystem(),
     accumulateSessionTokens,
@@ -7411,12 +7506,13 @@ async function sendAgentQuestion(opts: {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments?: ChatAttachment[];
   modelAttachments?: ChatAttachment[];
-  pdfModePaperKeys?: Set<string>;
+  localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
   forcedSkillIds?: string[];
   pdfUploadSystemMessages?: string[];
   conversationSystem?: ConversationSystem;
@@ -7470,15 +7566,16 @@ export async function sendQuestion(
     selectedTextPaperContexts,
     selectedTextNoteContexts,
     paperContexts,
+    pdfPaperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments,
     modelAttachments,
+    localDocuments,
     runtimeMode = "chat",
     agentRunId,
     skipAgentDispatch = false,
-    pdfModePaperKeys,
   } = opts;
   const effectiveConversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -7521,12 +7618,13 @@ export async function sendQuestion(
       selectedTextPaperContexts,
       selectedTextNoteContexts,
       paperContexts,
+      pdfPaperContexts,
       fullTextPaperContexts,
       selectedCollectionContexts,
       selectedTagContexts,
       attachments,
       modelAttachments,
-      pdfModePaperKeys,
+      localDocuments,
       forcedSkillIds: opts.forcedSkillIds,
       pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
       conversationSystem: effectiveConversationSystem,
@@ -7827,6 +7925,14 @@ export async function sendQuestion(
       (paper): paper is PaperContextRef => Boolean(paper),
     ),
   ]);
+  const normalizedPdfPaperContexts = normalizePaperContexts(
+    pdfPaperContexts,
+  ).map((paper) => ({ ...paper, contentSourceMode: "pdf" as const }));
+  const pdfModePaperKeys = new Set(
+    normalizedPdfPaperContexts.map(
+      (paper) => `${paper.itemId}:${paper.contextItemId}`,
+    ),
+  );
   const normalizedFullTextPaperContexts = normalizePaperContexts(
     fullTextPaperContexts,
   );
@@ -7842,9 +7948,7 @@ export async function sendQuestion(
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
-    pdfModePaperKeys && pdfModePaperKeys.size > 0
-      ? pdfModePaperKeys
-      : undefined,
+    pdfModePaperKeys.size > 0 ? pdfModePaperKeys : undefined,
     contextSource,
   );
   if (shouldUseCodexNativeLightContext({ isCodexNativeTurn })) {
@@ -7902,6 +8006,9 @@ export async function sendQuestion(
     paperContexts: paperContextsForMessage.length
       ? paperContextsForMessage
       : undefined,
+    pdfPaperContexts: normalizedPdfPaperContexts.length
+      ? normalizedPdfPaperContexts
+      : undefined,
     fullTextPaperContexts: fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined,
@@ -7953,6 +8060,7 @@ export async function sendQuestion(
         selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
         forcedSkillIds: userMessage.forcedSkillIds,
         paperContexts: userMessage.paperContexts,
+        pdfPaperContexts: userMessage.pdfPaperContexts,
         fullTextPaperContexts: userMessage.fullTextPaperContexts,
         citationPaperContexts: userMessage.citationPaperContexts,
         selectedCollectionContexts: userMessage.selectedCollectionContexts,
@@ -8198,7 +8306,7 @@ export async function sendQuestion(
           recentPaperContexts,
           history: llmHistory,
           effectiveRequestConfig,
-          pdfModePaperKeys,
+          pdfPaperContexts: normalizedPdfPaperContexts,
           pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
@@ -8232,6 +8340,7 @@ export async function sendQuestion(
         selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
         screenshotImages: userMessage.screenshotImages,
         paperContexts: userMessage.paperContexts,
+        pdfPaperContexts: userMessage.pdfPaperContexts,
         fullTextPaperContexts: userMessage.fullTextPaperContexts,
         citationPaperContexts: userMessage.citationPaperContexts,
         selectedCollectionContexts: userMessage.selectedCollectionContexts,
@@ -8389,6 +8498,8 @@ export async function sendQuestion(
               selectedTextPaperContexts: selectedTextPaperContextsForMessage,
               selectedTextNoteContexts: selectedTextNoteContextsForMessage,
               paperContexts: contextPlan.paperContexts,
+              pdfPaperContexts: normalizedPdfPaperContexts,
+              localDocuments,
               fullTextPaperContexts: contextPlan.fullTextPaperContexts,
               pinnedPaperContexts: userMessage.pinnedPaperContexts,
               selectedCollectionContexts: selectedCollectionContextsForMessage,
@@ -9296,7 +9407,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         hasContextBadge = true;
       }
 
-      const paperContexts = normalizePaperContexts(msg.paperContexts);
+      const paperContexts = normalizePaperContexts([
+        ...(msg.paperContexts || []),
+        ...(msg.pdfPaperContexts || []),
+      ]);
       hasUserContext = hasUserContext || paperContexts.length > 0;
       if (paperContexts.length) {
         const displayPaperContexts = paperContexts.map(
@@ -9331,6 +9445,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         for (const paperContext of displayPaperContexts) {
           const paperItem = doc.createElement("div") as HTMLDivElement;
           paperItem.className = "llm-user-papers-item";
+          paperItem.classList.toggle(
+            "llm-user-papers-item-pdf",
+            paperContext.contentSourceMode === "pdf",
+          );
 
           const paperTitle = doc.createElement("span") as HTMLSpanElement;
           paperTitle.className = "llm-user-papers-item-title";
@@ -9346,7 +9464,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           paperMeta.textContent = metaParts.join(" · ") || "Supplemental paper";
           paperMeta.title = paperMeta.textContent;
 
-          const attachmentTitle = paperContext.attachmentTitle || "";
+          const attachmentTitle =
+            paperContext.attachmentTitle ||
+            (paperContext.contentSourceMode === "pdf" ? "PDF file" : "");
           const paperAttachment = doc.createElement("span") as HTMLSpanElement;
           paperAttachment.className = "llm-user-papers-item-attachment";
           paperAttachment.textContent = attachmentTitle;

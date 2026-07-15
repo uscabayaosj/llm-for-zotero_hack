@@ -12,6 +12,7 @@ import type { AgentRuntimeRequest } from "../agent/types";
 import type { AgentSkill } from "../agent/skills";
 import { getAllSkills, getMatchedSkillIds } from "../agent/skills";
 import { detectSkillIntent } from "../agent/model/skillClassifier";
+import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "../agent/context/rawPdfTransportPolicy";
 import {
   getCodexNativeSkillRoutingModePref,
   type CodexNativeSkillRoutingMode,
@@ -56,6 +57,8 @@ export type CodexNativeSkillContext = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   selectedPaperContexts?: PaperContextRef[];
+  pdfPaperContexts?: PaperContextRef[];
+  localDocuments?: readonly import("../shared/types").LocalDocumentResource[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -249,8 +252,8 @@ function setClassifierCache(key: string, value: string[]): void {
   if (firstKey) classifierCache.delete(firstKey);
 }
 
-function normalizeList<T>(value: T[] | undefined): T[] | undefined {
-  return Array.isArray(value) && value.length ? value : undefined;
+function normalizeList<T>(value: readonly T[] | undefined): T[] | undefined {
+  return Array.isArray(value) && value.length ? Array.from(value) : undefined;
 }
 
 function buildScopePaperContexts(
@@ -311,6 +314,8 @@ export function buildCodexNativeSkillRequest(
     ),
     selectedPaperContexts:
       normalizeList(skillContext?.selectedPaperContexts) || scopePapers,
+    pdfPaperContexts: normalizeList(skillContext?.pdfPaperContexts),
+    localDocuments: normalizeList(skillContext?.localDocuments),
     fullTextPaperContexts: normalizeList(skillContext?.fullTextPaperContexts),
     pinnedPaperContexts: normalizeList(skillContext?.pinnedPaperContexts),
     selectedCollectionContexts: normalizeList(
@@ -332,6 +337,7 @@ export function buildCodexNativeSkillRequest(
 export function buildCodexNativeSkillInstructionBlock(
   matchedSkillIds: ReadonlyArray<string>,
   allSkills: ReadonlyArray<AgentSkill> = getAllSkills(),
+  options: { rawPdfMode?: boolean } = {},
 ): string {
   if (!matchedSkillIds.length) return "";
   const activeIds = new Set(matchedSkillIds);
@@ -345,13 +351,17 @@ export function buildCodexNativeSkillInstructionBlock(
         .filter(Boolean)
         .join("\n"),
     ),
-  ].join("\n\n");
+    options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export async function resolveCodexNativeSkills(
   params: ResolveNativeSkillsParams,
 ): Promise<CodexNativeResolvedSkills> {
   const request = buildCodexNativeSkillRequest(params);
+  const rawPdfMode = Boolean(params.skillContext?.localDocuments?.length);
   const allSkills = getAllSkills();
   if (!allSkills.length) {
     return {
@@ -372,6 +382,7 @@ export async function resolveCodexNativeSkills(
       instructionBlock: buildCodexNativeSkillInstructionBlock(
         deterministicSkillIds,
         allSkills,
+        { rawPdfMode },
       ),
       resolutionSource: "deterministic",
     };
@@ -405,6 +416,7 @@ export async function resolveCodexNativeSkills(
       instructionBlock: buildCodexNativeSkillInstructionBlock(
         cachedSkillIds,
         allSkills,
+        { rawPdfMode },
       ),
       resolutionSource: "cache",
     };
@@ -424,6 +436,7 @@ export async function resolveCodexNativeSkills(
     instructionBlock: buildCodexNativeSkillInstructionBlock(
       matchedSkillIds,
       allSkills,
+      { rawPdfMode },
     ),
     resolutionSource: "classifier",
   };

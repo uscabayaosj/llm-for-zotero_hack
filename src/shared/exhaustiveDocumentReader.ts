@@ -265,35 +265,215 @@ function missingRanges(total: number, processed: Set<number>): string[] {
   return ranges;
 }
 
+type CompactContextPart = {
+  prefix: string;
+  text: string;
+};
+
+const MIN_COMPACT_DIGEST_CHARS = 24;
+
+function formatIndexRanges(indexes: number[]): string {
+  if (!indexes.length) return "-";
+  const sorted = Array.from(new Set(indexes)).sort((a, b) => a - b);
+  const ranges: string[] = [];
+  let start = sorted[0];
+  let end = start;
+  for (let index = 1; index < sorted.length; index += 1) {
+    const value = sorted[index];
+    if (value === end + 1) {
+      end = value;
+      continue;
+    }
+    ranges.push(start === end ? `${start}` : `${start}-${end}`);
+    start = value;
+    end = value;
+  }
+  ranges.push(start === end ? `${start}` : `${start}-${end}`);
+  return ranges.join(",");
+}
+
+function compactBalancedText(text: string, maxChars: number): string {
+  const budget = Math.max(0, Math.floor(maxChars));
+  if (!budget || !text) return "";
+  if (text.length <= budget) return text;
+  if (budget < 5) return text.slice(0, budget);
+  const contentBudget = budget - 1;
+  const leadingChars = Math.ceil(contentBudget * 0.7);
+  const trailingChars = contentBudget - leadingChars;
+  return `${text.slice(0, leadingChars)}…${text.slice(-trailingChars)}`;
+}
+
+function allocateFairCharacterBudgets(
+  parts: CompactContextPart[],
+  maxChars: number,
+  minimumCharsPerPart = 1,
+): number[] {
+  const allocations = parts.map(() => 0);
+  let remaining = Math.max(0, Math.floor(maxChars));
+  let active = parts
+    .map((part, index) => ({ index, length: part.text.length }))
+    .filter((part) => part.length > 0);
+
+  // Give every non-empty record its minimum share before expanding any one.
+  for (const part of active) {
+    if (!remaining) break;
+    const granted = Math.min(part.length, minimumCharsPerPart, remaining);
+    allocations[part.index] = granted;
+    remaining -= granted;
+  }
+  active = active.filter((part) => allocations[part.index] < part.length);
+
+  while (remaining > 0 && active.length) {
+    const fairShare = Math.max(1, Math.floor(remaining / active.length));
+    const nextActive: typeof active = [];
+    for (const part of active) {
+      if (!remaining) {
+        nextActive.push(part);
+        continue;
+      }
+      const available = part.length - allocations[part.index];
+      const granted = Math.min(available, fairShare, remaining);
+      allocations[part.index] += granted;
+      remaining -= granted;
+      if (allocations[part.index] < part.length) nextActive.push(part);
+    }
+    active = nextActive;
+  }
+  return allocations;
+}
+
 function compactContextText(
   papers: FullReadPaperResult[],
   receiptText: string,
   tokenBudget: number,
 ): string {
-  const header = ["Exhaustive Full-Text Reading:", receiptText, ""].join("\n");
-  const records = papers.flatMap((paper) =>
-    paper.digests.map((digest) => ({ paper, digest })),
-  );
-  const evidence = papers.flatMap((paper) => paper.exactEvidence);
-  const availableChars = Math.max(800, Math.floor(tokenBudget * 3.2));
-  const digestChars = Math.max(
-    120,
-    Math.floor((availableChars * 0.65) / Math.max(1, records.length)),
-  );
-  const digestText = records
-    .map(
-      ({ paper, digest }) =>
-        `Paper: ${paper.paperContext.title}\nBatch ${digest.batchIndex + 1}; chunks ${digest.chunkIndexes.join(", ")}\n${digest.digest.slice(0, digestChars)}`,
-    )
-    .join("\n\n");
-  let text = `${header}${digestText}`.trim();
-  for (const chunk of evidence) {
-    const block = `\n\nExact source excerpt [${chunk.paperTitle}; chunk ${chunk.chunkIndex}]:\n${chunk.text}`;
-    if (estimateTextTokens(text + block) > tokenBudget) break;
-    text += block;
+  const header = ["Exhaustive Full-Text Reading:", receiptText].join("\n");
+  const digestParts: CompactContextPart[] = [];
+  const allEvidenceParts: CompactContextPart[] = [];
+  for (const [paperIndex, paper] of papers.entries()) {
+    const paperNumber = paperIndex + 1;
+    if (paper.digests.length) {
+      digestParts.push({
+        prefix: `P${paperNumber}=`,
+        text: paper.paperContext.title,
+      });
+    }
+    for (const digest of paper.digests) {
+      digestParts.push({
+        prefix: `P${paperNumber}B${digest.batchIndex + 1}C${formatIndexRanges(digest.chunkIndexes)}=`,
+        text: digest.digest,
+      });
+    }
+    for (const chunk of paper.exactEvidence) {
+      allEvidenceParts.push({
+        prefix: `P${paperNumber}C${chunk.chunkIndex}=`,
+        text: chunk.text,
+      });
+    }
   }
-  if (estimateTextTokens(text) <= tokenBudget) return text;
-  return text.slice(0, availableChars).trim();
+  let evidenceParts = allEvidenceParts;
+
+  const render = (
+    digestAllocations: number[],
+    evidenceAllocations: number[],
+  ): string => {
+    const sections = [header];
+    if (digestParts.length) {
+      sections.push(
+        [
+          "Digest map (P=paper, B=batch, C=source chunks):",
+          ...digestParts.map(
+            (part, index) =>
+              `${part.prefix}${compactBalancedText(part.text, digestAllocations[index] || 0)}`,
+          ),
+        ].join("\n"),
+      );
+    }
+    if (evidenceParts.length) {
+      sections.push(
+        [
+          "Exact evidence map (P=paper, C=source chunk):",
+          ...evidenceParts.map(
+            (part, index) =>
+              `${part.prefix}${compactBalancedText(part.text, evidenceAllocations[index] || 0)}`,
+          ),
+        ].join("\n"),
+      );
+    }
+    return sections.join("\n\n").trim();
+  };
+
+  let fixedText = render(
+    digestParts.map(() => 0),
+    evidenceParts.map(() => 0),
+  );
+  const minimumDigestContentChars = digestParts.reduce(
+    (sum, part) => sum + Math.min(part.text.length, MIN_COMPACT_DIGEST_CHARS),
+    0,
+  );
+  const preferredMaxChars = Math.max(800, Math.floor(tokenBudget * 3.2));
+  const hardMaxChars = Math.max(800, Math.floor(tokenBudget * 4));
+  if (
+    evidenceParts.length &&
+    fixedText.length + minimumDigestContentChars > preferredMaxChars
+  ) {
+    // Exact excerpts are optional supporting material. Never let their labels
+    // crowd out a digest from a successfully processed source batch.
+    evidenceParts = [];
+    fixedText = render(
+      digestParts.map(() => 0),
+      [],
+    );
+  }
+  if (fixedText.length + minimumDigestContentChars > hardMaxChars) {
+    throw new Error(
+      "The full-read synthesis budget is too small to preserve its coverage receipt and every batch digest. Increase the model input-token cap or read fewer papers.",
+    );
+  }
+  const maxChars = Math.min(
+    hardMaxChars,
+    Math.max(preferredMaxChars, fixedText.length + minimumDigestContentChars),
+  );
+  const contentBudget = Math.max(0, maxChars - fixedText.length);
+  const digestContentLength = digestParts.reduce(
+    (sum, part) => sum + part.text.length,
+    0,
+  );
+  const evidenceContentLength = evidenceParts.reduce(
+    (sum, part) => sum + part.text.length,
+    0,
+  );
+  let evidenceBudget = evidenceParts.length
+    ? Math.min(evidenceContentLength, Math.floor(contentBudget * 0.25))
+    : 0;
+  evidenceBudget = Math.min(
+    evidenceBudget,
+    Math.max(0, contentBudget - minimumDigestContentChars),
+  );
+  let digestBudget = Math.min(
+    digestContentLength,
+    contentBudget - evidenceBudget,
+  );
+  let unallocatedBudget = contentBudget - digestBudget - evidenceBudget;
+  const extraDigestBudget = Math.min(
+    unallocatedBudget,
+    digestContentLength - digestBudget,
+  );
+  digestBudget += extraDigestBudget;
+  unallocatedBudget -= extraDigestBudget;
+  evidenceBudget += Math.min(
+    unallocatedBudget,
+    evidenceContentLength - evidenceBudget,
+  );
+
+  return render(
+    allocateFairCharacterBudgets(
+      digestParts,
+      digestBudget,
+      MIN_COMPACT_DIGEST_CHARS,
+    ),
+    allocateFairCharacterBudgets(evidenceParts, evidenceBudget),
+  );
 }
 
 async function analyzeWithRetries(params: {

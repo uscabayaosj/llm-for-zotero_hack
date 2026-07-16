@@ -8,6 +8,7 @@ import type {
   PdfContext,
 } from "../src/modules/contextPanel/types";
 import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
+import { estimateTextTokens } from "../src/utils/modelInputCap";
 
 function buildPaper(): {
   paperContext: PaperContextRef;
@@ -61,6 +62,110 @@ describe("exhaustiveDocumentReader", function () {
     assert.equal(result.receipt.totalChunks, 9);
     assert.isTrue(result.receipt.complete);
     assert.include(result.receipt.text, "9/9 chunks");
+  });
+
+  it("keeps every batch represented when the synthesis context is compacted", async function () {
+    const batchCountPerPaper = 20;
+    const buildLongPaper = (
+      itemId: number,
+      contextItemId: number,
+      title: string,
+    ): { paperContext: PaperContextRef; pdfContext: PdfContext } => {
+      const chunks = Array.from(
+        { length: batchCountPerPaper },
+        (_, index) => `Chunk ${index} ${"source ".repeat(900)}`,
+      );
+      return {
+        paperContext: { itemId, contextItemId, title },
+        pdfContext: {
+          title,
+          chunks,
+          chunkMeta: buildChunkMetadata(chunks),
+          chunkStats: [],
+          docFreq: {},
+          avgChunkLength: chunks[0].length,
+          fullLength: chunks.join("\n\n").length,
+        },
+      };
+    };
+    const papers = [
+      buildLongPaper(30, 31, "First Long Paper"),
+      buildLongPaper(40, 41, "Second Long Paper"),
+    ];
+    const result = await readDocumentsExhaustively({
+      papers,
+      question: "Read every section.",
+      batchTokenBudget: 1024,
+      finalTokenBudget: 1024,
+      analyzeBatch: async (batch) => ({
+        digest: `DIGEST_${batch.paperContext.itemId}_${batch.batchIndex} ${"detail ".repeat(120)}`,
+        relevantChunkIds: batch.chunks.map((chunk) => chunk.chunkIndex),
+      }),
+    });
+
+    assert.equal(result.status, "complete");
+    assert.deepEqual(
+      result.papers.map((paper) => paper.digests.length),
+      [batchCountPerPaper, batchCountPerPaper],
+    );
+    for (const paper of papers) {
+      assert.include(result.contextText, paper.paperContext.title);
+      for (
+        let batchIndex = 0;
+        batchIndex < batchCountPerPaper;
+        batchIndex += 1
+      ) {
+        assert.include(
+          result.contextText,
+          `DIGEST_${paper.paperContext.itemId}_${batchIndex}`,
+        );
+      }
+    }
+    assert.isAtMost(estimateTextTokens(result.contextText), 1024);
+  });
+
+  it("fails honestly when the synthesis budget cannot represent every digest", async function () {
+    const batchCount = 120;
+    const chunks = Array.from(
+      { length: batchCount },
+      (_, index) => `Chunk ${index} ${"source ".repeat(20)}`,
+    );
+    const paperContext: PaperContextRef = {
+      itemId: 50,
+      contextItemId: 51,
+      title: "Oversized Digest Map",
+    };
+    const pdfContext: PdfContext = {
+      title: paperContext.title,
+      chunks,
+      chunkMeta: buildChunkMetadata(chunks),
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: chunks[0].length,
+      fullLength: chunks.join("\n\n").length,
+    };
+
+    let error: unknown;
+    try {
+      await readDocumentsExhaustively({
+        papers: [{ paperContext, pdfContext }],
+        question: "Read every section.",
+        batchTokenBudget: 1,
+        finalTokenBudget: 256,
+        analyzeBatch: async (batch) => ({
+          digest: `DIGEST_${batch.batchIndex}`,
+          relevantChunkIds: [],
+        }),
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    assert.instanceOf(error, Error);
+    assert.include(
+      (error as Error).message,
+      "too small to preserve its coverage receipt and every batch digest",
+    );
   });
 
   it("reports failed batches instead of claiming full coverage", async function () {

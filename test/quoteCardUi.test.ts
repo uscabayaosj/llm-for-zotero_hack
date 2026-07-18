@@ -28,17 +28,53 @@ describe("quote card UI contract", function () {
     assert.include(css, "background: var(--llm-quote-card-surface)");
   });
 
+  it("defines noninteractive amber styling for not-source quote cards", function () {
+    const css = source("addon/content/zoteroPane.css");
+
+    assert.include(css, '.llm-quote-card[data-quote-status="not-source"]');
+    assert.include(css, "--llm-quote-card-rail: #f59e0b");
+    assert.include(css, "font-style: normal");
+    assert.include(css, "cursor: default");
+  });
+
   it("defaults quote cards to the collapsed visual state", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
 
-    assert.include(renderSource, 'wrapper.dataset.expanded = "false"');
+    assert.include(
+      renderSource,
+      'wrapper.dataset.expanded = interactive ? "false" : "true"',
+    );
     assert.include(
       renderSource,
       'content.setAttribute("aria-expanded", "false")',
     );
     assert.notInclude(renderSource, 'title.textContent = "Evidence quote"');
+  });
+
+  it("keeps rejected cards expanded and noninteractive", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "wrapper.dataset.quoteStatus = status");
+    assert.include(renderSource, 'const interactive = status === "verified"');
+    assert.include(
+      renderSource,
+      'wrapper.dataset.expanded = interactive ? "false" : "true"',
+    );
+    assert.include(renderSource, "if (!interactive) return wrapper");
+  });
+
+  it("keeps the not-source card non-interactive", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, 'status: "not-source"');
+    assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.notInclude(renderSource, "Related source:");
   });
 
   it("keeps citation activation separate from quote-card toggling", function () {
@@ -210,10 +246,11 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "parent.replaceChild(replacement, paragraph)");
   });
 
-  it("warms local paper text before final quote verification", function () {
+  it("separates the cache-only quote gate from background warming", function () {
     const chatSource = source("src/modules/contextPanel/chat.ts");
 
     assert.include(chatSource, "warmPageTextCacheForAttachment");
+    assert.include(chatSource, "getCachedPageTextForAttachment");
     assert.include(chatSource, 'sourceMatchSource: "pdf-page-text"');
     assert.include(chatSource, "ensureQuoteSourceTextCachedForPaper");
     assert.include(chatSource, "assistantMarkdownNeedsQuoteSourceSearch");
@@ -221,8 +258,14 @@ describe("quote card UI contract", function () {
     assert.include(chatSource, 'paper.contentSourceMode || ""');
     assert.include(chatSource, "!hasCachedQuoteSourceText(contextItemId) &&");
     assert.include(chatSource, "pdfTextCache.has(contextItemId)");
-    assert.include(chatSource, "await buildQuoteSourceTextsForPaperContexts");
-    assert.include(chatSource, "await finalizeAssistantMessageQuoteCitations");
+    assert.include(
+      chatSource,
+      "const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(",
+    );
+    assert.include(chatSource, "await warmQuoteSourceCachesForPaperContexts(");
+    assert.include(chatSource, "pendingQuoteValidations");
+    assert.include(chatSource, "startConversationQuoteValidation");
+    assert.include(chatSource, "scheduleAssistantMessageQuoteValidation(");
   });
 
   it("decorates citation blockquotes after all assistant markdown surfaces are mounted", function () {

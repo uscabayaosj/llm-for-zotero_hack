@@ -6591,6 +6591,12 @@ label.llm-search-results-item:hover {
   background: var(--llm-quote-card-surface);
 }
 
+.llm-quote-card[data-quote-status="not-source"] {
+  --llm-quote-card-rail: #f59e0b;
+  background: var(--llm-quote-card-surface);
+  cursor: default;
+}
+
 .llm-quote-card-content {
   padding: 8px 10px 3px;
 }
@@ -6640,6 +6646,11 @@ label.llm-search-results-item:hover {
 
 .llm-quote-card[data-expanded="false"] .llm-quote-card-body {
   display: none;
+}
+
+.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-preview,
+.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-body {
+  font-style: normal;
 }
 
 .llm-rendered-markdown strong {

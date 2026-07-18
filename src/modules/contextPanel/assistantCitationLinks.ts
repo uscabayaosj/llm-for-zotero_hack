@@ -20,6 +20,7 @@ import {
 } from "./quoteCitations";
 import {
   buildQuoteRenderPlan,
+  getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
   type QuoteRenderOccurrence,
 } from "./quoteRenderPlan";
@@ -29,7 +30,6 @@ import {
   extractCitationYear,
   isCitationControlCharCode,
   isLikelyStandaloneSourceCitationLabel,
-  isNonSourceCitationLabel,
   normalizeCitationKey,
   normalizeCitationLabel,
   parseStandaloneCitationLabel,
@@ -876,75 +876,6 @@ function getNextElementSibling(element: Element): Element | null {
     current = current.nextElementSibling;
   }
   return null;
-}
-
-function extractLeadingParentheticalLabel(value: string): {
-  label: string;
-  remainder: string;
-} | null {
-  const text = sanitizeText(value || "").trim();
-  if (!text.startsWith("(")) return null;
-  let depth = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const ch = text[index];
-    if (ch === "(") depth += 1;
-    if (ch !== ")") continue;
-    depth -= 1;
-    if (depth !== 0) continue;
-    const label = normalizeCitationLabel(text.slice(0, index + 1));
-    if (!label) return null;
-    return {
-      label,
-      remainder: normalizeCitationRemainderText(text.slice(index + 1)),
-    };
-  }
-  return null;
-}
-
-function buildExtractedCitationFromCandidate(
-  candidate: AssistantCitationPaperCandidate,
-): ExtractedCitationLabel {
-  const sourceLabel = candidate.displaySourceLabel || candidate.sourceLabel;
-  const citationLabel =
-    candidate.displayCitationLabel || candidate.citationLabel || sourceLabel;
-  const citationKey = normalizeCitationKey(candidate.paperContext.citationKey);
-  return {
-    sourceLabel,
-    citationLabel,
-    displayCitationLabel: candidate.displayCitationLabel || citationLabel,
-    citationKey: citationKey || undefined,
-    normalizedSourceLabel: normalizeCitationLabel(sourceLabel),
-    normalizedCitationLabel: normalizeCitationLabel(citationLabel),
-    normalizedDisplayCitationLabel: normalizeCitationLabel(
-      candidate.displayCitationLabel || citationLabel,
-    ),
-    normalizedCitationKey: citationKey || undefined,
-  };
-}
-
-function inferSingleCandidateFallbackCitation(
-  candidates: AssistantCitationPaperCandidate[],
-  adjacentCitationText: string,
-): {
-  extractedCitation: ExtractedCitationLabel;
-  remainder: string | null;
-} | null {
-  if (candidates.length !== 1) return null;
-  const text = sanitizeText(adjacentCitationText || "").trim();
-  if (!text) {
-    return {
-      extractedCitation: buildExtractedCitationFromCandidate(candidates[0]),
-      remainder: null,
-    };
-  }
-  const leadingLabel = extractLeadingParentheticalLabel(text);
-  if (!leadingLabel || !isNonSourceCitationLabel(leadingLabel.label)) {
-    return null;
-  }
-  return {
-    extractedCitation: buildExtractedCitationFromCandidate(candidates[0]),
-    remainder: leadingLabel.remainder,
-  };
 }
 
 function createSyntheticCitationElement(params: {
@@ -3773,6 +3704,8 @@ type QuoteCardPointerPoint = {
   clientY: number;
 };
 
+type QuoteCardStatus = "verified" | "not-source";
+
 function isMouseEventLike(event: Event): event is MouseEvent {
   const mouseEvent = event as MouseEvent;
   return (
@@ -3885,12 +3818,16 @@ function createQuoteCardElement(params: {
   quoteOccurrenceId?: string;
   citationContent: Node;
   quoteContent?: DocumentFragment | null;
+  status?: QuoteCardStatus;
 }): HTMLElement {
+  const status = params.status || "verified";
+  const interactive = status === "verified";
   const wrapper = params.ownerDoc.createElement("div");
   wrapper.className = params.quoteCitationId
     ? "llm-quote-card llm-quote-citation-anchor"
     : "llm-quote-card";
-  wrapper.dataset.expanded = "false";
+  wrapper.dataset.quoteStatus = status;
+  wrapper.dataset.expanded = interactive ? "false" : "true";
   if (params.quoteCitationId) {
     wrapper.dataset.quoteCitationId = params.quoteCitationId;
   }
@@ -3900,9 +3837,11 @@ function createQuoteCardElement(params: {
 
   const content = params.ownerDoc.createElement("div");
   content.className = "llm-quote-card-content";
-  content.setAttribute("role", "button");
-  content.setAttribute("tabindex", "0");
-  content.setAttribute("aria-expanded", "false");
+  if (interactive) {
+    content.setAttribute("role", "button");
+    content.setAttribute("tabindex", "0");
+    content.setAttribute("aria-expanded", "false");
+  }
 
   const preview = params.ownerDoc.createElement("span");
   preview.className = "llm-quote-card-preview";
@@ -3918,6 +3857,9 @@ function createQuoteCardElement(params: {
     renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
   }
   content.append(preview, body);
+  wrapper.append(content, citation);
+
+  if (!interactive) return wrapper;
 
   const setExpanded = (expanded: boolean) => {
     wrapper.dataset.expanded = expanded ? "true" : "false";
@@ -3984,7 +3926,6 @@ function createQuoteCardElement(params: {
     toggleExpanded();
   });
 
-  wrapper.append(content, citation);
   return wrapper;
 }
 
@@ -4095,6 +4036,19 @@ function createQuoteRenderOccurrenceElement(params: {
       quoteCitationId: trustedCitation.id,
       quoteOccurrenceId: params.occurrence.occurrenceId,
       citationContent,
+      status: "verified",
+    });
+  }
+
+  if (params.occurrence.trust === "not-source-quote") {
+    const citationContent = params.ownerDoc.createElement("span");
+    citationContent.textContent = params.occurrence.citationLabel;
+    return createQuoteCardElement({
+      ownerDoc: params.ownerDoc,
+      quoteText: params.occurrence.displayText,
+      quoteOccurrenceId: params.occurrence.occurrenceId,
+      citationContent,
+      status: "not-source",
     });
   }
 
@@ -4127,6 +4081,7 @@ function createQuoteRenderOccurrenceElement(params: {
     quoteText: params.occurrence.displayText,
     quoteOccurrenceId: params.occurrence.occurrenceId,
     citationContent,
+    status: "verified",
   });
 }
 
@@ -4201,10 +4156,8 @@ export function renderQuoteCitationPlaceholders(params: {
   assistantMessage: Message;
   pairedUserMessage?: Message | null;
 }): void {
-  const plan = buildQuoteRenderPlan({
-    markdown: params.assistantMessage.text || "",
-    quoteCitations: params.assistantMessage.quoteCitations,
-  });
+  const display = getMessageQuoteDisplay(params.assistantMessage);
+  const plan = buildQuoteRenderPlan(display);
   QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
   const hasQuoteOccurrence = QUOTE_RENDER_OCCURRENCE_PATTERN.test(
     params.bubble.textContent || "",
@@ -4219,9 +4172,7 @@ export function renderQuoteCitationPlaceholders(params: {
   const occurrencesById = new Map(
     plan.occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]),
   );
-  const quoteCitations = normalizeQuoteCitations(
-    params.assistantMessage.quoteCitations,
-  );
+  const quoteCitations = normalizeQuoteCitations(display.quoteCitations);
   const citationsById = new Map(
     quoteCitations.map((citation) => [citation.id, citation]),
   );
@@ -4539,18 +4490,15 @@ export function decorateAssistantCitationLinks(params: {
   assistantMessage: Message;
   pairedUserMessage?: Message | null;
 }): void {
+  const display = getMessageQuoteDisplay(params.assistantMessage);
   if (
-    !sanitizeText(
-      params.bubble.textContent || params.assistantMessage.text || "",
-    ).trim()
+    !sanitizeText(params.bubble.textContent || display.markdown || "").trim()
   ) {
     return;
   }
   const ownerDoc = params.bubble.ownerDocument;
   if (!ownerDoc) return;
-  const quoteCitations = normalizeQuoteCitations(
-    params.assistantMessage.quoteCitations,
-  );
+  const quoteCitations = normalizeQuoteCitations(display.quoteCitations);
   const activeReader = getActiveReaderForSelectedTab();
   if (activeReader) {
     scheduleCitationPageTextCacheWarm(activeReader, ownerDoc);
@@ -4568,9 +4516,7 @@ export function decorateAssistantCitationLinks(params: {
     params.bubble.querySelectorAll("blockquote"),
   ) as Element[];
   const rawBlockquoteTexts =
-    extractMarkdownBlockquoteTextsForCitationDecoration(
-      params.assistantMessage.text || "",
-    );
+    extractMarkdownBlockquoteTextsForCitationDecoration(display.markdown);
   ztoolkit.log(
     "LLM citation decoration: blockquotes found =",
     blockquotes.length,
@@ -4582,9 +4528,18 @@ export function decorateAssistantCitationLinks(params: {
     params.bubble.childElementCount,
   );
   for (const [blockquoteIndex, blockquote] of blockquotes.entries()) {
-    if (blockquote.closest(".llm-quote-citation-anchor")) continue;
+    if (
+      blockquote.closest(
+        ".llm-quote-citation-anchor, [data-quote-status='not-source']",
+      )
+    ) {
+      continue;
+    }
     const sourceBlockquoteText =
       rawBlockquoteTexts[blockquoteIndex] || blockquote.textContent || "";
+    if (/(?:^|\n)\s*Not a source quote\s*$/i.test(sourceBlockquoteText)) {
+      continue;
+    }
     let quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
       sanitizeText(sourceBlockquoteText).trim(),
     );
@@ -4631,25 +4586,6 @@ export function decorateAssistantCitationLinks(params: {
         citationEl,
         extractedCitation,
       });
-    }
-
-    const fallbackCitation = !extractedCitation
-      ? inferSingleCandidateFallbackCitation(
-          candidates,
-          citationEl?.textContent || "",
-        )
-      : null;
-    if (fallbackCitation) {
-      extractedCitation = fallbackCitation.extractedCitation;
-      citationRemainder = fallbackCitation.remainder;
-      if (!citationEl) {
-        citationEl = createSyntheticCitationElement({
-          ownerDoc,
-          blockquote,
-          citationEl,
-          extractedCitation,
-        });
-      }
     }
 
     if (!extractedCitation) {

@@ -13,8 +13,10 @@ import {
   stripBoundaryEllipsis,
   splitQuoteAtEllipsis,
   buildRawPrefixQueries,
+  getCachedPageTextForAttachment,
   getCurrentSelectionPageLocationFromReader,
   getPageLabelForIndex,
+  hasCompleteSearchablePageTextForAttachment,
   locateQuoteByRawPrefixInPages,
   scrollToExactQuoteInReader,
   scrollToSelectedTextInReader,
@@ -295,6 +297,39 @@ describe("citation page cache warming", function () {
       assert.equal(second?.coverage, "full-pdfworker");
       assert.equal(second?.pageCount, 1);
       assert.deepEqual(calls, [101, 202]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("uses only complete searchable page coverage as quote-negative evidence", async function () {
+    clearPageTextCache();
+    const firstPage = "The first page contains searchable source text.";
+    const secondPage = "The second page also contains searchable source text.";
+    const restore = installPdfWorkerStub(async (itemId) => {
+      if (itemId === 301) {
+        return {
+          text: `${firstPage}${secondPage}`,
+          pageChars: [firstPage.length, secondPage.length],
+        };
+      }
+      if (itemId === 302) {
+        return {
+          text: firstPage,
+          pageChars: [firstPage.length, 0],
+        };
+      }
+      return null;
+    });
+
+    try {
+      assert.isNull(getCachedPageTextForAttachment(301));
+      await warmPageTextCacheForAttachment(301);
+      await warmPageTextCacheForAttachment(302);
+
+      assert.isTrue(hasCompleteSearchablePageTextForAttachment(301));
+      assert.isFalse(hasCompleteSearchablePageTextForAttachment(302));
+      assert.equal(getCachedPageTextForAttachment(301)?.pageCount, 2);
     } finally {
       restore();
     }

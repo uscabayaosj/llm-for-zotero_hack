@@ -928,6 +928,7 @@ export function findUniqueQuoteTextSearchMatch(
   });
   const debugSummary: string[] = [];
   let bestMatch: QuoteTextSearchMatch | null = null;
+  const nonBoundaryExactEntryIds = new Set<string>();
 
   for (const query of queries) {
     const normalizedQuery = normalizeLocatorText(query.query);
@@ -944,6 +945,9 @@ export function findUniqueQuoteTextSearchMatch(
     let totalOccurrences = 0;
     let hasNonBoundaryExactOccurrence = false;
     for (const entry of normalizedEntries) {
+      if (query.kind !== "exact" && nonBoundaryExactEntryIds.has(entry.id)) {
+        continue;
+      }
       const occurrences = countOccurrences(
         entry.normalizedText,
         normalizedQuery,
@@ -957,6 +961,7 @@ export function findUniqueQuoteTextSearchMatch(
           )
         ) {
           hasNonBoundaryExactOccurrence = true;
+          nonBoundaryExactEntryIds.add(entry.id);
         }
         continue;
       }
@@ -978,7 +983,7 @@ export function findUniqueQuoteTextSearchMatch(
           normalizedQuery,
         )}" -> skipped non-boundary canonical match`,
       );
-      return null;
+      continue;
     }
     if (
       matchedEntryIds.length === 1 &&

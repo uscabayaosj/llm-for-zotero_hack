@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   buildQuoteDisplayMarkdown,
+  buildQuoteExpandedMarkdown,
   buildQuoteRenderPlan,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "../src/modules/contextPanel/quoteRenderPlan";
@@ -61,6 +62,81 @@ describe("quoteRenderPlan", function () {
     assert.equal(plan.occurrences[0].quoteCitationId, citation!.id);
     assert.equal(plan.occurrences[0].contextItemId, 77);
     assert.equal(plan.diagnostics[0].kind, "verified-source");
+  });
+
+  it("leaves a deferred source-labelled quote unchanged", function () {
+    const quote =
+      "Among neuron pairs, does noise correlation change more favorably for high signal correlation?";
+    const citationLabel = "(Eppler et al., 2026, page 3)";
+    const markdown = `> ${quote}\n>\n> ${citationLabel}`;
+    const plan = buildQuoteRenderPlan({ markdown });
+
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].trust, "legacy-inferred");
+    assert.equal(plan.occurrences[0].citationLabel, citationLabel);
+    assert.match(plan.displayMarkdown, QUOTE_RENDER_OCCURRENCE_PATTERN);
+    assert.equal(buildQuoteExpandedMarkdown({ markdown }), markdown);
+  });
+
+  it("does not alter an unresolved historical quote card", function () {
+    const quote =
+      "A historical quotation remains visible until complete evidence rejects it.";
+    const citationLabel = "(Legacy et al., 2024)";
+    const plan = buildQuoteRenderPlan({
+      markdown: `> ${quote}\n>\n> ${citationLabel}`,
+    });
+
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].trust, "legacy-inferred");
+    assert.equal(plan.occurrences[0].citationLabel, citationLabel);
+  });
+
+  it("renders a rejected quote as a non-source quote card", function () {
+    const quote =
+      "This model interpretation has no searchable wording in the complete source.";
+    const markdown = `> ${quote}\n>\n> Not a source quote`;
+    const plan = buildQuoteRenderPlan({ markdown });
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].trust, "not-source-quote");
+    assert.equal(plan.occurrences[0].citationLabel, "Not a source quote");
+    assert.equal(buildQuoteDisplayMarkdown({ markdown }), plan.displayMarkdown);
+    assert.equal(
+      buildQuoteExpandedMarkdown({ markdown }),
+      `> ${quote}\n>\n> Not a source quote`,
+    );
+  });
+
+  it("renders a unique partial source as an ordinary trusted quote", function () {
+    const quote =
+      "A source-heavy summary adds wording that does not appear in the paper.";
+    const citation = buildQuoteCitation({
+      quoteText:
+        "A source-heavy summary contains a uniquely searchable source passage.",
+      displayQuoteText: quote,
+      citationLabel: "(Eppler et al., 2026)",
+      sourceMatchKind: "raw-prefix",
+      sourceMatchSource: "pdf-page-text",
+      contextItemId: 81,
+      itemId: 80,
+    });
+    assert.isDefined(citation);
+    const markdown = `[[quote:${citation!.id}]]`;
+    const plan = buildQuoteRenderPlan({
+      markdown,
+      quoteCitations: [citation!],
+    });
+
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].trust, "trusted-anchor");
+    assert.equal(plan.occurrences[0].citationLabel, "(Eppler et al., 2026)");
+    assert.equal(plan.occurrences[0].contextItemId, 81);
+    assert.equal(
+      buildQuoteExpandedMarkdown({
+        markdown,
+        quoteCitations: [citation!],
+      }),
+      `> ${quote}\n>\n> (Eppler et al., 2026)`,
+    );
   });
 
   it("keeps adjacent and repeated structured quote anchors as separate render occurrences", function () {

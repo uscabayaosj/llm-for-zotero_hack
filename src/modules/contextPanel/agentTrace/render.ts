@@ -99,11 +99,25 @@ type RenderAgentTraceParams = {
 
 export function buildAgentTraceMarkdownForRender(
   text: string,
-  message?: Pick<Message, "quoteCitations"> | null,
+  message?: Pick<
+    Message,
+    "text" | "quoteCitations" | "quoteDisplayOverride"
+  > | null,
 ): string {
+  const useDisplayOverride =
+    Boolean(message?.quoteDisplayOverride) &&
+    sanitizeText(text || "") === sanitizeText(message?.text || "");
+  const display = useDisplayOverride
+    ? message!.quoteDisplayOverride!
+    : {
+        markdown: text,
+        quoteCitations:
+          message?.quoteDisplayOverride?.quoteCitations ||
+          message?.quoteCitations,
+      };
   return buildQuoteDisplayMarkdown({
-    markdown: sanitizeText(text || ""),
-    quoteCitations: message?.quoteCitations,
+    markdown: sanitizeText(display.markdown || text || ""),
+    quoteCitations: display.quoteCitations,
   });
 }
 

@@ -292,7 +292,11 @@ import {
   decorateAssistantCitationLinks,
   renderQuoteCitationPlaceholders,
 } from "./assistantCitationLinks";
-import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
+import {
+  getCachedPageTextForAttachment,
+  hasCompleteSearchablePageTextForAttachment,
+  warmPageTextCacheForAttachment,
+} from "./livePdfSelectionLocator";
 import {
   getMessageCitationPaperContexts,
   mergeCitationPaperContexts,
@@ -308,6 +312,7 @@ import {
 import {
   buildQuoteDisplayMarkdown,
   buildQuoteExpandedMarkdown,
+  getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
 import {
@@ -920,8 +925,12 @@ export function buildAssistantResponseActionTarget(params: {
 }): ResponseActionTarget | null {
   const { item, message, pairedUserMessage, conversationKey, selectedText } =
     params;
+  const quoteDisplay = getMessageQuoteDisplay(message);
   const menuContent = resolveAssistantResponseMenuContent(
-    message,
+    {
+      text: selectedText ? message.text : quoteDisplay.markdown,
+      generatedImages: message.generatedImages,
+    },
     selectedText || "",
   );
   if (!menuContent) return null;
@@ -938,7 +947,7 @@ export function buildAssistantResponseActionTarget(params: {
     paperContexts: pairedUser
       ? getMessageCitationPaperContexts(pairedUser)
       : undefined,
-    quoteCitations: message.quoteCitations,
+    quoteCitations: quoteDisplay.quoteCitations || undefined,
     generatedImages: menuContent.generatedImages,
   };
 }
@@ -1916,6 +1925,7 @@ export async function ensureConversationLoaded(
       }
       blockedConversationLoadKeys.delete(conversationKey);
       chatHistory.set(conversationKey, panelMessages);
+      validateLoadedConversationQuoteMessages(panelMessages, conversationKey);
       await loadConversationForkLinkCache(conversationKey);
       shouldMarkLoaded = true;
     } catch (err) {
@@ -2028,11 +2038,12 @@ export function getReasoningOptions(
 }
 
 export function buildAssistantDisplayMarkdownForRender(
-  message: Pick<Message, "text" | "quoteCitations">,
+  message: Pick<Message, "text" | "quoteCitations" | "quoteDisplayOverride">,
 ): string {
+  const display = getMessageQuoteDisplay(message);
   return buildQuoteDisplayMarkdown({
-    markdown: sanitizeText(message.text || ""),
-    quoteCitations: message.quoteCitations,
+    markdown: sanitizeText(display.markdown),
+    quoteCitations: display.quoteCitations,
   });
 }
 
@@ -3397,33 +3408,32 @@ async function ensureQuoteSourceTextCachedForPaper(
   }
 }
 
-async function buildPdfPageQuoteSourceTextForPaper(
+function cachedPdfPageQuoteSourcesForPaper(
   paper: PaperContextRef,
-): Promise<string> {
+): QuoteSourceText[] {
   const contextItemId = Math.floor(Number(paper.contextItemId || 0));
-  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return "";
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return [];
   const contextItem = resolveQuoteSourceContextItem(paper);
-  if (!canUsePdfPageTextQuoteSource(paper, contextItem)) return "";
-  try {
-    const cached = await warmPageTextCacheForAttachment(contextItemId);
-    return (cached?.pages || [])
-      .map((page) => sanitizeText(page.text || "").trim())
-      .filter(Boolean)
-      .join("\n\n");
-  } catch (error) {
-    ztoolkit.log("LLM: PDF page quote source text cache warm failed", {
-      contextItemId,
-      error,
-    });
-    return "";
-  }
+  if (!canUsePdfPageTextQuoteSource(paper, contextItem)) return [];
+  const cached = getCachedPageTextForAttachment(contextItemId);
+  return (cached?.pages || []).flatMap((page) => {
+    const sourceText = sanitizeText(page.text || "").trim();
+    return sourceText
+      ? [
+          {
+            sourceText,
+            pageHintIndex: page.pageIndex,
+            pageHintLabel: page.pageLabel,
+          },
+        ]
+      : [];
+  });
 }
 
-async function buildQuoteSourceTextsForPaperContexts(
+function collectQuoteSourcePapers(
   ...groups: Array<PaperContextRef[] | undefined | null>
-): Promise<QuoteSourceText[]> {
+): PaperContextRef[] {
   const papers = normalizePaperContexts(groups.flatMap((group) => group || []));
-  const out: QuoteSourceText[] = [];
   const seen = new Set<string>();
   const uniquePapers: PaperContextRef[] = [];
   for (const paper of papers) {
@@ -3434,15 +3444,49 @@ async function buildQuoteSourceTextsForPaperContexts(
     seen.add(key);
     uniquePapers.push(paper);
   }
+  return uniquePapers;
+}
 
+type QuoteSourceEvidence = {
+  sourceTexts: QuoteSourceText[];
+  complete: boolean;
+};
+
+function hasUnresolvedQuoteSourceScope(
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): boolean {
+  return groups.some((group) =>
+    (group || []).some(
+      (paper) =>
+        !Number.isFinite(Number(paper?.itemId)) ||
+        Number(paper?.itemId) <= 0 ||
+        !Number.isFinite(Number(paper?.contextItemId)) ||
+        Number(paper?.contextItemId) <= 0 ||
+        !sanitizeText(paper?.title || "").trim(),
+    ),
+  );
+}
+
+function buildCachedQuoteSourceEvidenceForPaperContexts(
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): QuoteSourceEvidence {
+  const uniquePapers = collectQuoteSourcePapers(...groups);
+  const out: QuoteSourceText[] = [];
+  let complete =
+    uniquePapers.length > 0 && !hasUnresolvedQuoteSourceScope(...groups);
   for (const paper of uniquePapers) {
-    await ensureQuoteSourceTextCachedForPaper(paper);
     const contextItemId = Math.floor(Number(paper.contextItemId || 0));
-    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
-    const pdfPageSourceText = await buildPdfPageQuoteSourceTextForPaper(paper);
-    if (pdfPageSourceText.trim()) {
+    if (!Number.isFinite(contextItemId) || contextItemId <= 0) {
+      complete = false;
+      continue;
+    }
+    const contextItem = resolveQuoteSourceContextItem(paper);
+    if (!contextItem) complete = false;
+    const usesPdfPageText = canUsePdfPageTextQuoteSource(paper, contextItem);
+    const pdfPageSources = cachedPdfPageQuoteSourcesForPaper(paper);
+    for (const pageSource of pdfPageSources) {
       out.push({
-        sourceText: pdfPageSourceText,
+        ...pageSource,
         sourceLabel: formatPaperSourceLabel(paper),
         metadataTexts: [paper.title, paper.attachmentTitle],
         sourceMatchSource: "pdf-page-text",
@@ -3451,6 +3495,10 @@ async function buildQuoteSourceTextsForPaperContexts(
       });
     }
     const cachedChunks = cachedQuoteSourceChunks(contextItemId);
+    const paperComplete = usesPdfPageText
+      ? hasCompleteSearchablePageTextForAttachment(contextItemId)
+      : cachedChunks.length > 0;
+    if (!paperComplete) complete = false;
     if (!cachedChunks.length) continue;
     for (const chunk of cachedChunks) {
       out.push({
@@ -3463,11 +3511,68 @@ async function buildQuoteSourceTextsForPaperContexts(
       });
     }
   }
-  return out;
+  return { sourceTexts: out, complete };
+}
+
+async function warmQuoteSourceCachesForPaperContexts(
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): Promise<void> {
+  const uniquePapers = collectQuoteSourcePapers(...groups);
+  for (const paper of uniquePapers) {
+    const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+    const contextItem = resolveQuoteSourceContextItem(paper);
+    const usesPdfPageText =
+      Number.isFinite(contextItemId) &&
+      contextItemId > 0 &&
+      canUsePdfPageTextQuoteSource(paper, contextItem);
+    if (usesPdfPageText) {
+      try {
+        await warmPageTextCacheForAttachment(contextItemId);
+      } catch (error) {
+        ztoolkit.log("LLM: PDF page quote source text cache warm failed", {
+          contextItemId,
+          error,
+        });
+      }
+    } else {
+      await ensureQuoteSourceTextCachedForPaper(paper);
+    }
+  }
 }
 
 function assistantMarkdownNeedsQuoteSourceSearch(markdown: string): boolean {
-  return /^[ \t]*>/.test(markdown || "") || /\n[ \t]*>/.test(markdown || "");
+  return (
+    /^[ \t]*>/.test(markdown || "") ||
+    /\n[ \t]*>/.test(markdown || "") ||
+    /\[\[quote:[A-Za-z0-9_-]+\]\]/.test(markdown || "")
+  );
+}
+
+function assistantMarkdownNeedsBackgroundQuoteSearch(
+  markdown: string,
+  quoteCitations: QuoteCitation[] | undefined,
+): boolean {
+  const knownIds = new Set(
+    (quoteCitations || []).map((citation) => citation.id),
+  );
+  let hasUnresolvedAnchor = false;
+  const withoutResolvedAnchors = (markdown || "").replace(
+    /\[\[quote:([A-Za-z0-9_-]+)\]\]/g,
+    (token, id: string) => {
+      if (knownIds.has(id)) return "";
+      hasUnresolvedAnchor = true;
+      return token;
+    },
+  );
+  if (hasUnresolvedAnchor) return true;
+  const withoutEmptyBlockquotes = withoutResolvedAnchors.replace(
+    /^[ \t]*>[ \t]*$/gm,
+    "",
+  );
+  return (
+    /^[ \t]*>/.test(withoutEmptyBlockquotes) ||
+    /\n[ \t]*>/.test(withoutEmptyBlockquotes)
+  );
 }
 
 function countQuoteScopedPapers(
@@ -3517,58 +3622,320 @@ function shouldRequireBodyEvidenceQuoteSearch(params: {
   return true;
 }
 
-async function finalizeAssistantMessageQuoteCitations(
-  assistantMessage: Pick<Message, "text" | "quoteCitations">,
-  options: {
-    pairedUserMessage?: Message | null;
-    runtimeRequest?: AgentRuntimeRequest | null;
-    paperContexts?: PaperContextRef[];
-    fullTextPaperContexts?: PaperContextRef[];
-    citationPaperContexts?: PaperContextRef[];
-  } = {},
-): Promise<void> {
-  const isNoteEditingTurn = Boolean(
-    options.runtimeRequest?.activeNoteContext ||
-    options.runtimeRequest?.selectedTextSources?.includes("note-edit") ||
-    options.pairedUserMessage?.selectedTextSources?.includes("note-edit") ||
-    options.pairedUserMessage?.selectedTextNoteContexts?.some(Boolean),
+type AssistantQuoteFinalizationOptions = {
+  pairedUserMessage?: Message | null;
+  runtimeRequest?: AgentRuntimeRequest | null;
+  paperContexts?: PaperContextRef[];
+  fullTextPaperContexts?: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
+  conversationKey?: number;
+};
+
+function hasOpenEndedQuoteSourceScope(
+  options: AssistantQuoteFinalizationOptions,
+): boolean {
+  return Boolean(
+    options.pairedUserMessage?.selectedCollectionContexts?.length ||
+    options.pairedUserMessage?.selectedTagContexts?.length ||
+    options.runtimeRequest?.selectedCollectionContexts?.length ||
+    options.runtimeRequest?.selectedTagContexts?.length,
   );
-  const sourceTexts = assistantMarkdownNeedsQuoteSourceSearch(
-    assistantMessage.text || "",
-  )
-    ? await buildQuoteSourceTextsForPaperContexts(
-        options.paperContexts,
-        options.fullTextPaperContexts,
-        options.citationPaperContexts,
-        options.pairedUserMessage?.paperContexts,
-        options.pairedUserMessage?.fullTextPaperContexts,
-        options.pairedUserMessage?.citationPaperContexts,
-        options.pairedUserMessage?.selectedTextPaperContexts?.filter(
-          (entry): entry is PaperContextRef => Boolean(entry),
-        ),
-      )
-    : [];
+}
+
+function quoteSourcePaperContextGroups(
+  options: AssistantQuoteFinalizationOptions,
+): Array<PaperContextRef[] | undefined | null> {
+  return [
+    options.paperContexts,
+    options.fullTextPaperContexts,
+    options.citationPaperContexts,
+    options.runtimeRequest?.selectedPaperContexts,
+    options.runtimeRequest?.fullTextPaperContexts,
+    options.runtimeRequest?.citationPaperContexts,
+    options.pairedUserMessage?.paperContexts,
+    options.pairedUserMessage?.fullTextPaperContexts,
+    options.pairedUserMessage?.citationPaperContexts,
+    options.pairedUserMessage?.selectedTextPaperContexts?.filter(
+      (entry): entry is PaperContextRef => Boolean(entry),
+    ),
+  ];
+}
+
+function registeredQuoteCitationsForReview(
+  markdown: string,
+  quoteCitations: QuoteCitation[] | undefined,
+): QuoteCitation[] {
+  const anchoredIds = new Set(
+    Array.from(
+      (markdown || "").matchAll(/\[\[quote:([A-Za-z0-9_-]+)\]\]/g),
+      (match) => match[1],
+    ),
+  );
+  return (quoteCitations || []).filter(
+    (citation) =>
+      anchoredIds.has(citation.id) ||
+      citation.sourceMatchKind === "selected-text" ||
+      citation.sourceMatchKind === "trusted",
+  );
+}
+
+function applyAssistantMessageQuoteGate(
+  assistantMessage: Message,
+  markdown: string,
+  quoteCitations: QuoteCitation[] | undefined,
+  evidence: QuoteSourceEvidence,
+  options: AssistantQuoteFinalizationOptions,
+): void {
   const sourceIndex = buildQuoteSourceIndex({
-    quoteCitations: assistantMessage.quoteCitations,
-    sourceTexts,
+    quoteCitations: registeredQuoteCitationsForReview(markdown, quoteCitations),
+    sourceTexts: evidence.sourceTexts,
   });
   const requireBodyEvidenceQuotes = shouldRequireBodyEvidenceQuoteSearch({
-    assistantMarkdown: assistantMessage.text || "",
+    assistantMarkdown: markdown,
     pairedUserMessage: options.pairedUserMessage,
     runtimeRequest: options.runtimeRequest,
   });
   const finalized = finalizeAssistantQuoteCitations({
-    markdown: assistantMessage.text || "",
-    quoteCitations: assistantMessage.quoteCitations,
+    markdown,
+    quoteCitations,
     sourceIndex,
-    requireVerifiedQuoteCitations: true,
     requireBodyEvidenceQuotes,
-    fenceUnverifiedBlockquotes: isNoteEditingTurn,
+    quoteSourceReview: {
+      sourceEvidenceComplete:
+        evidence.complete && !hasOpenEndedQuoteSourceScope(options),
+    },
   });
-  assistantMessage.text = finalized.markdown;
-  assistantMessage.quoteCitations = finalized.quoteCitations.length
+  const finalizedQuoteCitations = finalized.quoteCitations.length
     ? finalized.quoteCitations
     : undefined;
+  const displayChanged = finalized.markdown !== markdown;
+  assistantMessage.quoteDisplayOverride = displayChanged
+    ? {
+        markdown: finalized.markdown,
+        quoteCitations: finalizedQuoteCitations,
+      }
+    : undefined;
+}
+
+const quoteValidationSignatures = new WeakMap<Message, string>();
+type PendingQuoteValidation = {
+  assistantMessage: Message;
+  rawMarkdown: string;
+  rawQuoteCitations: QuoteCitation[] | undefined;
+  options: AssistantQuoteFinalizationOptions;
+  signature: string;
+};
+const pendingQuoteValidations = new Map<
+  number,
+  Map<Message, PendingQuoteValidation>
+>();
+const quoteValidationTasks = new Map<number, Promise<void>>();
+
+function refreshConversationAfterQuoteValidation(
+  conversationKey: number,
+): void {
+  for (const [body, getItem] of activeContextPanels.entries()) {
+    if (!body.isConnected) continue;
+    const item = getItem?.() || null;
+    if (!item || getConversationKey(item) !== conversationKey) continue;
+    refreshConversationPanels(body, item);
+    return;
+  }
+}
+
+function startConversationQuoteValidation(conversationKey: number): void {
+  if (quoteValidationTasks.has(conversationKey)) return;
+  const afterUiRelease = new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  const task = (async () => {
+    await afterUiRelease;
+    while (true) {
+      const pending = pendingQuoteValidations.get(conversationKey);
+      if (!pending?.size) break;
+      pendingQuoteValidations.delete(conversationKey);
+      const batch = Array.from(pending.values());
+      let displayChanged = false;
+      try {
+        await warmQuoteSourceCachesForPaperContexts(
+          ...batch.flatMap((request) =>
+            quoteSourcePaperContextGroups(request.options),
+          ),
+        );
+        for (const request of batch) {
+          const {
+            assistantMessage,
+            rawMarkdown,
+            rawQuoteCitations,
+            options,
+            signature,
+          } = request;
+          const isCurrent =
+            quoteValidationSignatures.get(assistantMessage) === signature &&
+            chatHistory.get(conversationKey)?.includes(assistantMessage);
+          if (!isCurrent) continue;
+          const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(
+            ...quoteSourcePaperContextGroups(options),
+          );
+          applyAssistantMessageQuoteGate(
+            assistantMessage,
+            rawMarkdown,
+            rawQuoteCitations,
+            evidence,
+            options,
+          );
+          displayChanged = true;
+        }
+      } finally {
+        for (const { assistantMessage, signature } of batch) {
+          if (quoteValidationSignatures.get(assistantMessage) === signature) {
+            quoteValidationSignatures.delete(assistantMessage);
+          }
+        }
+      }
+      if (displayChanged) {
+        refreshConversationAfterQuoteValidation(conversationKey);
+      }
+    }
+  })().catch((error) => {
+    ztoolkit.log("LLM: background quote validation failed", error);
+  });
+  quoteValidationTasks.set(conversationKey, task);
+  void task.finally(() => {
+    if (quoteValidationTasks.get(conversationKey) === task) {
+      quoteValidationTasks.delete(conversationKey);
+    }
+    if (pendingQuoteValidations.get(conversationKey)?.size) {
+      startConversationQuoteValidation(conversationKey);
+    }
+  });
+}
+
+function scheduleAssistantMessageQuoteValidation(
+  assistantMessage: Message,
+  rawMarkdown: string,
+  rawQuoteCitations: QuoteCitation[] | undefined,
+  options: AssistantQuoteFinalizationOptions,
+): void {
+  const conversationKey = Math.floor(Number(options.conversationKey || 0));
+  if (
+    !conversationKey ||
+    !assistantMarkdownNeedsBackgroundQuoteSearch(rawMarkdown, rawQuoteCitations)
+  ) {
+    return;
+  }
+  const signature = `${assistantMessage.timestamp}\u241f${rawMarkdown}`;
+  if (quoteValidationSignatures.get(assistantMessage) === signature) return;
+  quoteValidationSignatures.set(assistantMessage, signature);
+  let pending = pendingQuoteValidations.get(conversationKey);
+  if (!pending) {
+    pending = new Map();
+    pendingQuoteValidations.set(conversationKey, pending);
+  }
+  pending.set(assistantMessage, {
+    assistantMessage,
+    rawMarkdown,
+    rawQuoteCitations,
+    options,
+    signature,
+  });
+  startConversationQuoteValidation(conversationKey);
+}
+
+async function waitForConversationQuoteValidation(
+  conversationKey: number,
+): Promise<void> {
+  while (
+    quoteValidationTasks.has(conversationKey) ||
+    pendingQuoteValidations.get(conversationKey)?.size
+  ) {
+    const task = quoteValidationTasks.get(conversationKey);
+    if (task) {
+      await task;
+    } else {
+      startConversationQuoteValidation(conversationKey);
+      await quoteValidationTasks.get(conversationKey);
+    }
+  }
+}
+
+export async function waitForAssistantQuoteValidationForTests(
+  conversationKey: number,
+): Promise<void> {
+  await waitForConversationQuoteValidation(conversationKey);
+}
+
+function clearPendingQuoteValidation(message: Message): void {
+  quoteValidationSignatures.delete(message);
+  for (const [conversationKey, pending] of pendingQuoteValidations.entries()) {
+    pending.delete(message);
+    if (!pending.size) {
+      pendingQuoteValidations.delete(conversationKey);
+    }
+  }
+}
+
+function resetAssistantQuoteDisplay(message: Message): void {
+  clearPendingQuoteValidation(message);
+  message.quoteDisplayOverride = undefined;
+}
+
+function finalizeAssistantMessageQuoteCitations(
+  assistantMessage: Message,
+  options: AssistantQuoteFinalizationOptions = {},
+): void {
+  const rawMarkdown = assistantMessage.text || "";
+  if (!assistantMarkdownNeedsQuoteSourceSearch(rawMarkdown)) {
+    resetAssistantQuoteDisplay(assistantMessage);
+    return;
+  }
+  const rawQuoteCitations = assistantMessage.quoteCitations?.map(
+    (citation) => ({
+      ...citation,
+    }),
+  );
+  const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(
+    ...quoteSourcePaperContextGroups(options),
+  );
+  applyAssistantMessageQuoteGate(
+    assistantMessage,
+    rawMarkdown,
+    rawQuoteCitations,
+    evidence,
+    options,
+  );
+  scheduleAssistantMessageQuoteValidation(
+    assistantMessage,
+    rawMarkdown,
+    rawQuoteCitations,
+    options,
+  );
+}
+
+export const finalizeAssistantMessageQuoteCitationsForTests =
+  finalizeAssistantMessageQuoteCitations;
+
+function validateLoadedConversationQuoteMessages(
+  messages: Message[],
+  conversationKey: number,
+): void {
+  let pairedUserMessage: Message | null = null;
+  for (const message of messages) {
+    if (message.role === "user") {
+      pairedUserMessage = message;
+      continue;
+    }
+    if (
+      message.compactMarker ||
+      !assistantMarkdownNeedsQuoteSourceSearch(message.text || "")
+    ) {
+      continue;
+    }
+    finalizeAssistantMessageQuoteCitations(message, {
+      pairedUserMessage,
+      conversationKey,
+    });
+  }
 }
 
 function createQueuedRefresh(refresh: () => void): () => void {
@@ -3733,6 +4100,7 @@ type AssistantMessageSnapshot = Pick<
   | "webchatRunState"
   | "webchatCompletionReason"
   | "quoteCitations"
+  | "quoteDisplayOverride"
 >;
 
 export function findLatestRetryPair(
@@ -3774,6 +4142,14 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
     quoteCitations: message.quoteCitations
       ? message.quoteCitations.map((entry) => ({ ...entry }))
       : undefined,
+    quoteDisplayOverride: message.quoteDisplayOverride
+      ? {
+          markdown: message.quoteDisplayOverride.markdown,
+          quoteCitations: message.quoteDisplayOverride.quoteCitations?.map(
+            (entry) => ({ ...entry }),
+          ),
+        }
+      : undefined,
   };
 }
 
@@ -3802,6 +4178,14 @@ function restoreAssistantSnapshot(
   message.webchatCompletionReason = snapshot.webchatCompletionReason;
   message.quoteCitations = snapshot.quoteCitations
     ? snapshot.quoteCitations.map((entry) => ({ ...entry }))
+    : undefined;
+  message.quoteDisplayOverride = snapshot.quoteDisplayOverride
+    ? {
+        markdown: snapshot.quoteDisplayOverride.markdown,
+        quoteCitations: snapshot.quoteDisplayOverride.quoteCitations?.map(
+          (entry) => ({ ...entry }),
+        ),
+      }
     : undefined;
   message.streaming = false;
 }
@@ -5866,6 +6250,7 @@ export async function retryLatestAssistantResponse(
     retryPair.userMessage.selectedTextSources,
     retryPair.userMessage.selectedTextPaperContexts,
   );
+  resetAssistantQuoteDisplay(assistantMessage);
   const effectiveRequestConfig = resolveEffectiveRequestConfig({
     item,
     model,
@@ -6458,6 +6843,7 @@ export async function retryLatestAssistantResponse(
       paperContexts: contextPlan.paperContexts,
       fullTextPaperContexts: contextPlan.fullTextPaperContexts,
       citationPaperContexts: contextPlan.citationPaperContexts,
+      conversationKey,
     });
     codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.timestamp = Date.now();
@@ -7372,6 +7758,7 @@ function buildAgentEngineDeps(
     waitForUiStep,
     finalizeCancelledAssistantMessage,
     sanitizeText,
+    resetAssistantQuoteDisplay,
     finalizeAssistantQuoteCitations: async (
       assistantMessage,
       pairedUserMessage,
@@ -7383,6 +7770,9 @@ function buildAgentEngineDeps(
         paperContexts: runtimeRequest?.selectedPaperContexts,
         fullTextPaperContexts: runtimeRequest?.fullTextPaperContexts,
         citationPaperContexts: runtimeRequest?.citationPaperContexts,
+        conversationKey: currentItem
+          ? getConversationKey(currentItem)
+          : undefined,
       });
     },
     appendReasoningPart,
@@ -8689,6 +9079,7 @@ export async function sendQuestion(
       paperContexts: contextPlan.paperContexts,
       fullTextPaperContexts: contextPlan.fullTextPaperContexts,
       citationPaperContexts: contextPlan.citationPaperContexts,
+      conversationKey,
     });
     codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.runMode = isCodexNativeTurn

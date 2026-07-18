@@ -1983,7 +1983,7 @@ describe("assistantCitationLinks", function () {
       );
     });
 
-    it("infers the only explicit source candidate for section-labeled fallback quote cards", function () {
+    it("does not infer a source candidate for an unresolved blockquote", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1992,11 +1992,11 @@ describe("assistantCitationLinks", function () {
         "utf8",
       );
 
-      assert.include(source, "inferSingleCandidateFallbackCitation");
-      assert.include(source, "isNonSourceCitationLabel");
+      assert.notInclude(source, "inferSingleCandidateFallbackCitation");
+      assert.notInclude(source, "isNonSourceCitationLabel");
       assert.include(source, "createSyntheticCitationElement");
-      assert.include(source, "fallbackCitation");
-      assert.include(source, "citationRemainder = fallbackCitation.remainder");
+      assert.include(source, "if (!extractedCitation) {");
+      assert.include(source, "continue;");
     });
   });
 

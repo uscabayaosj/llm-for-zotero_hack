@@ -795,6 +795,7 @@ export type QuoteSourceText = {
 export type QuoteSourceIndexEntry = {
   sourceText: string;
   citationLabel: string;
+  origin?: "quote-citation" | "source-text";
   sourceMatchSource?: QuoteCitation["sourceMatchSource"];
   sectionLabel?: string;
   chunkKind?: string;
@@ -864,7 +865,9 @@ function filterUnverifiedQuoteCitationSources(params: {
       params.sourceIndex.quoteCitations,
     ),
     sources: params.sourceIndex.sources.filter(
-      (source) => !unverifiedSourceKeys.has(quoteSourceKey(source)),
+      (source) =>
+        source.origin !== "quote-citation" ||
+        !unverifiedSourceKeys.has(quoteSourceKey(source)),
     ),
   };
 }
@@ -888,6 +891,8 @@ function quoteSourceKey(source: QuoteSourceIndexEntry): string {
     normalizeCitationLabelForMatch(source.citationLabel),
     normalizePositiveInt(source.contextItemId) || "",
     normalizePositiveInt(source.itemId) || "",
+    normalizePageHintIndex(source.pageHintIndex) ?? "",
+    normalizePageHintLabel(source.pageHintLabel) || "",
     normalizeQuoteTextForMatch(source.sourceText).toLowerCase(),
   ].join("\u241f");
 }
@@ -954,6 +959,7 @@ function isStrictBodyEvidenceQuoteSource(input: {
 }
 
 function isBodyQuoteSource(source: QuoteSourceIndexEntry): boolean {
+  if (source.sourceMatchSource === "pdf-page-text") return true;
   return isStrictBodyEvidenceQuoteSource({
     sectionLabel: source.sectionLabel,
     chunkKind: source.chunkKind,
@@ -1048,7 +1054,9 @@ export function buildQuoteSourceIndex(params: {
     if (existingIndex !== undefined) {
       if (
         quoteSourceProvenanceScore(entry) >
-        quoteSourceProvenanceScore(sources[existingIndex])
+          quoteSourceProvenanceScore(sources[existingIndex]) ||
+        (entry.origin === "source-text" &&
+          sources[existingIndex].origin === "quote-citation")
       ) {
         sources[existingIndex] = entry;
       }
@@ -1061,6 +1069,7 @@ export function buildQuoteSourceIndex(params: {
     pushSource({
       sourceText: citation.quoteText,
       citationLabel: citation.citationLabel,
+      origin: "quote-citation",
       sourceMatchSource: citation.sourceMatchSource,
       sectionLabel: citation.sourceSectionLabel,
       chunkKind: citation.sourceChunkKind,
@@ -1079,6 +1088,7 @@ export function buildQuoteSourceIndex(params: {
     pushSource({
       sourceText,
       citationLabel,
+      origin: "source-text",
       sourceMatchSource: normalizeQuoteMatchSource(source.sourceMatchSource),
       sectionLabel: normalizeText(source.sectionLabel) || undefined,
       chunkKind: normalizeQuoteChunkKind(source.chunkKind) || undefined,
@@ -1192,6 +1202,7 @@ type QuoteSourceSearchMatch = {
   source: QuoteSourceIndexEntry;
   sourceText: string;
   match: QuoteTextSearchMatch;
+  pageUnique: boolean;
 };
 
 type SourceQuoteTokenSpan = {
@@ -1436,16 +1447,17 @@ function quoteSourceIdentityKey(
 ): string {
   const contextItemId = normalizePositiveInt(source.contextItemId);
   const itemId = normalizePositiveInt(source.itemId);
-  const identitySuffix =
-    contextItemId || itemId
-      ? `${contextItemId || ""}\u241f${itemId || ""}`
-      : `anon:${ordinal}:${hashBase36(
-          normalizeQuoteTextForMatch(source.sourceText).toLowerCase(),
-        )}`;
-  return [
-    normalizeCitationLabelForMatch(source.citationLabel),
-    identitySuffix,
-  ].join("\u241f");
+  if (itemId) return `item:${itemId}`;
+  if (contextItemId) {
+    return `attachment:${contextItemId}\u241f${normalizeCitationLabelForMatch(
+      source.citationLabel,
+    )}`;
+  }
+  return `anon:${ordinal}:${normalizeCitationLabelForMatch(
+    source.citationLabel,
+  )}:${hashBase36(
+    normalizeQuoteTextForMatch(source.sourceText).toLowerCase(),
+  )}`;
 }
 
 function quoteSourceMatchesRequestedLabel(
@@ -1498,7 +1510,7 @@ function findQuoteMatchWithinSingleSource(
       quoteText,
       {
         minQueryLength: 24,
-        maxSameEntryOccurrences: 8,
+        maxSameEntryOccurrences: Number.MAX_SAFE_INTEGER,
         rejectWeakQueries: true,
         includeProgressiveQueries: true,
         debugLabel: "Quote source",
@@ -1543,7 +1555,13 @@ function selectBestQuoteSourceForMatch(params: {
   sources: QuoteSourceIndexEntry[];
   quoteText: string;
   match: QuoteTextSearchMatch;
-}): { source: QuoteSourceIndexEntry; sourceText: string } | undefined {
+}):
+  | {
+      source: QuoteSourceIndexEntry;
+      sourceText: string;
+      pageUnique: boolean;
+    }
+  | undefined {
   let best:
     | {
         source: QuoteSourceIndexEntry;
@@ -1551,6 +1569,7 @@ function selectBestQuoteSourceForMatch(params: {
         score: number;
       }
     | undefined;
+  const matchingPageKeys = new Set<string>();
   for (const source of params.sources) {
     const individualMatch = findQuoteMatchWithinSingleSource(
       source,
@@ -1561,6 +1580,13 @@ function selectBestQuoteSourceForMatch(params: {
       countNormalizedSourceOccurrences(source.sourceText, params.match.query) >
         0;
     if (!individualMatch && !containsMatchedQuery) continue;
+    if (source.sourceMatchSource === "pdf-page-text") {
+      matchingPageKeys.add(
+        `${normalizePositiveInt(source.contextItemId) || ""}\u241f${
+          normalizePageHintIndex(source.pageHintIndex) ?? ""
+        }\u241f${normalizePageHintLabel(source.pageHintLabel) || ""}`,
+      );
+    }
     const score =
       quoteSourceProvenanceScore(source) +
       quoteSourceReconstructionScore({
@@ -1575,7 +1601,11 @@ function selectBestQuoteSourceForMatch(params: {
     }
   }
   if (!best) return undefined;
-  return { source: best.source, sourceText: best.source.sourceText };
+  return {
+    source: best.source,
+    sourceText: best.source.sourceText,
+    pageUnique: matchingPageKeys.size === 1,
+  };
 }
 
 function reconstructedQuoteCoverage(
@@ -1644,7 +1674,7 @@ function findUniqueQuoteSourceMatch(params: {
     }));
     const match = findUniqueQuoteTextSearchMatch(entries, params.quoteText, {
       minQueryLength: 24,
-      maxSameEntryOccurrences: 8,
+      maxSameEntryOccurrences: Number.MAX_SAFE_INTEGER,
       rejectWeakQueries: true,
       includeProgressiveQueries: true,
       debugLabel: "Quote source",
@@ -1663,6 +1693,7 @@ function findUniqueQuoteSourceMatch(params: {
           source: selected?.source || group.sources[0],
           sourceText: selected?.sourceText || group.texts.join("\n\n"),
           match,
+          pageUnique: selected?.pageUnique || false,
         }
       : undefined;
   };
@@ -1683,11 +1714,16 @@ function buildTrustedQuoteCitationFromSource(params: {
   source: QuoteSourceIndexEntry;
   sourceText: string;
   match?: QuoteTextSearchMatch;
+  pageUnique?: boolean;
+  preserveDisplayText?: boolean;
 }): QuoteCitation | undefined {
   const inputQuoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
     params.quoteText,
   );
   const strippedInputQuoteText = stripOuterQuoteDelimiters(inputQuoteText);
+  const hasUniquePage =
+    params.source.sourceMatchSource === "pdf-page-text" &&
+    (params.pageUnique ?? params.match?.totalOccurrences === 1);
   const normalizedSpanMatch = findNormalizedSourceSpanMatch({
     quoteText: inputQuoteText,
     sourceText: params.sourceText,
@@ -1708,8 +1744,8 @@ function buildTrustedQuoteCitationFromSource(params: {
         sourceChunkKind: params.source.chunkKind,
         contextItemId: params.source.contextItemId,
         itemId: params.source.itemId,
-        pageHintIndex: params.source.pageHintIndex,
-        pageHintLabel: params.source.pageHintLabel,
+        pageHintIndex: hasUniquePage ? params.source.pageHintIndex : undefined,
+        pageHintLabel: hasUniquePage ? params.source.pageHintLabel : undefined,
       });
     }
     const sourceQuoteText =
@@ -1742,8 +1778,8 @@ function buildTrustedQuoteCitationFromSource(params: {
       sourceChunkKind: params.source.chunkKind,
       contextItemId: params.source.contextItemId,
       itemId: params.source.itemId,
-      pageHintIndex: params.source.pageHintIndex,
-      pageHintLabel: params.source.pageHintLabel,
+      pageHintIndex: hasUniquePage ? params.source.pageHintIndex : undefined,
+      pageHintLabel: hasUniquePage ? params.source.pageHintLabel : undefined,
     });
   }
   const quoteText =
@@ -1772,7 +1808,8 @@ function buildTrustedQuoteCitationFromSource(params: {
   return buildQuoteCitation({
     quoteText,
     displayQuoteText:
-      params.source.sourceMatchSource === "pdf-page-text" &&
+      (params.preserveDisplayText ||
+        params.source.sourceMatchSource === "pdf-page-text") &&
       normalizeMultilineText(inputQuoteText) !== quoteText
         ? inputQuoteText
         : undefined,
@@ -1787,9 +1824,60 @@ function buildTrustedQuoteCitationFromSource(params: {
     sourceChunkKind: params.source.chunkKind,
     contextItemId: params.source.contextItemId,
     itemId: params.source.itemId,
-    pageHintIndex: params.source.pageHintIndex,
-    pageHintLabel: params.source.pageHintLabel,
+    pageHintIndex: hasUniquePage ? params.source.pageHintIndex : undefined,
+    pageHintLabel: hasUniquePage ? params.source.pageHintLabel : undefined,
   });
+}
+
+type QuoteSourceResolution =
+  | { kind: "matched"; quoteCitation: QuoteCitation }
+  | { kind: "absent" }
+  | { kind: "defer" };
+
+function hasAnyQuoteSourceMatch(
+  sourceIndex: QuoteSourceIndex,
+  quoteText: string,
+): boolean {
+  return sourceIndex.sources.some((source) =>
+    findQuoteMatchWithinSingleSource(source, quoteText),
+  );
+}
+
+function resolveQuoteSource(params: {
+  quoteText: string;
+  sourceIndex: QuoteSourceIndex;
+  sourceEvidenceComplete: boolean;
+}): QuoteSourceResolution {
+  const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
+    params.quoteText,
+  );
+  if (
+    !isQuoteWorthySourceText(quoteText) ||
+    isKnownQuoteMetadataText(quoteText, params.sourceIndex.metadataTexts)
+  ) {
+    return { kind: "defer" };
+  }
+  const sourceMatch = findUniqueQuoteSourceMatch({
+    quoteText,
+    sourceIndex: params.sourceIndex,
+  });
+  if (sourceMatch) {
+    const quoteCitation = buildTrustedQuoteCitationFromSource({
+      quoteText,
+      source: sourceMatch.source,
+      sourceText: sourceMatch.sourceText,
+      match: sourceMatch.match,
+      pageUnique: sourceMatch.pageUnique,
+      preserveDisplayText: true,
+    });
+    return quoteCitation
+      ? { kind: "matched", quoteCitation }
+      : { kind: "defer" };
+  }
+  if (hasAnyQuoteSourceMatch(params.sourceIndex, quoteText)) {
+    return { kind: "defer" };
+  }
+  return params.sourceEvidenceComplete ? { kind: "absent" } : { kind: "defer" };
 }
 
 function formatPlainQuoteMarkdown(quoteText: string): string {
@@ -2040,6 +2128,47 @@ function finalizeSourceBackedQuoteBlock(params: {
   };
 }
 
+function finalizeQuoteSourceCandidate(params: {
+  quoteText: string;
+  citationRemainder?: string;
+  sourceIndex: QuoteSourceIndex;
+  sourceEvidenceComplete: boolean;
+}): {
+  kind: QuoteSourceResolution["kind"];
+  markdown?: string;
+  quoteCitation?: QuoteCitation;
+} {
+  const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
+    params.quoteText,
+  );
+  const citationRemainder = normalizeCitationRemainder(
+    params.citationRemainder,
+  );
+  const resolution = resolveQuoteSource({
+    quoteText,
+    sourceIndex: params.sourceIndex,
+    sourceEvidenceComplete: params.sourceEvidenceComplete,
+  });
+  if (resolution.kind === "matched") {
+    return {
+      kind: "matched",
+      markdown: `[[quote:${resolution.quoteCitation.id}]]${
+        citationRemainder ? `\n\n${citationRemainder}` : ""
+      }`,
+      quoteCitation: resolution.quoteCitation,
+    };
+  }
+  if (resolution.kind === "absent") {
+    return {
+      kind: "absent",
+      markdown: `${formatPlainQuoteMarkdown(quoteText)}
+>
+> Not a source quote${citationRemainder ? `\n\n${citationRemainder}` : ""}`,
+    };
+  }
+  return { kind: "defer" };
+}
+
 function collapseAdjacentDuplicateQuoteCitationPlaceholders(
   markdown: string,
 ): string {
@@ -2089,6 +2218,9 @@ export function finalizeAssistantQuoteCitations(params: {
   requireVerifiedQuoteCitations?: boolean;
   requireBodyEvidenceQuotes?: boolean;
   fenceUnverifiedBlockquotes?: boolean;
+  quoteSourceReview?: {
+    sourceEvidenceComplete: boolean;
+  };
 }): { markdown: string; quoteCitations: QuoteCitation[] } {
   const sourceIndex =
     params.sourceIndex ||
@@ -2097,6 +2229,8 @@ export function finalizeAssistantQuoteCitations(params: {
     params.quoteCitations,
     sourceIndex.quoteCitations,
   );
+  const filterQuoteSources =
+    params.requireVerifiedQuoteCitations || Boolean(params.quoteSourceReview);
   const bodyFilteredSourceIndex = params.requireBodyEvidenceQuotes
     ? filterSourceIndexForBodyEvidenceQuotes({
         ...sourceIndex,
@@ -2112,15 +2246,17 @@ export function finalizeAssistantQuoteCitations(params: {
           inputQuoteCitations,
         ),
       };
-  const finalizedSourceIndex = params.requireVerifiedQuoteCitations
+  const finalizedSourceIndex = filterQuoteSources
     ? filterUnverifiedQuoteCitationSources({
         sourceIndex: bodyFilteredSourceIndex,
         quoteCitations: bodyFilteredSourceIndex.quoteCitations,
       })
     : bodyFilteredSourceIndex;
-  const mergedQuoteCitations = params.requireVerifiedQuoteCitations
-    ? filterVerifiedQuoteCitations(finalizedSourceIndex.quoteCitations)
-    : mergeQuoteCitations(finalizedSourceIndex.quoteCitations);
+  const mergedQuoteCitations = params.quoteSourceReview
+    ? mergeQuoteCitations(inputQuoteCitations)
+    : params.requireVerifiedQuoteCitations
+      ? filterVerifiedQuoteCitations(finalizedSourceIndex.quoteCitations)
+      : mergeQuoteCitations(finalizedSourceIndex.quoteCitations);
   const metadataQuoteIds = collectMetadataQuoteCitationIds(
     mergedQuoteCitations,
     finalizedSourceIndex.metadataTexts,
@@ -2181,6 +2317,25 @@ export function finalizeAssistantQuoteCitations(params: {
         normalizeMultilineText(quoteLines.slice(0, -1).join("\n")),
       );
       if (quoteText) {
+        if (params.quoteSourceReview) {
+          const finalized = finalizeQuoteSourceCandidate({
+            quoteText,
+            sourceIndex: finalizedSourceIndex,
+            sourceEvidenceComplete:
+              params.quoteSourceReview.sourceEvidenceComplete,
+          });
+          if (finalized.quoteCitation) {
+            quoteCitations = mergeQuoteCitations(quoteCitations, [
+              finalized.quoteCitation,
+            ]);
+          }
+          if (finalized.kind === "defer") {
+            out.push(...lines.slice(blockStart, index));
+          } else if (finalized.markdown) {
+            out.push(finalized.markdown);
+          }
+          continue;
+        }
         const finalized = finalizeSourceBackedQuoteBlock({
           quoteText,
           citationLabel: trailingLabel.label,
@@ -2209,6 +2364,27 @@ export function finalizeAssistantQuoteCitations(params: {
       (isNonSourceQuoteLabel(leadingLabel.label) ||
         isCanonicalQuoteSourceLabel(leadingLabel.label))
     ) {
+      if (params.quoteSourceReview) {
+        const finalized = finalizeQuoteSourceCandidate({
+          quoteText,
+          citationRemainder: leadingLabel.remainder,
+          sourceIndex: finalizedSourceIndex,
+          sourceEvidenceComplete:
+            params.quoteSourceReview.sourceEvidenceComplete,
+        });
+        if (finalized.quoteCitation) {
+          quoteCitations = mergeQuoteCitations(quoteCitations, [
+            finalized.quoteCitation,
+          ]);
+        }
+        if (finalized.kind === "defer") {
+          out.push(...lines.slice(blockStart, cursor + 1));
+        } else if (finalized.markdown) {
+          out.push(finalized.markdown);
+        }
+        index = cursor;
+        continue;
+      }
       const finalized = finalizeSourceBackedQuoteBlock({
         quoteText,
         citationLabel: leadingLabel.label,
@@ -2231,6 +2407,26 @@ export function finalizeAssistantQuoteCitations(params: {
       isKnownQuoteMetadataText(quoteText, finalizedSourceIndex.metadataTexts)
     ) {
       out.push("");
+      index -= 1;
+      continue;
+    }
+
+    if (params.quoteSourceReview) {
+      const finalized = finalizeQuoteSourceCandidate({
+        quoteText,
+        sourceIndex: finalizedSourceIndex,
+        sourceEvidenceComplete: params.quoteSourceReview.sourceEvidenceComplete,
+      });
+      if (finalized.quoteCitation) {
+        quoteCitations = mergeQuoteCitations(quoteCitations, [
+          finalized.quoteCitation,
+        ]);
+      }
+      if (finalized.kind === "defer") {
+        out.push(...lines.slice(blockStart, index));
+      } else if (finalized.markdown) {
+        out.push(finalized.markdown);
+      }
       index -= 1;
       continue;
     }
@@ -2282,7 +2478,11 @@ export function finalizeAssistantQuoteCitations(params: {
       normalizeSanitizedMarkdown(out.join("\n")),
     ),
     quoteCitations,
-    { resolved: "preserve", unresolved: "omit" },
+    {
+      resolved: "preserve",
+      unresolved: "omit",
+      sanitizeSourceBackedBlocks: !params.quoteSourceReview,
+    },
   );
   return {
     markdown: cleanupRemovedMetadataQuoteArtifacts(
@@ -2502,12 +2702,17 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
   options: {
     resolved?: "markdown" | "preserve";
     unresolved?: UnresolvedQuoteCitationPlaceholderMode;
+    sanitizeSourceBackedBlocks?: boolean;
   } = {},
 ): string {
-  const safeMarkdown = sanitizeUntrustedSourceBackedQuoteBlocks(
-    sanitizeInvalidStructuredSourceMarkers(markdown),
-    quoteCitations,
-  );
+  const sanitizedMarkdown = sanitizeInvalidStructuredSourceMarkers(markdown);
+  const safeMarkdown =
+    options.sanitizeSourceBackedBlocks === false
+      ? sanitizedMarkdown
+      : sanitizeUntrustedSourceBackedQuoteBlocks(
+          sanitizedMarkdown,
+          quoteCitations,
+        );
   if (!safeMarkdown || !QUOTE_CITATION_PATTERN.test(safeMarkdown)) {
     QUOTE_CITATION_PATTERN.lastIndex = 0;
     return safeMarkdown;

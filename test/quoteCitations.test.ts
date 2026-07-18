@@ -846,6 +846,42 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, quoteText);
   });
 
+  it("retains full PDF page text during scoped body-evidence verification", function () {
+    const quote =
+      "The complete page text contains the only exact wording for this reported result.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "A body evidence chunk discusses a different reported result.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "context-text",
+            chunkKind: "results",
+            contextItemId: 81,
+            itemId: 80,
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      requireVerifiedQuoteCitations: true,
+      requireBodyEvidenceQuotes: true,
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.sourceMatchSource,
+      "pdf-page-text",
+    );
+  });
+
   it("does not let a same-label body source suppress another paper's abstract quote", function () {
     const abstractQuoteText =
       "The abstract summarizes a separate representational drift result from the second same-label paper.";
@@ -1942,6 +1978,408 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "(Ajemian et al., 2013)");
     assert.include(finalized.markdown, `\`\`\`text\n${revisedText}\n\`\`\``);
     assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("keeps an unconfirmed quote visible when source evidence is incomplete", function () {
+    const quote =
+      "Among neuron pairs, does noise correlation change more favorably for high signal correlation?";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026, page 3)`,
+      sourceIndex: buildQuoteSourceIndex({ sourceTexts: [] }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: false,
+      },
+    });
+
+    assert.include(finalized.markdown, `> ${quote}`);
+    assert.notInclude(finalized.markdown, "```text");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, "(Eppler et al., 2026, page 3)");
+  });
+
+  it("keeps a registered normalized-span quote anchor trusted", function () {
+    const quote =
+      "This historical interpretation was previously mislabeled as source wording.";
+    const legacyCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Eppler et al., 2026)",
+      sourceMatchKind: "normalized-span",
+      sourceMatchSource: "context-text",
+      contextItemId: 81,
+      itemId: 80,
+    });
+    assert.isDefined(legacyCitation);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `[[quote:${legacyCitation!.id}]]`,
+      quoteCitations: [legacyCitation!],
+      quoteSourceReview: {
+        sourceEvidenceComplete: false,
+      },
+    });
+
+    assert.equal(finalized.markdown, `[[quote:${legacyCitation!.id}]]`);
+    assert.deepEqual(finalized.quoteCitations, [legacyCitation!]);
+  });
+
+  it("keeps real source text when it duplicates an untrusted legacy record", function () {
+    const quote =
+      "This exact source sentence remains independently verifiable from cached paper text.";
+    const legacyCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Eppler et al., 2026)",
+      sourceMatchKind: "normalized-span",
+      sourceMatchSource: "context-text",
+      contextItemId: 81,
+      itemId: 80,
+    });
+    assert.isDefined(legacyCitation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [legacyCitation!],
+      sourceTexts: [
+        {
+          sourceText: quote,
+          sourceLabel: "(Eppler et al., 2026)",
+          sourceMatchSource: "context-text",
+          contextItemId: 81,
+          itemId: 80,
+        },
+      ],
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `[[quote:${legacyCitation!.id}]]`,
+      quoteCitations: [legacyCitation!],
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: false,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+  });
+
+  it("keeps quote-card text after complete source evidence has zero match", function () {
+    const quote =
+      "Among neuron pairs, does noise correlation change more favorably for high signal correlation?";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026, page 3)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The complete paper text contains no wording from the assistant interpretation.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("turns a unique partial source match into an ordinary quote", function () {
+    const sourceSentence =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const quote = `${sourceSentence} This interpretation was added by the model and is not source wording.`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: sourceSentence,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Eppler et al., 2026)",
+    );
+    assert.equal(finalized.quoteCitations[0]?.displayQuoteText, quote);
+  });
+
+  it("keeps a paper match while omitting an ambiguous page", function () {
+    const quote = "The same source sentence appears on two pages of one paper.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+            pageHintLabel: "3",
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 82,
+            itemId: 80,
+            pageHintIndex: 8,
+            pageHintLabel: "9",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Example et al., 2026)",
+    );
+    assert.isUndefined(finalized.quoteCitations[0]?.pageHintIndex);
+    assert.isUndefined(finalized.quoteCitations[0]?.pageHintLabel);
+  });
+
+  it("keeps a page when repeated matches stay on that one page", function () {
+    const quote = "The same source sentence repeats on one identifiable page.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: Array.from(
+              { length: 10 },
+              () => `${quote} Additional text.`,
+            ).join(" "),
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 4,
+            pageHintLabel: "5",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(finalized.quoteCitations[0]?.pageHintIndex, 4);
+    assert.equal(finalized.quoteCitations[0]?.pageHintLabel, "5");
+  });
+
+  it("verifies full-span source wording in the quote gate", function () {
+    const quote =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `Results. ${quote} The next sentence follows.`,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(finalized.quoteCitations[0]?.quoteText, quote);
+  });
+
+  it("uses full-span evidence instead of a stale provider label", function () {
+    const quote =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(Wrong et al., 2025)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Noise correlation changed for a subset of recorded neuron pairs.",
+            sourceLabel: "(Wrong et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 71,
+            itemId: 70,
+          },
+          {
+            sourceText: `Results. ${quote} The next sentence follows.`,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Eppler et al., 2026)",
+    );
+  });
+
+  it("accepts a unique source match with changed punctuation", function () {
+    const source =
+      "The population geometry remained stable; individual neurons continued to drift.";
+    const quote =
+      "The population geometry remained stable: individual neurons continued to drift.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Example et al., 2026)",
+    );
+  });
+
+  it("accepts unique substantive segments around explicit ellipses", function () {
+    const first =
+      "Representational geometry remained stable across repeated recording sessions";
+    const second =
+      "individual neurons nevertheless changed their preferred responses over time";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText: `${first}, while ${second}.`,
+          sourceLabel: "(Example et al., 2026)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 81,
+          itemId: 80,
+        },
+      ],
+    });
+    const ordered = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ... ${second}`,
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+    const reordered = finalizeAssistantQuoteCitations({
+      markdown: `> ${second} ... ${first}`,
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+    const inventedShortSegment = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ... definitely causal`,
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(ordered.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.match(reordered.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.match(inventedShortSegment.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+  });
+
+  it("accepts line-wrap hyphenation as full-span normalization", function () {
+    const quote =
+      "Noise correlation remained stable across repeated recording sessions.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Noise corre-\nlation remained stable across repeated recording sessions.",
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+  });
+
+  it("keeps cross-paper full-span matches ambiguous", function () {
+    const quote =
+      "The same substantive sentence appears in both candidate source papers.";
+    const markdown = `> ${quote}
+>
+> (First et al., 2025)`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(First et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 71,
+            itemId: 70,
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Second et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.notInclude(finalized.markdown, "```text");
+    assert.equal(finalized.markdown, markdown);
   });
 
   it("does not double-blockquote anchored quotes already wrapped in quote syntax", function () {

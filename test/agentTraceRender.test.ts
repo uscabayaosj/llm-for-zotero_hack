@@ -1054,6 +1054,24 @@ describe("agentTrace render", function () {
     assert.notInclude(rendered, "[[quote:");
   });
 
+  it("renders a rejected quote card without source attribution in interleaved agent text", function () {
+    const quote =
+      "This model interpretation is not wording from the cited source.";
+    const rendered = buildAgentTraceMarkdownForRender(
+      `> ${quote}\n\n(Eppler et al., 2026, page 3)`,
+      {
+        text: `> ${quote}\n\n(Eppler et al., 2026, page 3)`,
+        quoteCitations: [],
+        quoteDisplayOverride: {
+          markdown: `> ${quote}\n>\n> Not a source quote`,
+        },
+      },
+    );
+
+    assert.include(rendered, "[[quote-occurrence:");
+    assert.notInclude(rendered, "Eppler");
+  });
+
   it("uses rendered Markdown HTML for streaming assistant text", function () {
     const html = renderAssistantMarkdownHtmlForChat(
       [

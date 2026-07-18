@@ -257,6 +257,33 @@ describe("quoteTextSearch", function () {
     assert.isNull(match);
   });
 
+  it("continues to fallback queries after a non-boundary exact occurrence", function () {
+    const quote = [
+      "Dynamic states are controlled by training across sessions.",
+      "This added explanation is not part of the source passage.",
+    ].join(" ");
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "non-boundary",
+          text: `prefix${quote}suffix`,
+        },
+        {
+          id: "paper-a",
+          text: [
+            "Dynamic states are controlled by training across sessions.",
+            "A separate source sentence follows.",
+          ].join(" "),
+        },
+      ],
+      quote,
+    );
+
+    assert.isNotNull(match);
+    assert.equal(match?.entryId, "paper-a");
+    assert.notEqual(match?.matchKind, "exact");
+  });
+
   it("matches an incomplete quote when a unique prefix snippet is present", function () {
     const match = findUniqueQuoteTextSearchMatch(
       [

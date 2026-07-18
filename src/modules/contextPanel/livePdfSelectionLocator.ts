@@ -1265,6 +1265,27 @@ function canUseCachedPageTextAsNegativeEvidence(
   return isCompletePageTextCache(cached);
 }
 
+export function getCachedPageTextForAttachment(
+  contextItemId: number,
+): CachedPageTextIndex | null {
+  const key = getAttachmentPageTextCacheKey(contextItemId);
+  return key ? getCachedPageTextIndex([key]) : null;
+}
+
+export function hasCompleteSearchablePageTextForAttachment(
+  contextItemId: number,
+): boolean {
+  const cached = getCachedPageTextForAttachment(contextItemId);
+  if (
+    !isCompletePageTextCache(cached) ||
+    !cached?.pageCount ||
+    cached.pages.length !== cached.pageCount
+  ) {
+    return false;
+  }
+  return cached.normalised.every((page) => Boolean(page.normalizedText));
+}
+
 function buildHiddenQuoteLocationCacheKey(
   contextItemId: number,
   quoteText: string,

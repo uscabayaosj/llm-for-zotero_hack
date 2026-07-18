@@ -1,4 +1,5 @@
 import type { QuoteCitation } from "../../shared/types";
+import type { Message } from "./types";
 import {
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
@@ -20,13 +21,15 @@ export type QuoteRenderTrust =
   | "trusted-anchor"
   | "verified-source"
   | "legacy-inferred"
-  | "unverified-source-label";
+  | "unverified-source-label"
+  | "not-source-quote";
 
 export type QuoteRenderSource =
   | "structured-anchor"
   | "verified-markdown"
   | "legacy-markdown"
-  | "fallback-dom";
+  | "fallback-dom"
+  | "quote-review";
 
 export type QuoteRenderDiagnosticKind =
   | "unresolved-anchor"
@@ -67,6 +70,17 @@ export type BuildQuoteRenderPlanInput = {
   markdown: string;
   quoteCitations?: QuoteCitation[] | undefined | null;
 };
+
+export function getMessageQuoteDisplay(
+  message: Pick<Message, "text" | "quoteCitations" | "quoteDisplayOverride">,
+): { markdown: string; quoteCitations?: QuoteCitation[] } {
+  return (
+    message.quoteDisplayOverride || {
+      markdown: message.text || "",
+      quoteCitations: message.quoteCitations,
+    }
+  );
+}
 
 function normalizeMultilineText(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -138,6 +152,20 @@ function buildOccurrenceId(index: number): string {
   return `QO_${index.toString(36)}`;
 }
 
+function createNotSourceOccurrence(params: {
+  quoteText: string;
+  occurrenceIndex: number;
+}): QuoteRenderOccurrence {
+  return {
+    occurrenceId: buildOccurrenceId(params.occurrenceIndex),
+    displayText: params.quoteText,
+    lookupText: params.quoteText,
+    citationLabel: "Not a source quote",
+    trust: "not-source-quote",
+    source: "quote-review",
+  };
+}
+
 function createOccurrenceFromCitation(
   citation: QuoteCitation,
   occurrenceIndex: number,
@@ -165,7 +193,7 @@ function createOccurrenceFromCitation(
 
 function parseSourceLabel(value: string): string {
   const parsed = parseStandaloneCitationLabel(value);
-  return parsed?.sourceLabel || "";
+  return parsed ? normalizeWrappedCitationLabel(value) : "";
 }
 
 function containsStructuredQuoteAnchor(value: string): boolean {
@@ -185,6 +213,16 @@ function splitTrailingCitationLine(quoteLines: string[]): {
   if (!citationLabel) return null;
   const quoteText = normalizeMultilineText(quoteLines.slice(0, -1).join("\n"));
   return quoteText ? { quoteText, citationLabel } : null;
+}
+
+function splitTrailingNotSourceLine(
+  quoteLines: string[],
+): { quoteText: string } | null {
+  if (quoteLines.length < 2) return null;
+  const tail = normalizeMultilineText(quoteLines[quoteLines.length - 1] || "");
+  if (tail !== "Not a source quote") return null;
+  const quoteText = normalizeMultilineText(quoteLines.slice(0, -1).join("\n"));
+  return quoteText ? { quoteText } : null;
 }
 
 function parseLeadingCitationLine(value: string): {
@@ -259,7 +297,9 @@ export function buildQuoteRenderPlan(
     const normalizedQuote = normalizeMultilineText(
       stripQuoteCitationAnchorsFromDisplayText(quoteText),
     );
-    const normalizedLabel = normalizeWrappedCitationLabel(citationLabel);
+    const normalizedLabel = normalizeWrappedCitationLabel(
+      parseStandaloneCitationLabel(citationLabel)?.sourceLabel || citationLabel,
+    );
     if (!normalizedQuote || !normalizedLabel) return undefined;
     return quoteCitations.find((citation) => {
       if (
@@ -341,6 +381,20 @@ export function buildQuoteRenderPlan(
         replaceStructuredAnchors(blockquoteMarkdown),
       );
       if (replacedBlockquote) out.push(replacedBlockquote);
+      index -= 1;
+      continue;
+    }
+
+    const notSource = splitTrailingNotSourceLine(quoteLines);
+    if (notSource) {
+      out.push(
+        pushOccurrence(
+          createNotSourceOccurrence({
+            quoteText: notSource.quoteText,
+            occurrenceIndex: nextOccurrenceIndex(),
+          }),
+        ),
+      );
       index -= 1;
       continue;
     }

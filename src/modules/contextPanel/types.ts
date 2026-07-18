@@ -50,6 +50,11 @@ export type {
   PaperConversationSummary,
 } from "../../shared/types";
 
+export type QuoteDisplayOverride = {
+  markdown: string;
+  quoteCitations?: QuoteCitation[];
+};
+
 export interface Message {
   role: "user" | "assistant";
   text: string;
@@ -70,6 +75,8 @@ export interface Message {
   fullTextPaperContexts?: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   quoteCitations?: QuoteCitation[];
+  /** Session-only presentation; persistence and model history use the raw message. */
+  quoteDisplayOverride?: QuoteDisplayOverride;
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];

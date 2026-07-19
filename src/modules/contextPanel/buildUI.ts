@@ -243,13 +243,18 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   settingsBtn.setAttribute("aria-label", t("Open plugin settings"));
   settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
-  const exportBtn = createElement(doc, "button", "llm-btn-icon", {
-    id: "llm-export",
-    type: "button",
-    textContent: "⤓",
-    title: t("Export"),
-    disabled: !hasItem,
-  });
+  const exportBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-export-btn",
+    {
+      id: "llm-export",
+      type: "button",
+      title: t("Export"),
+      disabled: !hasItem,
+    },
+  );
+  exportBtn.setAttribute("aria-label", t("Export"));
   const clearBtn = createElement(doc, "button", "llm-btn-icon llm-clear-btn", {
     id: "llm-clear",
     type: "button",

@@ -99,4 +99,29 @@ describe("runtime system control layout", function () {
     assert.include(handlerSource, "syncResponsiveHeaderClearButton");
     assert.include(handlerSource, "shouldCompactHeaderClearButton");
   });
+
+  it("keeps the sidebar export icon fixed when plugin text scales", function () {
+    const css = source("addon/content/zoteroPane.css");
+    const sidebarSource = source("src/modules/contextPanel/buildUI.ts");
+    const exportButtonRule = extractCssRule(css, ".llm-export-btn");
+    const exportIconRule = extractCssRule(css, ".llm-export-btn::before");
+    const standaloneExportIconRule = extractCssRule(
+      css,
+      ".llm-standalone-icon-export::before",
+    );
+
+    assert.include(sidebarSource, '"llm-btn-icon llm-export-btn"');
+    assert.notInclude(sidebarSource, 'textContent: "⤓"');
+    assert.include(
+      sidebarSource,
+      'exportBtn.setAttribute("aria-label", t("Export"))',
+    );
+    assert.include(exportButtonRule, "width: 28px");
+    assert.include(exportButtonRule, "height: 28px");
+    assert.include(exportButtonRule, "font-size: 0");
+    assert.include(exportIconRule, "width: 16px");
+    assert.include(exportIconRule, "height: 16px");
+    assert.include(exportIconRule, 'url("icons/action-export.svg")');
+    assert.include(standaloneExportIconRule, 'url("icons/action-export.svg")');
+  });
 });

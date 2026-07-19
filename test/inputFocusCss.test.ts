@@ -36,13 +36,24 @@ describe("composer input focus CSS", function () {
     assert.notInclude(focusRule, "border-color");
   });
 
-  it("keeps the full inline editing area free of an accent border", function () {
-    const editWrapperRule = extractCssRule(
-      readPanelCss(),
-      ".llm-inline-edit-wrapper",
+  it("keeps the inline editor borderless with matched bottom corners", function () {
+    const css = readPanelCss();
+    const editWrapperRule = extractCssRule(css, ".llm-inline-edit-wrapper");
+    const editInputSectionRule = extractCssRule(
+      css,
+      ".llm-inline-edit-wrapper > .llm-input-section",
     );
 
+    assert.include(editWrapperRule, "--llm-inline-edit-border-radius: 10px;");
     assert.include(editWrapperRule, "border: none;");
+    assert.include(
+      editWrapperRule,
+      "border-radius: var(--llm-inline-edit-border-radius);",
+    );
     assert.notInclude(editWrapperRule, "var(--color-accent)");
+    assert.match(
+      editInputSectionRule,
+      /border-radius:\s*0 0 var\(--llm-inline-edit-border-radius\)\s+var\(--llm-inline-edit-border-radius\);/,
+    );
   });
 });

@@ -307,4 +307,74 @@ describe("quoteRenderPlan", function () {
     assert.notInclude(plan.occurrences[0].displayText, "This is not a quote");
     assert.include(plan.displayMarkdown, "```mermaid");
   });
+
+  it("repairs the historical author-plus-anchor shape to the exact displayed subspan", function () {
+    const visibleQuote =
+      "Consistently, pattern identity remained perfectly decodable from population activity throughout the drift period. Together, these results show that local predictive plasticity generates drifting but organized assemblies. Individual neurons gradually changed their assembly membership, yet the population retained a structured assembly organization throughout.";
+    const chunk = `${"Earlier retrieval evidence context. ".repeat(28)}${visibleQuote} ${"Later retrieval evidence context. ".repeat(25)}`;
+    const citation = buildQuoteCitation({
+      id: "Q_1f7prrm",
+      quoteText: chunk,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+      itemId: 3618,
+    })!;
+
+    const plan = buildQuoteRenderPlan({
+      markdown: `> ${visibleQuote}\n> (Asabuki and Clopath) [[quote:${citation.id}]]`,
+      quoteCitations: [citation],
+    });
+
+    assert.isAbove(chunk.length, 2_000);
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].displayText, visibleQuote);
+    assert.equal(plan.occurrences[0].lookupText, visibleQuote);
+    assert.equal(plan.occurrences[0].quoteCitation?.quoteText, visibleQuote);
+    assert.equal(
+      plan.occurrences[0].quoteCitation?.sourceMatchText,
+      visibleQuote,
+    );
+    assert.notInclude(plan.occurrences[0].lookupText, "Earlier retrieval");
+  });
+
+  it("keeps an exact displayed quote above 10,000 characters intact", function () {
+    const quote = `${"A complete source span remains fully searchable. ".repeat(240)}Final source sentence.`;
+    const citation = buildQuoteCitation({
+      id: "Q_long_complete",
+      quoteText: quote,
+      citationLabel: "(Long Quote, 2026)",
+      contextItemId: 42,
+    })!;
+    const plan = buildQuoteRenderPlan({
+      markdown: `> ${quote}\n> (Long Quote, 2026) [[quote:${citation.id}]]`,
+      quoteCitations: [citation],
+    });
+
+    assert.isAbove(quote.length, 10_000);
+    assert.lengthOf(plan.occurrences, 1);
+    assert.equal(plan.occurrences[0].lookupText, quote);
+  });
+
+  it("splits a historical ellipsized quote into complete contiguous occurrences", function () {
+    const first =
+      "The previous assembly representation declined before the stable neuronal reassignment.";
+    const second =
+      "The new assembly representation rose before the change and became dominant afterward.";
+    const citation = buildQuoteCitation({
+      id: "Q_historical_ellipsis",
+      quoteText: `${first} Omitted source wording. ${second}`,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+    })!;
+    const plan = buildQuoteRenderPlan({
+      markdown: `> ${first} ... ${second}\n> (Asabuki and Clopath) [[quote:${citation.id}]]`,
+      quoteCitations: [citation],
+    });
+
+    assert.lengthOf(plan.occurrences, 2);
+    assert.deepEqual(
+      plan.occurrences.map((occurrence) => occurrence.lookupText),
+      [first, second],
+    );
+  });
 });

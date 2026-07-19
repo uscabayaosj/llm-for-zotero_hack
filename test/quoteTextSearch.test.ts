@@ -3,7 +3,6 @@ import {
   buildFindControllerFullCoverageQueries,
   buildFindControllerHighlightQueries,
   buildFindControllerQuoteQueries,
-  buildRawPrefixQueries,
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
   splitQuoteAtEllipsis,
@@ -20,56 +19,22 @@ describe("quoteTextSearch", function () {
     assert.include(result[1], "neural basis");
   });
 
-  it("builds raw reader queries from the longest ellipsis segment first", function () {
-    const result = buildRawPrefixQueries(
-      "Theorem 4.4 (Shell escape). ... evolution candidates have expected log-probability strictly beyond the shell boundary. Moreover, a positive fraction of evolution candidates escape the shell.",
-    );
+  it("keeps a Unicode-hyphen quote as one complete FindController query", function () {
+    const quote =
+      "T\u2011PHATE takes as input multi\u2011voxel activity patterns (that is, a matrix with timepoints/samples as rows and voxels/features as columns) and learns two 'views' among pairs of samples: a PHATE\u2011based affinity matrix and a temporal autocorrelation\u2011based affinity matrix.";
+    const result = buildFindControllerQuoteQueries(quote);
 
-    assert.equal(
-      result[0],
-      "evolution candidates have expected log-probability strictly beyond the shell boundary. Moreover, a positive fraction of evolution candidates escape the shell.",
-    );
-    assert.isAbove(result.indexOf("escape the shell"), 0);
+    assert.deepEqual(result, [quote]);
   });
 
-  it("builds FindController queries that repair Unicode hyphen variants", function () {
-    const result = buildFindControllerQuoteQueries(
-      "T\u2011PHATE takes as input multi\u2011voxel activity patterns (that is, a matrix with timepoints/samples as rows and voxels/features as columns) and learns two 'views' among pairs of samples: a PHATE\u2011based affinity matrix and a temporal autocorrelation\u2011based affinity matrix.",
-    );
-
-    assert.include(result[0], "T\u2011PHATE takes as input");
-    assert.isTrue(
-      result.some((query) => query.includes("T-PHATE takes as input")),
-      result.join("\n"),
-    );
-    assert.isTrue(
-      result.some((query) =>
-        query.includes("autocorrelation-based affinity matrix"),
-      ),
-      result.join("\n"),
-    );
-  });
-
-  it("tries the exact quote text before normalized dash fallbacks for PDF reader search", function () {
+  it("builds only the complete exact quote for PDF reader search", function () {
     const quote =
       "Drift therefore provides a measurable signal that can reveal systems–level properties of biological plasticity mechanisms, such as their precision and effective learning rates.";
     const quoteQueries = buildFindControllerQuoteQueries(quote);
     const highlightQueries = buildFindControllerHighlightQueries(quote);
 
-    assert.equal(quoteQueries[0], quote);
-    assert.include(
-      quoteQueries,
-      quote.replace("systems–level", "systems-level").replace(/\.$/, ""),
-    );
-    assert.include(
-      quoteQueries,
-      quote.replace("systems–level", "systems level").replace(/\.$/, ""),
-    );
-    assert.equal(highlightQueries[0], quote);
-    assert.include(
-      highlightQueries,
-      quote.replace("systems–level", "systems-level"),
-    );
+    assert.deepEqual(quoteQueries, [quote]);
+    assert.deepEqual(highlightQueries, [quote]);
   });
 
   it("builds FindController queries from normalized source-match snippets", function () {
@@ -113,7 +78,7 @@ describe("quoteTextSearch", function () {
     );
   });
 
-  it("builds high-coverage highlight fallbacks from the beginning of moderate-length quotes", function () {
+  it("does not build partial highlight fallbacks for moderate-length quotes", function () {
     const quote = [
       "In this study, we showed that representational similarity is preserved as a generic mathematical consequence of random connectivity.",
       "In random networks, pairwise similarities between inputs are largely reflected in the outputs, independent of the specific connectivity pattern.",
@@ -126,16 +91,7 @@ describe("quoteTextSearch", function () {
     });
 
     assert.isAbove(quote.length, 220);
-    assert.equal(result[0], quote);
-    assert.isTrue(
-      result.some(
-        (query) =>
-          query.startsWith("In this study") &&
-          query.length > 120 &&
-          query.length < quote.length - 40,
-      ),
-      result.join("\n"),
-    );
+    assert.deepEqual(result, [quote]);
   });
 
   it("builds only canonical full-coverage queries for selected text", function () {
@@ -154,27 +110,28 @@ describe("quoteTextSearch", function () {
     );
   });
 
-  it("normalizes line breaks and soft hyphens without reducing full coverage", function () {
+  it("preserves literal line breaks and soft hyphens in the sole full query", function () {
     const selection =
       "Complete selec\u00adtion text remains canonically equivalent\nwhen the PDF text layer changes whitespace.";
     const result = buildFindControllerFullCoverageQueries(selection);
 
     assert.isNotEmpty(result);
-    assert.isTrue(
-      result.every(
-        (query) =>
-          normalizeLocatorText(query) === normalizeLocatorText(selection),
-      ),
-      result.join("\n"),
-    );
-    assert.isTrue(result.some((query) => !query.includes("\n")));
+    assert.deepEqual(result, [selection]);
   });
 
-  it("skips unsafe oversized full-coverage queries", function () {
+  it("keeps complete full-coverage queries above 1,200 and 10,000 characters", function () {
     const selection = `${"complete selected text ".repeat(80)}ending`;
+    const veryLongSelection = `${"complete page-native quote ".repeat(450)}ending`;
 
     assert.isAbove(selection.length, 1200);
-    assert.deepEqual(buildFindControllerFullCoverageQueries(selection), []);
+    assert.isAbove(veryLongSelection.length, 10_000);
+    assert.deepEqual(buildFindControllerFullCoverageQueries(selection), [
+      selection,
+    ]);
+    assert.deepEqual(
+      buildFindControllerFullCoverageQueries(veryLongSelection),
+      [veryLongSelection],
+    );
   });
 
   it("preserves non-ASCII locator text during normalization", function () {

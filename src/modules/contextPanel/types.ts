@@ -289,6 +289,11 @@ export type PaperContextCandidate = {
   chunkKind?: PdfChunkKind;
   anchorText?: string;
   leadingNoiseRemoved?: boolean;
+  sourceStart?: number;
+  sourceEnd?: number;
+  sourceFingerprint?: string;
+  pageStart?: number;
+  pageEnd?: number;
   estimatedTokens: number;
   bm25Score: number;
   embeddingScore: number;

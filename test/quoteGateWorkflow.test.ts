@@ -4,10 +4,7 @@ import {
   finalizeAssistantMessageQuoteCitationsForTests,
   waitForAssistantQuoteValidationForTests,
 } from "../src/modules/contextPanel/chat";
-import {
-  buildQuoteCitation,
-  replaceQuoteCitationPlaceholdersForMarkdown,
-} from "../src/modules/contextPanel/quoteCitations";
+import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
 import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import {
   chatHistory,
@@ -180,7 +177,7 @@ describe("minimal source-match quote gate workflow", function () {
     );
   });
 
-  it("treats a unique partial match as an ordinary source quote", async function () {
+  it("fails closed for a unique partial source match", async function () {
     const sourceSentence =
       "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
     const quote = `${sourceSentence} This explanatory sentence was added by the model.`;
@@ -207,14 +204,18 @@ describe("minimal source-match quote gate workflow", function () {
 
     const displayCitation =
       assistantMessage.quoteDisplayOverride?.quoteCitations?.[0];
-    assert.equal(displayCitation?.citationLabel, "(Eppler et al., 2026)");
-    assert.equal(displayCitation?.displayQuoteText, quote);
+    assert.isUndefined(displayCitation);
     assert.notInclude(
-      replaceQuoteCitationPlaceholdersForMarkdown(
-        assistantMessage.quoteDisplayOverride?.markdown || "",
-        displayCitation ? [displayCitation] : [],
-      ),
-      "Related source",
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "[[quote:",
+    );
+    assert.include(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "Not a source quote",
+    );
+    assert.include(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      quote,
     );
     assert.equal(assistantMessage.text, `> ${quote}`);
   });

@@ -1,11 +1,14 @@
 import type { QuoteCitation } from "../../shared/types";
 import type { Message } from "./types";
 import {
+  bindQuoteCitationToDisplayedText,
   normalizeQuoteCitations,
+  parseStructuredBlockquoteQuoteBinding,
   QUOTE_CITATION_PATTERN,
   sanitizeInvalidStructuredSourceMarkers,
   stripQuoteCitationAnchorsFromDisplayText,
 } from "./quoteCitations";
+import { splitQuoteAtEllipsisInOrder } from "./quoteTextSearch";
 import {
   normalizeWrappedCitationLabel,
   parseStandaloneCitationLabel,
@@ -377,6 +380,59 @@ export function buildQuoteRenderPlan(
 
     const blockquoteMarkdown = quoteLines.join("\n");
     if (containsStructuredQuoteAnchor(blockquoteMarkdown)) {
+      const structuredBinding =
+        parseStructuredBlockquoteQuoteBinding(quoteLines);
+      if (structuredBinding?.quoteText) {
+        const citation = citationsById.get(structuredBinding.quoteCitationId);
+        const displayedSegments = splitQuoteAtEllipsisInOrder(
+          structuredBinding.quoteText,
+        );
+        const quoteSegments =
+          displayedSegments.length > 1
+            ? displayedSegments
+            : [structuredBinding.quoteText];
+        const rebounds = citation
+          ? quoteSegments.map((quoteText) =>
+              bindQuoteCitationToDisplayedText(citation, quoteText),
+            )
+          : [];
+        if (
+          rebounds.length &&
+          rebounds.every((rebound): rebound is QuoteCitation =>
+            Boolean(rebound),
+          )
+        ) {
+          out.push(
+            ...rebounds.map((rebound) =>
+              pushOccurrence(
+                createOccurrenceFromCitation(rebound, nextOccurrenceIndex()),
+              ),
+            ),
+          );
+          index -= 1;
+          continue;
+        }
+
+        diagnostics.push({
+          kind: "unresolved-anchor",
+          message:
+            "Visible quote could not be bound completely to its structured citation evidence.",
+          quoteText: structuredBinding.quoteText,
+          citationLabel:
+            citation?.citationLabel || structuredBinding.citationLabel,
+          quoteCitationId: structuredBinding.quoteCitationId,
+        });
+        out.push(
+          [
+            structuredBinding.quoteText,
+            citation?.citationLabel || structuredBinding.citationLabel || "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
+        index -= 1;
+        continue;
+      }
       const replacedBlockquote = normalizeMultilineText(
         replaceStructuredAnchors(blockquoteMarkdown),
       );

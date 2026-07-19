@@ -3337,6 +3337,10 @@ function cachedQuoteSourceChunks(contextItemId: number): QuoteSourceText[] {
       sourceText,
       sectionLabel: meta?.sectionLabel,
       chunkKind: meta?.chunkKind,
+      sourceFingerprint: meta?.sourceFingerprint,
+      ...(meta?.pageStart !== undefined && meta?.pageStart === meta?.pageEnd
+        ? { pageHintIndex: meta.pageStart }
+        : {}),
     });
   }
   return out;
@@ -3425,6 +3429,8 @@ function cachedPdfPageQuoteSourcesForPaper(
             sourceText,
             pageHintIndex: page.pageIndex,
             pageHintLabel: page.pageLabel,
+            sourceFingerprint: cached?.sourceFingerprint,
+            requiresPageHint: true,
           },
         ]
       : [];
@@ -3504,6 +3510,7 @@ function buildCachedQuoteSourceEvidenceForPaperContexts(
     for (const chunk of cachedChunks) {
       out.push({
         ...chunk,
+        requiresPageHint: usesPdfPageText,
         sourceLabel: formatPaperSourceLabel(paper),
         metadataTexts: [paper.title, paper.attachmentTitle],
         sourceMatchSource: "context-text",

@@ -16,7 +16,6 @@ import {
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
   stripQuoteCitationAnchorsFromDisplayText,
-  stripTrailingNonSourceQuoteLabelFromQuoteText,
 } from "./quoteCitations";
 import {
   buildQuoteRenderPlan,
@@ -56,7 +55,6 @@ import {
 } from "./citationNavigationCache";
 import {
   type ExactQuoteJumpResult,
-  flashPageInLivePdfReader,
   locateQuoteInLivePdfReader,
   getPageLabelForIndex,
   lookupCachedQuoteLocationForAttachment,
@@ -82,6 +80,12 @@ type CitationParagraphJumpNavigation = {
 type QuoteCitationPageHint = {
   pageIndex?: number;
   pageLabel?: string;
+};
+
+type QuoteNavigationProvenance = {
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
 };
 
 type CitationCandidateProvenance =
@@ -1578,15 +1582,19 @@ function logParagraphJumpFailure(params: {
   ztoolkit.log("LLM citation paragraph jump failed", {
     contextItemId: params.contextItemId,
     citationLabel: params.displayCitationLabel,
-    quoteTextSample: sanitizeText(params.quoteText || "").slice(0, 240),
     quoteTextLength: sanitizeText(params.quoteText || "").length,
+    quoteTextHash: buildCitationQuoteHash(params.quoteText),
     pageIndex: params.pageIndex,
     pageLabel: params.pageLabel,
     expectedPageIndex: params.paragraphJump.expectedPageIndex,
+    failureStage: params.paragraphJump.failureStage,
     reason: params.paragraphJump.reason,
-    queryUsed: params.paragraphJump.queryUsed,
-    queries: params.paragraphJump.queries,
-    debugSummary: params.paragraphJump.debugSummary,
+    attempts: params.paragraphJump.queries.map((attempt) => ({
+      queryLength: attempt.query.length,
+      queryHash: buildCitationQuoteHash(attempt.query),
+      matchedPageIndexes: attempt.matchedPageIndexes,
+      totalMatches: attempt.totalMatches,
+    })),
   });
 }
 
@@ -1595,64 +1603,31 @@ async function attemptCitationParagraphJump(params: {
   contextItemId: number;
   displayCitationLabel: string;
   quoteText: string;
-  alternateQuoteTexts?: string[];
   pageIndex: number;
   pageLabel: string;
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
 }): Promise<ExactQuoteJumpResult> {
-  const quoteTexts = Array.from(
-    new Set(
-      [params.quoteText, ...(params.alternateQuoteTexts || [])]
-        .map((text) => sanitizeText(text || "").trim())
-        .filter(Boolean),
-    ),
-  );
-  const highlightTextCandidates = Array.from(
-    new Set(
-      [...(params.alternateQuoteTexts || []), params.quoteText]
-        .map((text) => sanitizeText(text || "").trim())
-        .filter(Boolean),
-    ),
-  );
-  let paragraphJump: ExactQuoteJumpResult | null = null;
-  let attemptedQuoteText = params.quoteText;
-  for (const quoteText of quoteTexts) {
-    attemptedQuoteText = quoteText;
-    paragraphJump = await scrollToExactQuoteInReader(params.reader, quoteText, {
-      expectedPageIndex: params.pageIndex,
-      highlightTextCandidates,
-    });
-    if (paragraphJump.matched) break;
-  }
-  paragraphJump ||= await scrollToExactQuoteInReader(
+  const paragraphJump = await scrollToExactQuoteInReader(
     params.reader,
     params.quoteText,
-    { expectedPageIndex: params.pageIndex, highlightTextCandidates },
+    {
+      citationId: params.citationId,
+      expectedPageIndex: params.pageIndex,
+      sourceFingerprint: params.sourceFingerprint,
+      sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
+    },
   );
   if (!paragraphJump.matched) {
     logParagraphJumpFailure({
       contextItemId: params.contextItemId,
       displayCitationLabel: params.displayCitationLabel,
-      quoteText: attemptedQuoteText,
+      quoteText: params.quoteText,
       pageIndex: params.pageIndex,
       pageLabel: params.pageLabel,
       paragraphJump,
     });
-    // FindController did not navigate; fall back to coarse page-level jump + flash.
-    const navigated = await navigateReaderToPage(
-      params.reader,
-      params.pageIndex,
-      params.pageLabel,
-    );
-    const readerForFlash = navigated
-      ? params.reader
-      : await openReaderForItem(params.contextItemId, {
-          pageIndex: params.pageIndex,
-          pageLabel: params.pageLabel,
-        });
-    await flashPageInLivePdfReader(
-      readerForFlash || params.reader,
-      params.pageIndex,
-    );
   }
   return paragraphJump;
 }
@@ -1680,7 +1655,7 @@ async function navigateToCachedCitationPage(
   contextItemId: number,
   quoteText: string,
   displayCitationLabel: string,
-  alternateQuoteTexts?: string[],
+  provenance?: QuoteNavigationProvenance,
 ): Promise<CitationParagraphJumpNavigation | null> {
   const cached = lookupCitationPage({ contextItemId, quoteText });
   if (!cached) return null;
@@ -1695,21 +1670,15 @@ async function navigateToCachedCitationPage(
     pageLabel: targetPageLabel,
   });
   if (!reader) return null;
-  void flashPageInLivePdfReader(reader, targetPageIndex).catch((_err) => {
-    void _err;
-  });
 
-  // Skip text-search re-verification — it can return the wrong page (short
-  // prefix false-match).  FindController in attemptCitationParagraphJump is
-  // authoritative and will correct the page via matchedPageIndex.
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId,
     displayCitationLabel,
     quoteText,
-    alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
+    ...provenance,
   });
   return {
     reader,
@@ -1723,9 +1692,11 @@ async function navigateToCachedCitationPage(
 async function navigateToHiddenQuoteLocation(params: {
   contextItemId: number;
   quoteText: string;
-  alternateQuoteTexts?: string[];
   displayCitationLabel: string;
   pageIndex: number;
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
 }): Promise<CitationParagraphJumpNavigation | null> {
   const targetPageIndex = Math.floor(params.pageIndex);
   if (!Number.isFinite(targetPageIndex) || targetPageIndex < 0) return null;
@@ -1737,18 +1708,17 @@ async function navigateToHiddenQuoteLocation(params: {
 
   const targetPageLabel =
     getPageLabelForIndex(reader, targetPageIndex) || `${targetPageIndex + 1}`;
-  void flashPageInLivePdfReader(reader, targetPageIndex).catch((_err) => {
-    void _err;
-  });
 
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId: params.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
     quoteText: params.quoteText,
-    alternateQuoteTexts: params.alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
+    citationId: params.citationId,
+    sourceFingerprint: params.sourceFingerprint,
+    sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
   });
   return {
     reader,
@@ -1762,9 +1732,11 @@ async function navigateToHiddenQuoteLocation(params: {
 async function navigateToStoredQuotePageHint(params: {
   contextItemId: number;
   quoteText: string;
-  alternateQuoteTexts?: string[];
   displayCitationLabel: string;
   pageHint: QuoteCitationPageHint;
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
   onReaderOpened?: () => void;
 }): Promise<CitationParagraphJumpNavigation | null> {
   const hintedPageIndex =
@@ -1802,18 +1774,17 @@ async function navigateToStoredQuotePageHint(params: {
     hintedPageLabel ||
     getPageLabelForIndex(reader, targetPageIndex) ||
     `${targetPageIndex + 1}`;
-  void flashPageInLivePdfReader(reader, targetPageIndex).catch((_err) => {
-    void _err;
-  });
 
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId: params.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
     quoteText: params.quoteText,
-    alternateQuoteTexts: params.alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
+    citationId: params.citationId,
+    sourceFingerprint: params.sourceFingerprint,
+    sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
   });
   return {
     reader,
@@ -2653,6 +2624,7 @@ async function navigateUntrustedQuoteCitation(params: {
     }
     const result = await locateQuoteInLivePdfReader(reader, params.quoteText, {
       skipFindController: true,
+      exactOnly: true,
     });
     if (result.status === "resolved" && result.computedPageIndex !== null) {
       const pageIndex = Math.floor(result.computedPageIndex);
@@ -2707,7 +2679,6 @@ async function navigateUntrustedQuoteCitation(params: {
     contextItemId: match.candidate.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
     quoteText: params.quoteText,
-    alternateQuoteTexts: params.paragraphQuoteTexts,
     pageIndex: match.pageIndex,
     pageLabel: match.pageLabel,
   });
@@ -2879,7 +2850,11 @@ async function resolveAndNavigateAssistantCitation(params: {
         candidate.contextItemId,
         normalizedQuoteText,
         params.displayCitationLabel,
-        paragraphQuoteTexts,
+        {
+          citationId: quoteCitation?.id,
+          sourceFingerprint: quoteCitation?.sourceFingerprint,
+          sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
+        },
       );
       if (cached) {
         markCitationNavigationTiming(timing, "cache lookup", {
@@ -2942,9 +2917,14 @@ async function resolveAndNavigateAssistantCitation(params: {
       const cached = await navigateToHiddenQuoteLocation({
         contextItemId: candidate.contextItemId,
         quoteText: normalizedQuoteText,
-        alternateQuoteTexts: paragraphQuoteTexts,
         displayCitationLabel: params.displayCitationLabel,
         pageIndex: hiddenLocation.pageIndex,
+        citationId: quoteCitation?.id,
+        sourceFingerprint:
+          quoteCitation?.sourceFingerprint || hiddenLocation.sourceFingerprint,
+        sourceMatchPageOccurrence:
+          quoteCitation?.sourceMatchPageOccurrence ??
+          hiddenLocation.sourceMatchPageOccurrence,
       });
       if (!cached) continue;
       markCitationNavigationTiming(timing, "cache lookup", {
@@ -3011,9 +2991,11 @@ async function resolveAndNavigateAssistantCitation(params: {
       const hinted = await navigateToStoredQuotePageHint({
         contextItemId: hintedCandidate.contextItemId,
         quoteText: normalizedQuoteText,
-        alternateQuoteTexts: paragraphQuoteTexts,
         displayCitationLabel: params.displayCitationLabel,
         pageHint: storedPageHint,
+        citationId: quoteCitation?.id,
+        sourceFingerprint: quoteCitation?.sourceFingerprint,
+        sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
         onReaderOpened: () => {
           markCitationNavigationTiming(timing, "hint open", {
             contextItemId: hintedCandidate.contextItemId,
@@ -3095,9 +3077,12 @@ async function resolveAndNavigateAssistantCitation(params: {
               contextItemId: bestRanked.contextItemId,
               displayCitationLabel: params.displayCitationLabel,
               quoteText: normalizedQuoteText,
-              alternateQuoteTexts: paragraphQuoteTexts,
               pageIndex,
               pageLabel: explicitPageLabel,
+              citationId: quoteCitation?.id,
+              sourceFingerprint: quoteCitation?.sourceFingerprint,
+              sourceMatchPageOccurrence:
+                quoteCitation?.sourceMatchPageOccurrence,
             });
             const jumpedLabel = resolveJumpedPageLabel(
               target,
@@ -3144,6 +3129,7 @@ async function resolveAndNavigateAssistantCitation(params: {
         const result = await locateQuoteInLivePdfReader(
           activeReader,
           normalizedQuoteText,
+          { skipFindController: true, exactOnly: true },
         );
         markCitationNavigationTiming(timing, "full quote locate", {
           source: "active-reader",
@@ -3159,9 +3145,11 @@ async function resolveAndNavigateAssistantCitation(params: {
             contextItemId: getReaderItemId(activeReader),
             displayCitationLabel: params.displayCitationLabel,
             quoteText: normalizedQuoteText,
-            alternateQuoteTexts: paragraphQuoteTexts,
             pageIndex,
             pageLabel,
+            citationId: quoteCitation?.id,
+            sourceFingerprint: quoteCitation?.sourceFingerprint,
+            sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
           });
           markCitationNavigationTiming(timing, "paragraph jump", {
             source: "full-quote-locate-active-reader",
@@ -3225,6 +3213,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       const result = await locateQuoteInLivePdfReader(
         reader,
         normalizedQuoteText,
+        { skipFindController: true, exactOnly: true },
       );
       markCitationNavigationTiming(timing, "full quote locate", {
         source: "candidate",
@@ -3246,9 +3235,11 @@ async function resolveAndNavigateAssistantCitation(params: {
           contextItemId: candidate.contextItemId,
           displayCitationLabel: params.displayCitationLabel,
           quoteText: normalizedQuoteText,
-          alternateQuoteTexts: paragraphQuoteTexts,
           pageIndex,
           pageLabel,
+          citationId: quoteCitation?.id,
+          sourceFingerprint: quoteCitation?.sourceFingerprint,
+          sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
         });
         markCitationNavigationTiming(timing, "paragraph jump", {
           source: "full-quote-locate-candidate",
@@ -4395,9 +4386,7 @@ function replaceBlockquoteWithFallbackQuoteCard(params: {
   citationContent?: Node;
   quoteContent?: DocumentFragment | null;
 }): HTMLElement | null {
-  const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
-    params.quoteText,
-  );
+  const quoteText = sanitizeText(params.quoteText).trim();
   if (!quoteText) return null;
   const quoteCard = createFallbackQuoteCardElement({
     ownerDoc: params.ownerDoc,
@@ -4539,9 +4528,7 @@ export function decorateAssistantCitationLinks(params: {
     if (/(?:^|\n)\s*Not a source quote\s*$/i.test(sourceBlockquoteText)) {
       continue;
     }
-    let quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
-      sanitizeText(sourceBlockquoteText).trim(),
-    );
+    let quoteText = sanitizeText(sourceBlockquoteText).trim();
     if (!quoteText) continue;
     let citationEl = getNextElementSibling(blockquote);
     const tailMatch = extractBlockquoteTailCitation(sourceBlockquoteText);

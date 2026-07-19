@@ -5,7 +5,11 @@ const INVALID_TEXT_CONTROL_CODE_RANGES = [
 const INVALID_TEXT_CONTROL_CODES = new Set([0x0b, 0x0c, 0x7f]);
 const STYLE_COMMAND_PATTERN =
   /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol)\b/g;
-const QUOTE_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
+// Keep letters and numbers as separate tokens. PDF.js can concatenate a
+// margin line-number item directly with the first word on the line (for
+// example, "\n151The net drive"). Splitting the letter/number transition
+// preserves offsets while allowing that injected number to be ignored.
+const QUOTE_WORD_PATTERN = /\p{N}+|\p{L}[\p{L}\p{N}]*/gu;
 const LETTER_TOKEN_PATTERN = /^\p{L}+$/u;
 const SINGLE_LETTER_TOKEN_PATTERN = /^\p{L}$/u;
 const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
@@ -13,6 +17,9 @@ const LINE_BREAK_HYPHEN_GAP_PATTERN = /^[\u00ad\s]*[-‐‑‒–—][\u00ad\s]*
 const SOFT_HYPHEN_GAP_PATTERN = /^[\u00ad\s]+$/u;
 const SOURCE_SPAN_LEADING_BOUNDARY_CHARS = "\"'“‘([";
 const SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN = /[.,;:!?"'”’)\]}。！？、，；：]/;
+const TERMINAL_SENTENCE_PUNCTUATION_PATTERN = /[.!?。！？]/u;
+const OMITTED_TRAILING_SOURCE_LOCATOR_PATTERN =
+  /^[\s\u0003]*(\((?:(?:supplementary|supp\.?)\s+)?(?:fig(?:ure)?|table|eq(?:uation)?|appendix)\b[^()\n]{0,120}\))[.!?。！？]+["'”’]?/iu;
 
 export type QuoteTextToken = {
   text: string;
@@ -26,6 +33,10 @@ export type QuoteTextSourceSpan = {
   sourceStart: number;
   sourceEnd: number;
   text: string;
+};
+
+export type QuoteTextAlignedSourceSpan = QuoteTextSourceSpan & {
+  occurrenceIndex: number;
 };
 
 export type QuoteTextIndex = {
@@ -264,6 +275,48 @@ function expandSourceSpanEnd(sourceText: string, sourceEnd: number): number {
   return cursor;
 }
 
+function queryRequiresTerminalSentenceBoundary(
+  queryIndex: QuoteTextIndex,
+): boolean {
+  const lastToken = queryIndex.tokens[queryIndex.tokens.length - 1];
+  if (!lastToken) return false;
+  return TERMINAL_SENTENCE_PUNCTUATION_PATTERN.test(
+    queryIndex.sourceText.slice(lastToken.sourceEnd),
+  );
+}
+
+function resolveAlignedSourceEnd(params: {
+  sourceText: string;
+  lastTokenEnd: number;
+  queryIndex: QuoteTextIndex;
+}): number | null {
+  const adjacentEnd = expandSourceSpanEnd(
+    params.sourceText,
+    params.lastTokenEnd,
+  );
+  if (!queryRequiresTerminalSentenceBoundary(params.queryIndex)) {
+    return adjacentEnd;
+  }
+  if (
+    TERMINAL_SENTENCE_PUNCTUATION_PATTERN.test(
+      params.sourceText.slice(params.lastTokenEnd, adjacentEnd),
+    )
+  ) {
+    return adjacentEnd;
+  }
+
+  // Historical model quotes sometimes omit a trailing in-source locator such
+  // as "(Fig. 3B)." while retaining the sentence-final period. Recover the
+  // complete literal source sentence only for a recognized locator. Any other
+  // missing terminal boundary is incomplete grounding and must fail closed.
+  const locatorMatch = params.sourceText
+    .slice(params.lastTokenEnd)
+    .match(OMITTED_TRAILING_SOURCE_LOCATOR_PATTERN);
+  return locatorMatch
+    ? params.lastTokenEnd + (locatorMatch[0]?.length || 0)
+    : null;
+}
+
 export function findCanonicalQuoteSourceSpan(
   index: QuoteTextIndex,
   queryText: string,
@@ -293,4 +346,208 @@ export function findCanonicalQuoteSourceSpan(
     sourceEnd,
     text: index.sourceText.slice(sourceStart, sourceEnd),
   };
+}
+
+function isLikelyLayoutNumberToken(
+  index: QuoteTextIndex,
+  tokenIndex: number,
+): boolean {
+  const token = index.tokens[tokenIndex];
+  if (!token || !/^\p{N}{1,4}$/u.test(token.text)) return false;
+  const previous = index.tokens[tokenIndex - 1];
+  const next = index.tokens[tokenIndex + 1];
+  const before = index.sourceText.slice(
+    previous?.sourceEnd ?? Math.max(0, token.sourceStart - 2),
+    token.sourceStart,
+  );
+  const after = index.sourceText.slice(
+    token.sourceEnd,
+    next?.sourceStart ?? Math.min(index.sourceText.length, token.sourceEnd + 2),
+  );
+  const beforeHasLineBreak = /[\r\n]/.test(before);
+  const afterHasLineBreak = /[\r\n]/.test(after);
+  return (
+    (beforeHasLineBreak &&
+      (afterHasLineBreak || /^[ \t]/.test(after) || after === "")) ||
+    (afterHasLineBreak && !/[ \t]$/.test(before))
+  );
+}
+
+/**
+ * Remove only numeric tokens that are separated from surrounding source text
+ * by a line boundary. This must run before callers flatten whitespace; after
+ * flattening, manuscript line numbers are indistinguishable from real data.
+ */
+export function stripLikelyLayoutNumberArtifacts(value: string): string {
+  const index = buildQuoteTextIndex(value);
+  let cursor = 0;
+  let out = "";
+  for (let tokenIndex = 0; tokenIndex < index.tokens.length; tokenIndex += 1) {
+    if (!isLikelyLayoutNumberToken(index, tokenIndex)) continue;
+    const token = index.tokens[tokenIndex];
+    out += index.sourceText.slice(cursor, token.sourceStart);
+    cursor = token.sourceEnd;
+  }
+  return out + index.sourceText.slice(cursor);
+}
+
+type TokenAlignmentStep = {
+  nextSourceIndex: number;
+  nextQueryIndex: number;
+  lastMatchedSourceIndex: number;
+};
+
+function matchTokenAlignmentStep(params: {
+  sourceIndex: QuoteTextIndex;
+  queryIndex: QuoteTextIndex;
+  sourceTokenIndex: number;
+  queryTokenIndex: number;
+}): TokenAlignmentStep | null {
+  const sourceTokens = params.sourceIndex.tokens;
+  const queryTokens = params.queryIndex.tokens;
+  const sourceToken = sourceTokens[params.sourceTokenIndex];
+  const queryToken = queryTokens[params.queryTokenIndex];
+  if (!sourceToken || !queryToken) return null;
+
+  if (sourceToken.text === queryToken.text) {
+    return {
+      nextSourceIndex: params.sourceTokenIndex + 1,
+      nextQueryIndex: params.queryTokenIndex + 1,
+      lastMatchedSourceIndex: params.sourceTokenIndex,
+    };
+  }
+
+  let sourceText = "";
+  let lastMatchedSourceIndex = params.sourceTokenIndex - 1;
+  for (
+    let sourceCursor = params.sourceTokenIndex;
+    sourceCursor < sourceTokens.length &&
+    sourceCursor < params.sourceTokenIndex + 32;
+    sourceCursor += 1
+  ) {
+    if (isLikelyLayoutNumberToken(params.sourceIndex, sourceCursor)) continue;
+    sourceText += sourceTokens[sourceCursor].text;
+    lastMatchedSourceIndex = sourceCursor;
+    if (sourceText === queryToken.text) {
+      return {
+        nextSourceIndex: sourceCursor + 1,
+        nextQueryIndex: params.queryTokenIndex + 1,
+        lastMatchedSourceIndex,
+      };
+    }
+    if (sourceText.length >= queryToken.text.length) break;
+  }
+
+  let queryText = "";
+  for (
+    let queryCursor = params.queryTokenIndex;
+    queryCursor < queryTokens.length &&
+    queryCursor < params.queryTokenIndex + 32;
+    queryCursor += 1
+  ) {
+    queryText += queryTokens[queryCursor].text;
+    if (queryText === sourceToken.text) {
+      return {
+        nextSourceIndex: params.sourceTokenIndex + 1,
+        nextQueryIndex: queryCursor + 1,
+        lastMatchedSourceIndex: params.sourceTokenIndex,
+      };
+    }
+    if (queryText.length >= sourceToken.text.length) break;
+  }
+
+  return null;
+}
+
+/**
+ * Locate complete quote spans while tolerating PDF layout-only line/page
+ * numbers. Every semantic query token must still match, in order. Returned
+ * text remains the literal source substring so it can be passed directly to
+ * PDF.js FindController.
+ */
+export function findQuoteSourceSpansAllowingLayoutArtifacts(
+  index: QuoteTextIndex,
+  queryText: string,
+): QuoteTextAlignedSourceSpan[] {
+  const queryIndex = buildQuoteTextIndex(queryText);
+  if (!index.tokens.length || !queryIndex.tokens.length) return [];
+
+  const spans: QuoteTextAlignedSourceSpan[] = [];
+  const seen = new Set<string>();
+  for (
+    let candidateStart = 0;
+    candidateStart < index.tokens.length;
+    candidateStart += 1
+  ) {
+    if (
+      isLikelyLayoutNumberToken(index, candidateStart) &&
+      index.tokens[candidateStart]?.text !== queryIndex.tokens[0]?.text
+    ) {
+      continue;
+    }
+    let sourceCursor = candidateStart;
+    let queryCursor = 0;
+    let lastMatchedSourceIndex = candidateStart - 1;
+
+    while (
+      sourceCursor < index.tokens.length &&
+      queryCursor < queryIndex.tokens.length
+    ) {
+      if (
+        isLikelyLayoutNumberToken(queryIndex, queryCursor) &&
+        queryIndex.tokens[queryCursor]?.text !==
+          index.tokens[sourceCursor]?.text
+      ) {
+        queryCursor += 1;
+        continue;
+      }
+      if (
+        isLikelyLayoutNumberToken(index, sourceCursor) &&
+        index.tokens[sourceCursor]?.text !==
+          queryIndex.tokens[queryCursor]?.text
+      ) {
+        sourceCursor += 1;
+        continue;
+      }
+      const step = matchTokenAlignmentStep({
+        sourceIndex: index,
+        queryIndex,
+        sourceTokenIndex: sourceCursor,
+        queryTokenIndex: queryCursor,
+      });
+      if (!step) break;
+      sourceCursor = step.nextSourceIndex;
+      queryCursor = step.nextQueryIndex;
+      lastMatchedSourceIndex = step.lastMatchedSourceIndex;
+    }
+
+    if (
+      queryCursor !== queryIndex.tokens.length ||
+      lastMatchedSourceIndex < candidateStart
+    ) {
+      continue;
+    }
+    const firstToken = index.tokens[candidateStart];
+    const lastToken = index.tokens[lastMatchedSourceIndex];
+    const sourceStart = expandSourceSpanStart(
+      index.sourceText,
+      firstToken.sourceStart,
+    );
+    const sourceEnd = resolveAlignedSourceEnd({
+      sourceText: index.sourceText,
+      lastTokenEnd: lastToken.sourceEnd,
+      queryIndex,
+    });
+    if (sourceEnd === null) continue;
+    const key = `${sourceStart}:${sourceEnd}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    spans.push({
+      sourceStart,
+      sourceEnd,
+      text: index.sourceText.slice(sourceStart, sourceEnd),
+      occurrenceIndex: spans.length,
+    });
+  }
+  return spans;
 }

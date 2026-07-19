@@ -536,6 +536,8 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+            sourceFingerprint: "pdfjs:eppler-test",
           },
         ],
       }),
@@ -577,6 +579,7 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
             metadataTexts: [title],
           },
         ],
@@ -618,6 +621,7 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
             metadataTexts: [title],
           },
         ],
@@ -649,6 +653,7 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
             metadataTexts: [title],
           },
         ],
@@ -868,6 +873,8 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -917,7 +924,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].contextItemId, 23);
   });
 
-  it("repairs incomplete paper blockquotes through unique source snippets", function () {
+  it("fails closed when a displayed blockquote contains unsupported source wording", function () {
     const sourceText =
       "We hypothesized that some brain states are easier for people to generate, and that tailoring training to these brain states will facilitate BCI learning.";
     const finalized = finalizeAssistantQuoteCitations({
@@ -934,31 +941,15 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
     assert.include(
-      finalized.quoteCitations[0].sourceMatchText || "",
-      "we hypothesized that some brain states are easier",
-    );
-    assert.equal(finalized.quoteCitations[0].quoteText, sourceText);
-    assert.notInclude(
-      finalized.quoteCitations[0].quoteText,
-      "This added sentence is not source text",
-    );
-    assert.notInclude(
-      replaceQuoteCitationPlaceholdersForMarkdown(
-        finalized.markdown,
-        finalized.quoteCitations,
-      ),
+      finalized.markdown,
       "This added sentence is not source text",
     );
   });
 
-  it("repairs blockquotes when only an interior source snippet matches", function () {
+  it("fails closed when only an interior source snippet matches", function () {
     const sourceText =
       "The encoder learned a nonlinear mapping from brain activity to the manifold in real time.";
     const finalized = finalizeAssistantQuoteCitations({
@@ -975,20 +966,12 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.oneOf(finalized.quoteCitations[0].sourceMatchKind, [
-      "raw-middle",
-      "progressive",
-    ]);
-    assert.equal(finalized.quoteCitations[0].quoteText, sourceText);
-    assert.notInclude(
-      finalized.quoteCitations[0].quoteText,
-      "unsupported wording",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
+    assert.include(finalized.markdown, "unsupported wording");
   });
 
-  it("repairs ellipsized paper blockquotes through ordered source fragments", function () {
+  it("splits ordered ellipsized source fragments into page-bounded cards", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> “The amount of neural realignment was comparable between IM and WMP components ... and greater than for the OMP component. ... This realignment was possible, given that WMP was on the intrinsic manifold.”",
@@ -999,20 +982,22 @@ describe("quoteCitations", function () {
               "The amount of neural realignment was comparable between IM and WMP components during the task, and greater than for the OMP component. These results indicate a structured change. This realignment was possible, given that WMP was on the intrinsic manifold.",
             sourceLabel: "(Busch et al., 2026)",
             contextItemId: 22,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 3);
+    assert.lengthOf(finalized.quoteCitations, 3);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [2, 2, 2],
     );
   });
 
-  it("repairs ellipsized paper blockquotes when extracted fragment order differs", function () {
+  it("keeps ellipsized cards in displayed order when extraction order differs", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> Multi-voxel fMRI patterns were extracted during this task ... These patterns were then embedded into a low-dimensional manifold using the T-PHATE algorithm. ... T-PHATE learns a lower dimensional manifold for each participant.",
@@ -1023,20 +1008,25 @@ describe("quoteCitations", function () {
               "T-PHATE learns a lower dimensional manifold for each participant. Figure 1 caption text follows later in the extracted PDF stream. Multi-voxel fMRI patterns were extracted during this task from a network of brain regions implicated in spatial navigation. These patterns were then embedded into a low-dimensional manifold using the T-PHATE algorithm.",
             sourceLabel: "(Busch et al., 2026)",
             contextItemId: 22,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 3);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [
+        "Multi-voxel fMRI patterns were extracted during this task",
+        "These patterns were then embedded into a low-dimensional manifold using the T-PHATE algorithm.",
+        "T-PHATE learns a lower dimensional manifold for each participant.",
+      ],
     );
   });
 
-  it("repairs ellipsized paper blockquotes across hyphenation differences", function () {
+  it("splits page-bounded ellipsized cards across hyphenation differences", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> The encoder learned a nonlinear mapping ... projected the embedded data onto C_OMP.",
@@ -1047,17 +1037,15 @@ describe("quoteCitations", function () {
               "The encoder learned a non-linear mapping from brain activity to the manifold. We then projected the embedded data onto C-OMP.",
             sourceLabel: "(Busch et al., 2026)",
             contextItemId: 22,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
-    );
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.lengthOf(finalized.quoteCitations, 2);
   });
 
   it("keeps ambiguous ellipsized quotes unanchored", function () {
@@ -1099,7 +1087,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, "> BCI learning");
   });
 
-  it("strips supplementary table labels from quote tails before matching", function () {
+  it("fails closed instead of stripping an unmatched supplementary-table tail", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> ...successful learning occurred without explicit awareness and using highly idiosyncratic mental strategies across participants (Supplementary Table 1).",
@@ -1115,21 +1103,16 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.notInclude(
-      finalized.quoteCitations[0].quoteText,
-      "Supplementary Table",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
     const exported = replaceQuoteCitationPlaceholdersForMarkdown(
       finalized.markdown,
       finalized.quoteCitations,
     );
-    assert.notInclude(exported, "Supplementary Table");
-    assert.include(exported, "(Busch et al., 2026)");
+    assert.include(exported, "Supplementary Table 1");
   });
 
-  it("strips figure caption labels from quote tails before matching", function () {
+  it("fails closed instead of stripping an unmatched figure-caption tail", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> T-PHATE embeddings of fMRI data show the correspondence between brain activity and the video game arena environment. (Fig. 1b caption)",
@@ -1145,15 +1128,13 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.notInclude(finalized.quoteCitations[0].quoteText, "Fig. 1b");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
     const exported = replaceQuoteCitationPlaceholdersForMarkdown(
       finalized.markdown,
       finalized.quoteCitations,
     );
-    assert.include(exported, "(Busch et al., 2026)");
-    assert.notInclude(exported, "Fig. 1b caption");
+    assert.include(exported, "Fig. 1b caption");
   });
 
   it("finalizes same-line citation commentary by splitting the citation label", function () {
@@ -1575,7 +1556,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, "(Smith et al., 2024)");
   });
 
-  it("trusts clean model quotes from PDF page text without degrading display text", function () {
+  it("stores the completely verified displayed quote despite PDF hyphenation", function () {
     const cleanQuote =
       "Although this learning rule only explicitly stabilizes zSt for the observed stimulus set S, which does not include the target stimulus x*, we find that the SNR of the readout is very stable.";
     const damagedPdfText =
@@ -1590,6 +1571,7 @@ describe("quoteCitations", function () {
             contextItemId: 3629,
             itemId: 3630,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 4,
           },
         ],
       }),
@@ -1597,7 +1579,9 @@ describe("quoteCitations", function () {
 
     assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
     assert.lengthOf(finalized.quoteCitations, 1);
+    assert.isUndefined(finalized.quoteCitations[0].displayQuoteText);
     assert.equal(finalized.quoteCitations[0].quoteText, cleanQuote);
+    assert.equal(finalized.quoteCitations[0].sourceMatchText, cleanQuote);
     assert.equal(
       finalized.quoteCitations[0].citationLabel,
       "(Zaid and Schaffer, 2026)",
@@ -1671,6 +1655,7 @@ describe("quoteCitations", function () {
             contextItemId: 22,
             itemId: 11,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 3,
             chunkKind: "body",
           },
         ],
@@ -1708,7 +1693,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, `> ${quote}`);
   });
 
-  it("preserves source punctuation when normalizing quote spans", function () {
+  it("preserves displayed typography after verifying the complete source span", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> The model's accuracy dropped sharply.\n\n(Smith et al., 2024)",
@@ -1726,8 +1711,13 @@ describe("quoteCitations", function () {
     assert.lengthOf(finalized.quoteCitations, 1);
     assert.equal(
       finalized.quoteCitations[0].quoteText,
-      "The model’s accuracy dropped sharply!",
+      "The model's accuracy dropped sharply.",
     );
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchText,
+      "The model's accuracy dropped sharply.",
+    );
+    assert.isUndefined(finalized.quoteCitations[0].displayQuoteText);
   });
 
   it("repairs normalized math and hyphenation blockquotes without truncating display text", function () {
@@ -1754,6 +1744,7 @@ describe("quoteCitations", function () {
             contextItemId: 220,
             itemId: 20,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -1769,12 +1760,13 @@ describe("quoteCitations", function () {
       finalized.quoteCitations[0].sourceMatchKind,
       "normalized-span",
     );
-    assert.notEqual(finalized.quoteCitations[0].quoteText, displayQuote);
-    assert.include(
-      finalized.quoteCitations[0].quoteText,
-      "dropped with the number of sessions intervening between train and test sessions",
+    assert.equal(
+      finalized.quoteCitations[0].displayQuoteText,
+      `"${displayQuote}"`,
     );
-    assert.equal(finalized.quoteCitations[0].displayQuoteText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].quoteText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].sourceMatchText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 2);
 
     const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
       finalized.markdown,
@@ -1790,7 +1782,7 @@ describe("quoteCitations", function () {
     assert.notInclude(rendered, "the model’s goodness-of-fit, measured by");
   });
 
-  it("keeps model math markdown as display text when PDF text verifies a quote", function () {
+  it("fails closed when model math cannot be completely aligned to PDF text", function () {
     const displayQuote =
       "Recall that the readout weights $w$ are proportional to $y_{*0}^\\top y_0$ through Hebbian plasticity.";
     const sourceQuote =
@@ -1805,26 +1797,15 @@ describe("quoteCitations", function () {
             contextItemId: 3629,
             itemId: 3630,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 4,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.notEqual(finalized.quoteCitations[0].quoteText, displayQuote);
-    assert.include(finalized.quoteCitations[0].quoteText, "y*0");
-    assert.equal(finalized.quoteCitations[0].displayQuoteText, displayQuote);
-    assert.equal(
-      finalized.quoteCitations[0].sourceMatchSource,
-      "pdf-page-text",
-    );
-
-    const display = replaceQuoteCitationPlaceholdersForMarkdown(
-      finalized.markdown,
-      finalized.quoteCitations,
-    );
-
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
+    const display = finalized.markdown;
     assert.include(display, displayQuote);
     assert.notInclude(display, "y*0|\\mathbf");
 
@@ -1849,6 +1830,8 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+            sourceFingerprint: "pdfjs:eppler-display-test",
           },
         ],
       }),
@@ -2074,6 +2057,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2087,7 +2071,7 @@ describe("quoteCitations", function () {
     assert.lengthOf(finalized.quoteCitations, 0);
   });
 
-  it("turns a unique partial source match into an ordinary quote", function () {
+  it("fails closed instead of trusting a unique partial PDF match", function () {
     const sourceSentence =
       "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
     const quote = `${sourceSentence} This interpretation was added by the model and is not source wording.`;
@@ -2101,6 +2085,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2109,15 +2094,12 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.equal(
-      finalized.quoteCitations[0]?.citationLabel,
-      "(Eppler et al., 2026)",
-    );
-    assert.equal(finalized.quoteCitations[0]?.displayQuoteText, quote);
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
+    assert.include(finalized.markdown, "not source wording");
   });
 
-  it("keeps a paper match while omitting an ambiguous page", function () {
+  it("fails closed when the complete quote appears on multiple PDF pages", function () {
     const quote = "The same source sentence appears on two pages of one paper.";
     const finalized = finalizeAssistantQuoteCitations({
       markdown: `> ${quote}`,
@@ -2148,16 +2130,11 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.equal(
-      finalized.quoteCitations[0]?.citationLabel,
-      "(Example et al., 2026)",
-    );
-    assert.isUndefined(finalized.quoteCitations[0]?.pageHintIndex);
-    assert.isUndefined(finalized.quoteCitations[0]?.pageHintLabel);
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
   });
 
-  it("keeps a page when repeated matches stay on that one page", function () {
+  it("fails closed when the complete quote repeats on one page without an occurrence", function () {
     const quote = "The same source sentence repeats on one identifiable page.";
     const finalized = finalizeAssistantQuoteCitations({
       markdown: `> ${quote}`,
@@ -2182,9 +2159,8 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.equal(finalized.quoteCitations[0]?.pageHintIndex, 4);
-    assert.equal(finalized.quoteCitations[0]?.pageHintLabel, "5");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
   });
 
   it("verifies full-span source wording in the quote gate", function () {
@@ -2200,6 +2176,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2226,6 +2203,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 71,
             itemId: 70,
+            pageHintIndex: 1,
           },
           {
             sourceText: `Results. ${quote} The next sentence follows.`,
@@ -2233,6 +2211,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2263,6 +2242,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2278,7 +2258,7 @@ describe("quoteCitations", function () {
     );
   });
 
-  it("accepts unique substantive segments around explicit ellipses", function () {
+  it("splits exact ellipsis segments and rejects an invented segment", function () {
     const first =
       "Representational geometry remained stable across repeated recording sessions";
     const second =
@@ -2291,6 +2271,7 @@ describe("quoteCitations", function () {
           sourceMatchSource: "pdf-page-text",
           contextItemId: 81,
           itemId: 80,
+          pageHintIndex: 2,
         },
       ],
     });
@@ -2316,9 +2297,18 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.match(ordered.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.match(reordered.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.match(inventedShortSegment.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(countOccurrences(ordered.markdown, "[[quote:"), 2);
+    assert.deepEqual(
+      ordered.quoteCitations.map((citation) => citation.quoteText),
+      [`${first},`, `${second}.`],
+    );
+    assert.equal(countOccurrences(reordered.markdown, "[[quote:"), 2);
+    assert.deepEqual(
+      reordered.quoteCitations.map((citation) => citation.quoteText),
+      [`${second}.`, `${first},`],
+    );
+    assert.notInclude(inventedShortSegment.markdown, "[[quote:");
+    assert.isEmpty(inventedShortSegment.quoteCitations);
   });
 
   it("accepts line-wrap hyphenation as full-span normalization", function () {
@@ -2335,6 +2325,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2362,6 +2353,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 71,
             itemId: 70,
+            pageHintIndex: 1,
           },
           {
             sourceText: quote,
@@ -2369,6 +2361,7 @@ describe("quoteCitations", function () {
             sourceMatchSource: "pdf-page-text",
             contextItemId: 81,
             itemId: 80,
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -2652,5 +2645,235 @@ describe("quoteCitations", function () {
     assert.lengthOf(extracted, 1);
     assert.equal(extracted[0].id, citation!.id);
     assert.equal(extracted[0].citationLabel, "(Patel, 2026)");
+  });
+
+  it("binds an author-labelled same-line anchor to the exact displayed quote instead of its retrieval chunk", function () {
+    const visibleQuote =
+      "Consistently, pattern identity remained perfectly decodable from population activity throughout the drift period. Together, these results show that local predictive plasticity generates drifting but organized assemblies.";
+    const retrievalChunk = [
+      "Earlier retrieval context that must never become the navigation query.",
+      visibleQuote,
+      "Later retrieval context that must never become the navigation query either.",
+    ].join(" ");
+    const evidence = buildQuoteCitation({
+      quoteText: retrievalChunk,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+      itemId: 3618,
+    });
+    assert.isDefined(evidence);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${visibleQuote}\n> (Asabuki and Clopath) [[quote:${evidence!.id}]]`,
+      quoteCitations: [evidence!],
+      sourceIndex: buildQuoteSourceIndex({
+        quoteCitations: [evidence!],
+        sourceTexts: [
+          {
+            sourceText: retrievalChunk,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+          },
+          {
+            sourceText: visibleQuote,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfjs:asabuki-test",
+            pageHintIndex: 5,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].quoteText, visibleQuote);
+    assert.equal(finalized.quoteCitations[0].sourceMatchText, visibleQuote);
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 5);
+    assert.equal(
+      finalized.quoteCitations[0].sourceFingerprint,
+      "pdfjs:asabuki-test",
+    );
+    assert.notInclude(
+      finalized.quoteCitations[0].quoteText,
+      "Earlier retrieval context",
+    );
+  });
+
+  it("repairs row 604 to one complete page-bounded source span including the omitted figure locator", function () {
+    const visibleQuote =
+      "Neurons undergoing a preference change showed a stereotyped transition in net E/I drive. The net drive associated with the previously preferred pattern was dominant before the change but declined and dropped sharply around reassignment. Concurrently, the net drive associated with the newly preferred pattern began rising before the change and became dominant afterward.";
+    const pageSource = [
+      "151 Neurons undergoing a preference change showed a stereotyped transition in net E/I drive.",
+      "152 The net drive associated with the previously preferred pattern was dominant before the",
+      "153 change but declined and dropped sharply around reassignment. Concurrently, the net drive",
+      "154 associated with the newly preferred pattern began rising before the change and became",
+      "155 dominant afterward (Fig. 3B).",
+    ].join("\n");
+    const retrievalChunk = [
+      "Earlier retrieval text that is evidence only.",
+      pageSource,
+      "Later retrieval text that is evidence only.",
+    ].join("\n");
+    const evidence = buildQuoteCitation({
+      id: "Q_1f7prrm",
+      quoteText: retrievalChunk,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+      itemId: 3618,
+    });
+    assert.isDefined(evidence);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${visibleQuote}\n> (Asabuki and Clopath) [[quote:${evidence!.id}]]`,
+      quoteCitations: [evidence!],
+      sourceIndex: buildQuoteSourceIndex({
+        quoteCitations: [evidence!],
+        sourceTexts: [
+          {
+            sourceText: pageSource,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            itemId: 3618,
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfjs:asabuki-row-604",
+            pageHintIndex: 5,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    const citation = finalized.quoteCitations[0];
+    assert.equal(citation.displayQuoteText, visibleQuote);
+    assert.equal(citation.pageHintIndex, 5);
+    assert.equal(citation.contextItemId, 3617);
+    assert.equal(citation.sourceFingerprint, "pdfjs:asabuki-row-604");
+    assert.match(citation.quoteText, /^Neurons undergoing/);
+    assert.notMatch(citation.quoteText, /(?:^|\n)\s*15[2-5]\b/);
+    assert.include(citation.quoteText, "The net drive");
+    assert.match(citation.quoteText, /\(Fig\. 3B\)\.$/);
+    assert.match(citation.sourceMatchText || "", /\(Fig\. 3B\)\.$/);
+    assert.notInclude(citation.quoteText, "Earlier retrieval text");
+    assert.notInclude(citation.quoteText, "Later retrieval text");
+  });
+
+  it("fails closed when the complete displayed quote is ambiguous on its PDF page", function () {
+    const quote =
+      "The complete displayed source quote is repeated verbatim and therefore needs an occurrence.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n> (Repeated, 2026) [[quote:Q_evidence]]`,
+      quoteCitations: [
+        buildQuoteCitation({
+          id: "Q_evidence",
+          quoteText: `${quote}\nIntervening text.\n${quote}`,
+          citationLabel: "(Repeated, 2026)",
+          contextItemId: 77,
+        })!,
+      ],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `${quote}\nIntervening text.\n${quote}`,
+            sourceLabel: "(Repeated, 2026)",
+            contextItemId: 77,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+    });
+
+    assert.isEmpty(finalized.quoteCitations);
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, quote);
+  });
+
+  it("splits an ellipsized displayed quote into separate page-bounded quote cards", function () {
+    const first =
+      "The first complete source sentence establishes the old assembly representation before reassignment.";
+    const second =
+      "The second complete source sentence establishes the new assembly representation after reassignment.";
+    const evidence = buildQuoteCitation({
+      id: "Q_cross_page_ellipsis",
+      quoteText: `${first} Omitted source material. ${second}`,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+    })!;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ... ${second}\n> (Asabuki and Clopath) [[quote:${evidence.id}]]`,
+      quoteCitations: [evidence],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: first,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+          },
+          {
+            sourceText: second,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 6,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 2);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [first, second],
+    );
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [5, 6],
+    );
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+  });
+
+  it("splits a genuinely cross-page quote at complete sentence boundaries", function () {
+    const first =
+      "The prior assembly drive declined sharply around neuronal reassignment.";
+    const second =
+      "The newly preferred assembly drive rose before the change and dominated afterward.";
+    const evidence = buildQuoteCitation({
+      id: "Q_cross_page_sentences",
+      quoteText: `${first} ${second}`,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+    })!;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ${second}\n> (Asabuki and Clopath) [[quote:${evidence.id}]]`,
+      quoteCitations: [evidence],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: first,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+          },
+          {
+            sourceText: second,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 6,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 2);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [5, 6],
+    );
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
   });
 });

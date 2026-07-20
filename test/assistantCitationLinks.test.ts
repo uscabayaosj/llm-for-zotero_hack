@@ -4,7 +4,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   clearCachedCitationPagesForTests,
-  classifyBackgroundQuoteVerificationForTests,
   collectAssistantCitationCandidates,
   decorateAssistantCitationLinks,
   extractInlineCitationMentions,
@@ -17,14 +16,12 @@ import {
   isPdfBackedCitationCandidateForTests,
   lookupCachedCitationPageForContextIdsForTests,
   lookupCachedCitationPage,
-  markQuoteCardUnverifiedAfterNavigationFailureForTests,
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
   refreshAllCitationButtonPagesForTests,
   resolveQuoteCitationPageHintForTests,
   resolveAutoNavigableCitationCandidatesForTests,
   resolveAuthoritativeNonPdfCitationCandidateForTests,
-  shouldMarkQuoteCardUnverifiedAfterNavigationForTests,
   INLINE_CITATION_SKIP_SELECTOR,
   type AssistantCitationPaperCandidate,
 } from "../src/modules/contextPanel/assistantCitationLinks";
@@ -755,93 +752,7 @@ describe("assistantCitationLinks", function () {
     }
   });
 
-  it("turns any quote card that cannot jump amber and removes its citation control", function () {
-    const removedAttributes: string[] = [];
-    const removedClasses: string[] = [];
-    let citationRemoved = false;
-    const citation = {
-      parentNode: {
-        removeChild(node: unknown) {
-          citationRemoved = node === citation;
-        },
-      },
-    };
-    const card = {
-      dataset: {
-        quoteStatus: "verified",
-        expanded: "false",
-        quoteCitationId: "Q_test",
-      } as Record<string, string>,
-      classList: {
-        remove(className: string) {
-          removedClasses.push(className);
-        },
-      },
-      querySelector(selector: string) {
-        if (selector === ".llm-quote-card-content") {
-          return {
-            removeAttribute(attribute: string) {
-              removedAttributes.push(attribute);
-            },
-          };
-        }
-        if (selector === ".llm-quote-card-citation") return citation;
-        return null;
-      },
-    };
-    const button = {
-      closest: () => card,
-    } as unknown as HTMLButtonElement;
-
-    assert.isTrue(
-      markQuoteCardUnverifiedAfterNavigationFailureForTests(button),
-    );
-    assert.equal(card.dataset.quoteStatus, "unverified");
-    assert.equal(card.dataset.expanded, "true");
-    assert.equal(card.dataset.quoteCitationId, "Q_test");
-    assert.deepEqual(removedClasses, ["llm-quote-citation-anchor"]);
-    assert.sameMembers(removedAttributes, [
-      "role",
-      "tabindex",
-      "aria-expanded",
-    ]);
-    assert.isTrue(citationRemoved);
-  });
-
-  it("leaves ordinary inline citations unchanged when no quote card exists", function () {
-    const button = {
-      closest: () => null,
-    } as unknown as HTMLButtonElement;
-
-    assert.isFalse(
-      markQuoteCardUnverifiedAfterNavigationFailureForTests(button),
-    );
-  });
-
-  it("downgrades a quote only when its completed jump did not succeed", function () {
-    assert.isTrue(
-      shouldMarkQuoteCardUnverifiedAfterNavigationForTests({
-        hasQuoteText: true,
-        quoteJumpSucceeded: false,
-      }),
-    );
-    assert.isFalse(
-      shouldMarkQuoteCardUnverifiedAfterNavigationForTests({
-        hasQuoteText: true,
-        quoteJumpSucceeded: true,
-      }),
-      "a successful FindController jump must keep the verified quote card",
-    );
-    assert.isFalse(
-      shouldMarkQuoteCardUnverifiedAfterNavigationForTests({
-        hasQuoteText: false,
-        quoteJumpSucceeded: false,
-      }),
-      "ordinary inline citations are not quote cards",
-    );
-  });
-
-  it("downgrades terminal PDF.js-unavailable quote navigation instead of exempting it", function () {
+  it("keeps navigation failures separate from quote provenance", function () {
     const source = readFileSync(
       resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
       "utf8",
@@ -857,66 +768,20 @@ describe("assistantCitationLinks", function () {
 
     assert.isAtLeast(navigationStart, 0);
     assert.isAbove(navigationEnd, navigationStart);
+    assert.include(navigationSource, "The citation was preserved");
     assert.include(
       navigationSource,
-      "shouldMarkQuoteCardUnverifiedAfterNavigation({",
+      "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
     );
-    assert.include(
-      navigationSource,
-      "markQuoteCardUnverifiedAfterNavigationFailure(params.button)",
-    );
-    assert.notInclude(navigationSource, "transientLocateFailureSeen");
-    assert.notInclude(navigationSource, "shouldMarkQuoteUnverifiedAfterSearch");
+    assert.include(navigationSource, "hasQuoteText && !quoteJumpSucceeded");
+    assert.include(navigationSource, "params.body.dispatchEvent");
+    assert.notInclude(navigationSource, "quoteStatus");
+    assert.notInclude(navigationSource, "removeChild(citation)");
+    assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
+    assert.notInclude(source, "shouldMarkQuoteCardUnverifiedAfterNavigation");
   });
 
-  it("classifies background quote verification without requiring FindController", function () {
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "trusted-quote",
-        statuses: ["resolved", "not-found"],
-      }),
-      "searchable",
-    );
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "trusted-quote",
-        statuses: ["not-found"],
-      }),
-      "unsearchable",
-    );
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "trusted-quote",
-        statuses: ["unavailable"],
-      }),
-      "deferred",
-    );
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "untrusted-quote",
-        statuses: ["resolved", "not-found"],
-      }),
-      "searchable",
-    );
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "untrusted-quote",
-        statuses: ["resolved", "resolved"],
-      }),
-      "unsearchable",
-      "a plain Markdown quote cannot bind to two PDFs",
-    );
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "untrusted-quote",
-        statuses: ["resolved", "unavailable"],
-      }),
-      "deferred",
-      "a second unresolved PDF must not cause premature attribution",
-    );
-  });
-
-  it("keeps a trusted quote verified when it occurs twice on one PDF page", function () {
+  it("keeps repeated source text a navigation ambiguity, not a provenance downgrade", function () {
     const quote =
       "A sufficiently long genuine source quotation repeated verbatim.";
     const located = locateQuoteInPageTexts(
@@ -928,72 +793,17 @@ describe("assistantCitationLinks", function () {
     assert.equal(located.status, "ambiguous");
     assert.equal(located.totalMatches, 2);
     assert.deepEqual(located.matchedPageIndexes, [0]);
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "trusted-quote",
-        statuses: [located.status],
-      }),
-      "searchable",
-      "multiple locations affect navigation, not the trusted quote's provenance",
-    );
-    assert.equal(
-      classifyBackgroundQuoteVerificationForTests({
-        mode: "untrusted-quote",
-        statuses: [located.status],
-      }),
-      "unsearchable",
-      "an untrusted Markdown quote must still resolve uniquely",
-    );
   });
 
-  it("schedules background verification for rendered trusted and plain-Markdown quote cards", function () {
+  it("has no renderer-owned quote verification or retry loop", function () {
     const source = readFileSync(
       resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
       "utf8",
     );
-    const schedulerStart = source.indexOf(
-      "function startBackgroundQuoteCardVerification",
-    );
-    const schedulerEnd = source.indexOf(
-      "function cancelBackgroundQuoteCardVerification",
-      schedulerStart,
-    );
-    const schedulerSource = source.slice(schedulerStart, schedulerEnd);
-    const verifierStart = source.indexOf(
-      "async function verifyQuoteCardSearchabilityInBackground",
-    );
-    const verifierEnd = source.indexOf(
-      "const BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS",
-      verifierStart,
-    );
-    const verifierSource = source.slice(verifierStart, verifierEnd);
-    const renderStart = source.indexOf(
-      "export function decorateAssistantCitationLinks",
-    );
-    const renderSource = source.slice(renderStart);
-
-    assert.isAtLeast(schedulerStart, 0);
-    assert.isAbove(schedulerEnd, schedulerStart);
-    assert.include(schedulerSource, "verifyQuoteCardSearchabilityInBackground");
-    assert.include(
-      schedulerSource,
-      "markQuoteCardUnverifiedAfterNavigationFailure(button)",
-    );
-    assert.include(
-      schedulerSource,
-      "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS",
-    );
-    assert.notInclude(verifierSource, "scrollToExactQuoteInReader");
-    assert.notInclude(verifierSource, "searchFindControllerForQuery");
-    assert.include(
-      source,
-      "cancelBackgroundQuoteCardVerification(params.button)",
-    );
-    assert.isAtLeast(
-      renderSource.split("startBackgroundQuoteCardVerification({").length - 1,
-      2,
-      "both trusted and plain-Markdown render paths must verify in background",
-    );
+    assert.notInclude(source, "startBackgroundQuoteCardVerification");
+    assert.notInclude(source, "verifyQuoteCardSearchabilityInBackground");
+    assert.notInclude(source, "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS");
+    assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
   });
 
   it("does not render source-less fallback quote cards for unresolved blockquotes", function () {
@@ -2104,10 +1914,7 @@ describe("assistantCitationLinks", function () {
       assert.include(source, "resolveCandidatesForCitationNavigation");
       assert.include(source, "skipFindController: true");
       assert.include(source, "matchedCandidates.length > 1");
-      assert.include(
-        source,
-        "quote could not be resolved to a unique explicit PDF",
-      );
+      assert.include(source, "quote matched more than one explicit PDF");
       assert.include(source, "preferRawCitationLabel");
       assert.include(source, "preferRawCitationLabel: true");
     });

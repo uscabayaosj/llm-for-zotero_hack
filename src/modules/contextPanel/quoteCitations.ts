@@ -1066,6 +1066,8 @@ export function mergeQuoteCitations(
 export type QuoteSourceText = {
   text?: unknown;
   sourceText?: unknown;
+  /** Precomputed index from the attachment page-text cache. */
+  textIndex?: QuoteTextIndex;
   citationLabel?: unknown;
   sourceLabel?: unknown;
   metadataTexts?: unknown;
@@ -1375,14 +1377,24 @@ export function buildQuoteSourceIndex(params: {
     });
   }
   for (const source of sourceTexts) {
-    const sourceText = normalizeMultilineText(source.sourceText || source.text);
+    const normalizedSourceText = normalizeMultilineText(
+      source.sourceText || source.text,
+    );
+    const reusableTextIndex =
+      source.textIndex &&
+      (source.textIndex.sourceText === normalizedSourceText ||
+        normalizeMultilineText(source.textIndex.sourceText) ===
+          normalizedSourceText)
+        ? source.textIndex
+        : undefined;
+    const sourceText = reusableTextIndex?.sourceText || normalizedSourceText;
     const citationLabel = normalizeCitationLabel(
       source.sourceLabel || source.citationLabel,
     );
     if (!sourceText || !citationLabel) continue;
     pushSource({
       sourceText,
-      textIndex: buildQuoteTextIndex(sourceText),
+      textIndex: reusableTextIndex || buildQuoteTextIndex(sourceText),
       citationLabel,
       origin: "source-text",
       sourceMatchSource: normalizeQuoteMatchSource(source.sourceMatchSource),
@@ -1915,17 +1927,16 @@ function resolveExactDisplayedQuoteCitationsWithLabelFallback(params: {
   return resolveDisplayedQuoteCitations(params);
 }
 
-function hasAnyDisplayedQuoteSourceOverlap(params: {
+function hasTrustedDisplayedQuoteSourceOverlap(params: {
   quoteText: string;
   sourceIndex: QuoteSourceIndex;
 }): boolean {
-  return Boolean(
-    findDisplayedQuoteAnchorMatch({
-      quoteText: params.quoteText,
-      sourceIndex: params.sourceIndex,
-      requireUnique: false,
-    }),
-  );
+  const resolved = findDisplayedQuoteAnchorMatch({
+    quoteText: params.quoteText,
+    sourceIndex: params.sourceIndex,
+    requireUnique: false,
+  });
+  return Boolean(resolved && isTrustedPartialQuoteAnchor(resolved.match));
 }
 
 function isHighConfidenceNonSourceQuote(params: {
@@ -1941,7 +1952,7 @@ function isHighConfidenceNonSourceQuote(params: {
   ) {
     return false;
   }
-  return !hasAnyDisplayedQuoteSourceOverlap({
+  return !hasTrustedDisplayedQuoteSourceOverlap({
     quoteText: params.quoteText,
     sourceIndex: params.sourceIndex,
   });
@@ -1967,7 +1978,7 @@ export function classifyDisplayedQuoteSource(params: {
     return { kind: "defer" };
   }
   if (
-    hasAnyDisplayedQuoteSourceOverlap({
+    hasTrustedDisplayedQuoteSourceOverlap({
       quoteText,
       sourceIndex: params.sourceIndex,
     })
@@ -2302,7 +2313,7 @@ function cleanupEmptyCitationParentheticals(markdown: string): string {
     .replace(/\n{3,}/g, "\n\n");
 }
 
-export function finalizeAssistantQuoteCitations(params: {
+export type AssistantQuoteCitationFinalizationParams = {
   markdown: string;
   quoteCitations?: QuoteCitation[] | undefined | null;
   sourceIndex?: QuoteSourceIndex | undefined | null;
@@ -2312,7 +2323,16 @@ export function finalizeAssistantQuoteCitations(params: {
   quoteSourceReview?: {
     sourceEvidenceComplete: boolean;
   };
-}): { markdown: string; quoteCitations: QuoteCitation[] } {
+};
+
+export type AssistantQuoteCitationFinalizationResult = {
+  markdown: string;
+  quoteCitations: QuoteCitation[];
+};
+
+function* finalizeAssistantQuoteCitationSteps(
+  params: AssistantQuoteCitationFinalizationParams,
+): Generator<void, AssistantQuoteCitationFinalizationResult, void> {
   const sourceIndex =
     params.sourceIndex ||
     buildQuoteSourceIndex({ quoteCitations: params.quoteCitations });
@@ -2365,6 +2385,9 @@ export function finalizeAssistantQuoteCitations(params: {
   const out: string[] = [];
   let inFence = false;
   for (let index = 0; index < lines.length; index += 1) {
+    // The cooperative UI path advances this generator within a bounded slice.
+    // A step covers at most one ordinary line or one complete blockquote.
+    yield;
     const line = lines[index];
     if (FENCED_CODE_PATTERN.test(line)) {
       inFence = !inFence;
@@ -2680,6 +2703,52 @@ export function finalizeAssistantQuoteCitations(params: {
       finalizedSourceIndex.metadataTexts,
     ),
   };
+}
+
+export function finalizeAssistantQuoteCitations(
+  params: AssistantQuoteCitationFinalizationParams,
+): AssistantQuoteCitationFinalizationResult {
+  const steps = finalizeAssistantQuoteCitationSteps(params);
+  while (true) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+const COOPERATIVE_QUOTE_VALIDATION_SLICE_MS = 6;
+
+function quoteValidationNow(): number {
+  return typeof globalThis.performance?.now === "function"
+    ? globalThis.performance.now()
+    : Date.now();
+}
+
+export async function finalizeAssistantQuoteCitationsCooperatively(
+  params: AssistantQuoteCitationFinalizationParams,
+  options: {
+    yieldToMain: () => Promise<void>;
+    shouldContinue?: () => boolean;
+    now?: () => number;
+    onSliceComplete?: (elapsedMs: number) => void;
+  },
+): Promise<AssistantQuoteCitationFinalizationResult | null> {
+  const steps = finalizeAssistantQuoteCitationSteps(params);
+  const now = options.now || quoteValidationNow;
+  let sliceStartedAt = now();
+  while (true) {
+    if (options.shouldContinue?.() === false) return null;
+    const step = steps.next();
+    const elapsedMs = now() - sliceStartedAt;
+    if (step.done) {
+      options.onSliceComplete?.(elapsedMs);
+      return step.value;
+    }
+    if (elapsedMs >= COOPERATIVE_QUOTE_VALIDATION_SLICE_MS) {
+      options.onSliceComplete?.(elapsedMs);
+      await options.yieldToMain();
+      sliceStartedAt = now();
+    }
+  }
 }
 
 export function buildQuoteAnchorPromptBlock(

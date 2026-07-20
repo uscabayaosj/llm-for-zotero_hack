@@ -43,6 +43,10 @@ import {
   resolveStreamingScrollFollowAction,
 } from "./scrollFollowPolicy";
 import { resizeTextareaToContent } from "./textareaSizing";
+import {
+  noteQuoteValidationUserActivity,
+  QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
+} from "./quoteValidationActivity";
 import { createContextIcon } from "./contextIcons";
 import {
   selectedModelCache,
@@ -171,6 +175,7 @@ import {
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
+  scheduleConversationQuoteRevalidation,
   type EditLatestTurnMarker,
 } from "./chat";
 import { getWorkflowTestSendInterceptor } from "./workflowTestHooks";
@@ -1352,6 +1357,16 @@ export function setupHandlers(
 
   // Compute conversation key early so all closures can reference it.
   let conversationKey = item ? getConversationKey(item) : null;
+  const handleQuoteProvenanceRevalidationRequest = () => {
+    const activeConversationKey = item ? getConversationKey(item) : null;
+    if (activeConversationKey) {
+      scheduleConversationQuoteRevalidation(activeConversationKey);
+    }
+  };
+  body.addEventListener(
+    QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
+    handleQuoteProvenanceRevalidationRequest,
+  );
   const getTextContextConversationKey = (): number | null =>
     item ? getConversationKey(item) : null;
   const syncConversationIdentity = () => {
@@ -1712,6 +1727,7 @@ export function setupHandlers(
 
   if (item && chatBox) {
     const handleStreamingFollowWheel = (event: WheelEvent) => {
+      noteQuoteValidationUserActivity();
       if (!item || !chatBox) return;
       if (!isCurrentConversationStreaming()) return;
       if (event.deltaY < 0) {
@@ -1789,6 +1805,11 @@ export function setupHandlers(
   // Capture scroll before click/focus interactions that may trigger a panel
   // re-render, so restore uses the most recent user position.
   body.addEventListener("pointerdown", persistCurrentChatScrollSnapshot, true);
+  body.addEventListener(
+    "pointerdown",
+    () => noteQuoteValidationUserActivity(),
+    true,
+  );
   // NOTE: We intentionally do NOT persist on "focusin" because focusin fires
   // AFTER focus() has already caused a potential scroll adjustment in Gecko.
   // Persisting at that point overwrites the correct pre-interaction snapshot
@@ -6345,6 +6366,7 @@ export function setupHandlers(
     });
 
     inputBox.addEventListener("input", () => {
+      noteQuoteValidationUserActivity(500);
       persistDraftInputForCurrentConversation();
       schedulePaperPickerSearch();
       scheduleActionPickerTrigger();
@@ -7629,6 +7651,10 @@ export function setupHandlers(
     disconnectObserverCleanup = null;
     cleanupPrefObservers?.();
     cleanupMineruPaperSourceObservers?.();
+    body.removeEventListener(
+      QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
+      handleQuoteProvenanceRevalidationRequest,
+    );
     unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
     activeContextPanelStateSync.delete(body);

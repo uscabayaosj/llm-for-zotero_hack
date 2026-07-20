@@ -19,12 +19,13 @@ import {
   verifyQuoteLocationForAttachment,
   warmPageTextCacheForAttachment,
   warmQuoteLocationCacheForAttachment,
+  waitForFindControllerPageMatchesForTests,
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
 
 function installPdfWorkerStub(
   handler: (
     itemId: number,
-  ) => Promise<{ text: string; pageChars: number[] } | null>,
+  ) => Promise<{ text: string; pageChars?: number[] } | null>,
 ): () => void {
   const originalZotero = (globalThis as any).Zotero;
   const originalZtoolkit = (globalThis as any).ztoolkit;
@@ -578,6 +579,50 @@ describe("citation page cache warming", function () {
     }
   });
 
+  it("falls back to the active full PDF.js viewer when PDFWorker omits page boundaries", async function () {
+    clearPageTextCache();
+    const restore = installPdfWorkerStub(async () => ({
+      text: "The worker returned complete text without page boundary metadata.",
+    }));
+    const reader = {
+      _item: { id: 3097 },
+      itemID: 3097,
+      _window: {
+        PDFViewerApplication: {
+          pdfDocument: {
+            numPages: 2,
+            fingerprints: ["eppler-background-viewer"],
+            getPage: async (pageNumber: number) => ({
+              getTextContent: async () => ({
+                items: [
+                  {
+                    str:
+                      pageNumber === 1
+                        ? "The first live viewer page is searchable."
+                        : "The second live viewer page is also searchable.",
+                  },
+                ],
+              }),
+            }),
+          },
+          pdfViewer: { pageLabels: ["1", "2"] },
+        },
+      },
+    };
+
+    try {
+      const cached = await warmPageTextCacheForAttachment(3097, { reader });
+
+      assert.equal(cached?.coverage, "full-viewer");
+      assert.equal(cached?.pageCount, 2);
+      assert.lengthOf(cached?.pages || [], 2);
+      assert.equal(cached?.sourceFingerprint, "pdfjs:eppler-background-viewer");
+      assert.isTrue(hasCompleteSearchablePageTextForAttachment(3097));
+    } finally {
+      restore();
+    }
+  });
+
   it("dedupes repeated attachment warm calls while a PDFWorker read is pending", async function () {
     clearPageTextCache();
     let release!: () => void;
@@ -601,6 +646,51 @@ describe("citation page cache warming", function () {
       await Promise.all([first, second]);
       assert.equal(calls, 1);
     } finally {
+      restore();
+    }
+  });
+
+  it("cooperatively indexes a 500-page attachment and reuses the warm index", async function () {
+    clearPageTextCache();
+    const pageTexts = Array.from(
+      { length: 500 },
+      (_value, index) =>
+        `Page ${index + 1} contains distinct searchable provenance evidence for the stress test.`,
+    );
+    let calls = 0;
+    let yields = 0;
+    const restore = installPdfWorkerStub(async () => {
+      calls += 1;
+      return {
+        text: pageTexts.join(""),
+        pageChars: pageTexts.map((page) => page.length),
+      };
+    });
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => {
+      now += 9;
+      return now;
+    };
+
+    try {
+      const first = await warmPageTextCacheForAttachment(7500, {
+        yieldToMain: async () => {
+          yields += 1;
+        },
+      });
+      const second = await warmPageTextCacheForAttachment(7500, {
+        yieldToMain: async () => {
+          yields += 1;
+        },
+      });
+
+      assert.equal(first?.pages.length, 500);
+      assert.strictEqual(second, first);
+      assert.equal(calls, 1);
+      assert.isAtLeast(yields, 100);
+    } finally {
+      Date.now = originalNow;
       restore();
     }
   });
@@ -665,9 +755,10 @@ describe("citation page cache warming", function () {
   });
 
   it("evicts page-text entries when the total text budget is exceeded", async function () {
+    this.timeout(10_000);
     clearPageTextCache();
     const calls: number[] = [];
-    const largeText = "A".repeat(4_100_000);
+    const largeText = "A".repeat(4_300_000);
     const restore = installPdfWorkerStub(async (itemId) => {
       calls.push(itemId);
       const text = `${largeText}${itemId}`;
@@ -1167,11 +1258,16 @@ describe("page-native scrollToExactQuoteInReader", function () {
     matchesQuery?: (query: string) => boolean;
     previousQuery?: string;
     delayedAcceptanceMs?: number;
+    delayedResultsMs?: number;
+    resultPageIndex?: number;
+    ignoreFindAgain?: boolean;
     fingerprint?: string;
   }): {
     reader: any;
     dispatched: Array<{ type: string; query: string }>;
     findController: any;
+    getListenerCount: () => number;
+    setDelayedResultsMs: (delayMs: number | undefined) => void;
   } {
     const dispatched: Array<{ type: string; query: string }> = [];
     const matchCount = params.matchCount ?? 1;
@@ -1187,6 +1283,11 @@ describe("page-native scrollToExactQuoteInReader", function () {
       matchesCount: { total: 0 },
       selected: { pageIdx: 0, matchIdx: 0 },
     };
+    const listeners = new Map<string, Set<() => void>>();
+    const emit = (eventName: string): void => {
+      for (const listener of listeners.get(eventName) || []) listener();
+    };
+    let delayedResultsMs = params.delayedResultsMs;
     const applySearch = (query: string): void => {
       findController._rawQuery = query;
       findController._state = {
@@ -1194,23 +1295,46 @@ describe("page-native scrollToExactQuoteInReader", function () {
         query,
       };
       findController.pageMatches = params.pageItems.map(() => []);
+      findController.matchesCount = { total: 0 };
+      findController._pendingFindMatches = new Set([0]);
+      findController._pagesToSearch = params.pageItems.length;
       const shouldMatch =
         params.matchesQuery?.(query) ?? params.shouldMatch !== false;
-      if (shouldMatch && query !== params.previousQuery) {
-        findController.pageMatches[params.targetPageIndex] = Array.from(
-          { length: matchCount },
-          (_value, index) => index,
-        );
-        findController.matchesCount = { total: matchCount };
-        findController.selected = {
-          pageIdx: params.targetPageIndex,
-          matchIdx: 0,
-        };
+      const finishSearch = (): void => {
+        if (findController._rawQuery !== query) return;
+        const resultPageIndex =
+          params.resultPageIndex ?? params.targetPageIndex;
+        if (shouldMatch && query !== params.previousQuery) {
+          findController.pageMatches[resultPageIndex] = Array.from(
+            { length: matchCount },
+            (_value, index) => index,
+          );
+          findController.matchesCount = { total: matchCount };
+          findController.selected = {
+            pageIdx: resultPageIndex,
+            matchIdx: 0,
+          };
+        }
+        findController._pendingFindMatches = new Set();
+        findController._pagesToSearch = 0;
+        emit("updatefindmatchescount");
+        emit("updatefindcontrolstate");
+      };
+      if (delayedResultsMs !== undefined) {
+        setTimeout(finishSearch, delayedResultsMs);
       } else {
-        findController.matchesCount = { total: 0 };
+        finishSearch();
       }
     };
     const eventBus = {
+      _on: (eventName: string, listener: () => void) => {
+        const registered = listeners.get(eventName) || new Set<() => void>();
+        registered.add(listener);
+        listeners.set(eventName, registered);
+      },
+      _off: (eventName: string, listener: () => void) => {
+        listeners.get(eventName)?.delete(listener);
+      },
       dispatch: (
         _eventName: string,
         state: { query?: string; type?: string },
@@ -1219,6 +1343,7 @@ describe("page-native scrollToExactQuoteInReader", function () {
         const query = String(state.query || findController._rawQuery || "");
         dispatched.push({ type, query });
         if (type === "again") {
+          if (params.ignoreFindAgain) return;
           findController.selected = {
             pageIdx: params.targetPageIndex,
             matchIdx:
@@ -1287,8 +1412,72 @@ describe("page-native scrollToExactQuoteInReader", function () {
       },
       dispatched,
       findController,
+      getListenerCount: () =>
+        Array.from(listeners.values()).reduce(
+          (total, registered) => total + registered.size,
+          0,
+        ),
+      setDelayedResultsMs: (delayMs) => {
+        delayedResultsMs = delayMs;
+      },
     };
   }
+
+  it("lets a positive final FindController snapshot win at the deadline", async function () {
+    const query = "A final positive controller snapshot remains monotonic.";
+    let pageMatchReads = 0;
+    const listeners = new Map<string, Set<() => void>>();
+    const findController = {
+      _rawQuery: query,
+      _state: { query },
+      matchesCount: { total: 0 },
+      _pendingFindMatches: new Set([0]),
+      _pagesToSearch: 1,
+      selected: { pageIdx: 0, matchIdx: 0 },
+      get pageMatches() {
+        pageMatchReads += 1;
+        return pageMatchReads >= 3 ? [[0]] : [[]];
+      },
+    };
+    const eventBus = {
+      _on: (eventName: string, listener: () => void) => {
+        const registered = listeners.get(eventName) || new Set<() => void>();
+        registered.add(listener);
+        listeners.set(eventName, registered);
+      },
+      _off: (eventName: string, listener: () => void) => {
+        listeners.get(eventName)?.delete(listener);
+      },
+    };
+
+    const result = await waitForFindControllerPageMatchesForTests({
+      findController,
+      eventBus,
+      pagesCount: 1,
+      expectedQuery: query,
+      previousSnapshot: {
+        matchCount: 0,
+        pageMatches: [[]],
+        pageMatchesLength: 1,
+        query,
+        selectedPageIndex: 0,
+        selectedMatchIndex: 0,
+      },
+      acceptanceMs: 0,
+      hardDeadlineAt: 0,
+    });
+
+    assert.equal(result.completion, "found");
+    assert.equal(result.totalMatches, 1);
+    assert.deepEqual(result.matchedPageIndexes, [0]);
+    assert.equal(
+      Array.from(listeners.values()).reduce(
+        (total, registered) => total + registered.size,
+        0,
+      ),
+      0,
+    );
+  });
 
   it("reconstructs one literal page-native query including manuscript line numbers", function () {
     const quote =
@@ -1743,6 +1932,7 @@ describe("page-native scrollToExactQuoteInReader", function () {
       ),
     );
     assert.equal(fixture.findController._rawQuery, previousQuery);
+    assert.equal(fixture.getListenerCount(), 0);
   });
 
   it("accepts delayed find-field handling without dispatching a fallback search", async function () {
@@ -1761,6 +1951,100 @@ describe("page-native scrollToExactQuoteInReader", function () {
     assert.isTrue(result.matched);
     assert.isEmpty(fixture.dispatched);
     assert.equal(fixture.findController._rawQuery, quote);
+  });
+
+  it("keeps a FindController match that arrives after the former 2.5-second deadline", async function () {
+    this.timeout(6_000);
+    const quote =
+      "The page-nine quote is discovered by FindController after its old fixed deadline.";
+    const fixture = createExactFindControllerReader({
+      pageItems: [[{ str: quote }]],
+      targetPageIndex: 0,
+      delayedResultsMs: 2_650,
+    });
+
+    const startedAt = Date.now();
+    const result = await scrollToExactQuoteInReader(fixture.reader, quote, {
+      expectedPageIndex: 0,
+    });
+
+    assert.isAtLeast(Date.now() - startedAt, 2_500);
+    assert.isTrue(result.matched);
+    assert.equal(result.matchStatus, "found");
+    assert.equal(result.navigationStatus, "paragraph-selected");
+    assert.equal(fixture.getListenerCount(), 0);
+  });
+
+  it("cancels a superseded citation click without restoring stale search state", async function () {
+    const firstQuote =
+      "The first citation search is superseded while its native results are still pending.";
+    const secondQuote =
+      "The second citation search becomes the only active native FindController query.";
+    const fixture = createExactFindControllerReader({
+      pageItems: [[{ str: `${firstQuote} ${secondQuote}` }]],
+      targetPageIndex: 0,
+      delayedResultsMs: 350,
+    });
+
+    const first = scrollToExactQuoteInReader(fixture.reader, firstQuote, {
+      expectedPageIndex: 0,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    fixture.setDelayedResultsMs(undefined);
+    const second = await scrollToExactQuoteInReader(
+      fixture.reader,
+      secondQuote,
+      { expectedPageIndex: 0 },
+    );
+    const superseded = await first;
+
+    assert.isTrue(second.matched);
+    assert.equal(second.navigationStatus, "paragraph-selected");
+    assert.isFalse(superseded.matched);
+    assert.equal(superseded.matchStatus, "deferred");
+    assert.equal(superseded.failureStage, "cancelled");
+    assert.equal(fixture.findController._rawQuery, secondQuote);
+    assert.equal(fixture.getListenerCount(), 0);
+  });
+
+  it("keeps a discovered quote successful when paragraph occurrence selection fails", async function () {
+    const quote =
+      "The repeated source quote remains verified even when native occurrence selection fails.";
+    const fixture = createExactFindControllerReader({
+      pageItems: [[{ str: `${quote}\nIntervening text.\n${quote}` }]],
+      targetPageIndex: 0,
+      matchCount: 2,
+      ignoreFindAgain: true,
+    });
+
+    const result = await scrollToExactQuoteInReader(fixture.reader, quote, {
+      expectedPageIndex: 0,
+      sourceMatchPageOccurrence: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchStatus, "found");
+    assert.equal(result.navigationStatus, "page-only");
+    assert.equal(result.failureStage, "intended-match-not-selected");
+  });
+
+  it("accepts a positive match on a different page without revoking success", async function () {
+    const quote =
+      "The source-backed quote can move pages within the same verified attachment.";
+    const fixture = createExactFindControllerReader({
+      pageItems: [[{ str: quote }], [{ str: quote }]],
+      targetPageIndex: 0,
+      resultPageIndex: 1,
+    });
+
+    const result = await scrollToExactQuoteInReader(fixture.reader, quote, {
+      expectedPageIndex: 0,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchStatus, "found");
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.navigationStatus, "paragraph-selected");
   });
 
   it("fails before search when the PDF.js fingerprint does not match", async function () {

@@ -68,7 +68,10 @@ export type ExactQuoteJumpQueryAttempt = {
 };
 
 export type ExactQuoteJumpResult = {
+  /** Backward-compatible alias for `matchStatus === "found"`. */
   matched: boolean;
+  matchStatus: "found" | "not-found" | "deferred";
+  navigationStatus: "paragraph-selected" | "page-only" | "none";
   reason: string;
   failureStage?:
     | "find-controller-unavailable"
@@ -78,7 +81,8 @@ export type ExactQuoteJumpResult = {
     | "query-not-accepted"
     | "full-match-not-found"
     | "intended-match-not-selected"
-    | "deadline-exceeded";
+    | "deadline-exceeded"
+    | "cancelled";
   expectedPageIndex: number | null;
   matchedPageIndex?: number;
   queryUsed?: string;
@@ -95,6 +99,11 @@ type FindControllerSearchResult = {
   selectedPageIndex: number | null;
   selectedMatchIndex: number | null;
   acceptanceMs: number;
+  completion: "found" | "complete" | "deferred";
+  /** Whether PDF.js reported terminal results for the whole document. */
+  resultsComplete: boolean;
+  completionReason?: "inactivity" | "absolute-deadline" | "cancelled";
+  snapshotCount: number;
 };
 
 type LocatePageTextOptions = {
@@ -1149,16 +1158,23 @@ export type HiddenQuoteLocationCacheEntry = {
 
 const MAX_PAGE_TEXT_CACHE_ENTRIES = 50;
 const PAGE_TEXT_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
-const FIND_CONTROLLER_NAVIGATION_DEADLINE_MS = 2500;
-const MAX_PAGE_TEXT_CACHE_CHARS = 8_000_000;
+const FIND_CONTROLLER_INACTIVITY_DEADLINE_MS = 10_000;
+const FIND_CONTROLLER_ABSOLUTE_DEADLINE_MS = 30_000;
+const FIND_CONTROLLER_SELECTION_DEADLINE_MS = 5_000;
+const FIND_CONTROLLER_ACCEPTANCE_TIMEOUT_MS = 1_500;
+const FIND_CONTROLLER_ACCEPTANCE_POLL_MS = 100;
+const FIND_CONTROLLER_ACTIVE_POLL_MS = 100;
+const FIND_CONTROLLER_ACCEPTED_POLL_MS = 500;
+const MAX_PAGE_TEXT_CACHE_ESTIMATED_BYTES = 32 * 1024 * 1024;
 const MAX_HIDDEN_QUOTE_LOCATION_CACHE_ENTRIES = 1000;
+const MAX_COOPERATIVE_PAGE_TEXT_CHARS = 50_000;
 
 type CachedPageTextRecord = {
   index: CachedPageTextIndex;
   createdAt: number;
   lastAccessedAt: number;
   lastAccessedOrder: number;
-  textChars: number;
+  estimatedBytes: number;
 };
 
 type HiddenQuoteLocationCacheRecord = {
@@ -1185,6 +1201,31 @@ let anonymousReaderKeys = new WeakMap<object, string>();
 let anonymousReaderKeySequence = 0;
 let pageTextCacheGeneration = 0;
 let cacheAccessSequence = 0;
+const findControllerNavigationGenerations = new WeakMap<object, number>();
+
+function getNavigationGenerationKey(reader: any): object | null {
+  const app = getPdfViewerApplication(reader);
+  const candidate = app?.findController || app || reader;
+  const type = typeof candidate;
+  return type === "object" || type === "function"
+    ? (candidate as object)
+    : null;
+}
+
+function beginFindControllerNavigationAttempt(reader: any): {
+  generation: number;
+  isCurrent: () => boolean;
+} {
+  const key = getNavigationGenerationKey(reader);
+  if (!key) return { generation: 0, isCurrent: () => true };
+  const generation = (findControllerNavigationGenerations.get(key) || 0) + 1;
+  findControllerNavigationGenerations.set(key, generation);
+  return {
+    generation,
+    isCurrent: () =>
+      findControllerNavigationGenerations.get(key) === generation,
+  };
+}
 
 function normalizePageTextCacheKey(value: unknown): string | null {
   const key = sanitizeText(String(value || "")).trim();
@@ -1272,12 +1313,14 @@ function storeCachedPageTextIndex(
 ): void {
   const currentTime = Date.now();
   evictExpiredPageTextCacheRecords(currentTime);
+  const estimatedBytes = estimateCachedPageTextBytes(index);
+  if (estimatedBytes > MAX_PAGE_TEXT_CACHE_ESTIMATED_BYTES) return;
   const record: CachedPageTextRecord = {
     index,
     createdAt: currentTime,
     lastAccessedAt: currentTime,
     lastAccessedOrder: nextCacheAccessOrder(),
-    textChars: estimateCachedPageTextChars(index),
+    estimatedBytes,
   };
   for (const key of keys) {
     pageTextCacheByKey.set(key, record);
@@ -1317,13 +1360,15 @@ function clearCachedPageTextPromise(
   }
 }
 
-function estimateCachedPageTextChars(index: CachedPageTextIndex): number {
+function estimateCachedPageTextBytes(index: CachedPageTextIndex): number {
   let total = 0;
   for (const page of index.pages) {
-    total += String(page.text || "").length;
+    total += String(page.text || "").length * 2;
   }
   for (const page of index.normalised) {
-    total += String(page.normalizedText || "").length;
+    total += String(page.normalizedText || "").length * 2;
+    // Conservative allowance for token strings, offsets, and object overhead.
+    total += page.textIndex.tokens.length * 48;
   }
   return total;
 }
@@ -1355,8 +1400,8 @@ function evictExpiredPageTextCacheRecords(currentTime: number): void {
   }
 }
 
-function getPageTextCacheTotalChars(records: CachedPageTextRecord[]): number {
-  return records.reduce((total, record) => total + record.textChars, 0);
+function getPageTextCacheTotalBytes(records: CachedPageTextRecord[]): number {
+  return records.reduce((total, record) => total + record.estimatedBytes, 0);
 }
 
 function findLeastRecentlyUsedPageTextRecord(
@@ -1374,16 +1419,16 @@ function findLeastRecentlyUsedPageTextRecord(
 function enforcePageTextCacheLimits(currentTime: number): void {
   evictExpiredPageTextCacheRecords(currentTime);
   let records = getUniquePageTextCacheRecords();
-  let totalChars = getPageTextCacheTotalChars(records);
+  let totalBytes = getPageTextCacheTotalBytes(records);
   while (
     records.length > MAX_PAGE_TEXT_CACHE_ENTRIES ||
-    (records.length > 1 && totalChars > MAX_PAGE_TEXT_CACHE_CHARS)
+    totalBytes > MAX_PAGE_TEXT_CACHE_ESTIMATED_BYTES
   ) {
     const oldest = findLeastRecentlyUsedPageTextRecord(records);
     if (!oldest) return;
     deletePageTextCacheRecord(oldest);
     records = getUniquePageTextCacheRecords();
-    totalChars = getPageTextCacheTotalChars(records);
+    totalBytes = getPageTextCacheTotalBytes(records);
   }
 }
 
@@ -1417,6 +1462,56 @@ function buildCachedPageTextIndex(
     coverage,
     pageCount: normalizedPageCount,
     sourceFingerprint: resolvedSourceFingerprint,
+  };
+}
+
+async function buildCachedPageTextIndexCooperatively(
+  pages: LivePdfPageText[],
+  coverage: PageTextCacheCoverage,
+  pageCount: number | undefined,
+  sourceFingerprint: string | undefined,
+  options: {
+    yieldToMain: () => Promise<void>;
+    shouldContinue?: () => boolean;
+  },
+): Promise<CachedPageTextIndex | null> {
+  const normalised: CachedPageTextIndex["normalised"] = [];
+  const pageFingerprintParts: string[] = [];
+  let sliceStartedAt = Date.now();
+  for (const page of pages) {
+    if (options.shouldContinue?.() === false) return null;
+    if (String(page.text || "").length > MAX_COOPERATIVE_PAGE_TEXT_CHARS) {
+      // A single pathological page cannot be normalized cooperatively by the
+      // current tokenizer. Defer provenance instead of blocking the Zotero UI.
+      return null;
+    }
+    const textIndex = buildQuoteTextIndex(page.text);
+    normalised.push({
+      pageIndex: page.pageIndex,
+      pageLabel: page.pageLabel,
+      normalizedText: textIndex.canonicalText,
+      textIndex,
+    });
+    pageFingerprintParts.push(
+      `${page.pageIndex}:${hashFindControllerQuery(page.text)}`,
+    );
+    if (Date.now() - sliceStartedAt >= 8) {
+      await options.yieldToMain();
+      sliceStartedAt = Date.now();
+    }
+  }
+  const normalizedPageCount =
+    Number.isFinite(pageCount) && Number(pageCount) > 0
+      ? Math.floor(Number(pageCount))
+      : undefined;
+  return {
+    pages,
+    normalised,
+    coverage,
+    pageCount: normalizedPageCount,
+    sourceFingerprint:
+      sourceFingerprint ||
+      `page-text:${hashFindControllerQuery(pageFingerprintParts.join("\u241f"))}`,
   };
 }
 
@@ -1881,10 +1976,19 @@ export async function warmPageTextCache(
 
 export async function warmPageTextCacheForAttachment(
   contextItemId: number,
+  options?: {
+    yieldToMain?: () => Promise<void>;
+    shouldContinue?: () => boolean;
+    reader?: any;
+  },
 ): Promise<CachedPageTextIndex | null> {
   const key = getAttachmentPageTextCacheKey(contextItemId);
   if (!key) return null;
-  const keys = [key];
+  const reader =
+    options?.reader && getReaderItemPageTextCacheKey(options.reader) === key
+      ? options.reader
+      : null;
+  const keys = reader ? getReaderCacheKeys(reader) : [key];
   const cached = getCachedPageTextIndex(keys);
   if (cached) return cached;
   const cachedTask = getCachedPageTextPromise(keys);
@@ -1895,13 +1999,36 @@ export async function warmPageTextCacheForAttachment(
   let task: Promise<CachedPageTextIndex | null> | null = null;
   task = (async () => {
     try {
-      const extracted = await extractPageTextsFromPdfWorkerItemId(itemId);
+      let extracted = await extractPageTextsFromPdfWorkerItemId(itemId);
+      let coverage: PageTextCacheCoverage = "full-pdfworker";
+      let sourceFingerprint: string | undefined;
+      if (!extracted?.pages.length && reader) {
+        extracted = await extractPageTextsFromViewer(reader);
+        coverage = "full-viewer";
+        const fingerprint = getPdfDocumentFingerprint(
+          getPdfViewerApplication(reader),
+        );
+        sourceFingerprint = fingerprint ? `pdfjs:${fingerprint}` : undefined;
+      }
       if (!extracted?.pages.length) return null;
-      const result = buildCachedPageTextIndex(
-        extracted.pages,
-        "full-pdfworker",
-        extracted.pageCount,
-      );
+      const result = options?.yieldToMain
+        ? await buildCachedPageTextIndexCooperatively(
+            extracted.pages,
+            coverage,
+            extracted.pageCount,
+            sourceFingerprint,
+            {
+              yieldToMain: options.yieldToMain,
+              shouldContinue: options.shouldContinue,
+            },
+          )
+        : buildCachedPageTextIndex(
+            extracted.pages,
+            coverage,
+            extracted.pageCount,
+            sourceFingerprint,
+          );
+      if (!result) return null;
       if (generation !== pageTextCacheGeneration) return null;
       storeCachedPageTextIndex(keys, result);
       return result;
@@ -2245,109 +2372,365 @@ async function waitForFindControllerSearchAcceptance(
   findController: any,
   expectedQuery: string,
   snapshot: FindControllerSearchSnapshot,
-  timeoutMs = 320,
+  options?: {
+    eventBus?: any;
+    timeoutMs?: number;
+    hardDeadlineAt?: number;
+    isCancelled?: () => boolean;
+  },
 ): Promise<number | null> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const rawQuery = getFindControllerQuery(findController);
-    if (rawQuery === expectedQuery) {
-      return Date.now() - startedAt;
+  const timeoutAt = Math.min(
+    startedAt +
+      Math.max(
+        FIND_CONTROLLER_ACCEPTANCE_POLL_MS,
+        options?.timeoutMs ?? FIND_CONTROLLER_ACCEPTANCE_TIMEOUT_MS,
+      ),
+    options?.hardDeadlineAt ?? Number.MAX_SAFE_INTEGER,
+  );
+  const progressWaiter = createFindControllerProgressWaiter(options?.eventBus);
+  try {
+    while (true) {
+      const rawQuery = getFindControllerQuery(findController);
+      if (
+        rawQuery === expectedQuery ||
+        (rawQuery === undefined &&
+          didFindControllerSearchStateChange(findController, snapshot))
+      ) {
+        return Date.now() - startedAt;
+      }
+      if (options?.isCancelled?.() || Date.now() >= timeoutAt) return null;
+      await progressWaiter.wait(
+        Math.min(
+          FIND_CONTROLLER_ACCEPTANCE_POLL_MS,
+          Math.max(1, timeoutAt - Date.now()),
+        ),
+      );
     }
-    if (
-      rawQuery === undefined &&
-      didFindControllerSearchStateChange(findController, snapshot)
-    ) {
-      return Date.now() - startedAt;
-    }
-    await delay(20);
+  } finally {
+    progressWaiter.dispose();
   }
+}
 
-  const rawQuery = getFindControllerQuery(findController);
-  return rawQuery === expectedQuery ||
-    (rawQuery === undefined &&
-      didFindControllerSearchStateChange(findController, snapshot))
-    ? Date.now() - startedAt
+type FindControllerProgressWaiter = {
+  wait: (timeoutMs: number) => Promise<void>;
+  dispose: () => void;
+};
+
+function createFindControllerProgressWaiter(
+  eventBus: any,
+): FindControllerProgressWaiter {
+  let pendingResolve: (() => void) | null = null;
+  const eventNames = ["updatefindmatchescount", "updatefindcontrolstate"];
+  const on =
+    typeof eventBus?._on === "function"
+      ? eventBus._on.bind(eventBus)
+      : typeof eventBus?.on === "function"
+        ? eventBus.on.bind(eventBus)
+        : null;
+  const off =
+    typeof eventBus?._off === "function"
+      ? eventBus._off.bind(eventBus)
+      : typeof eventBus?.off === "function"
+        ? eventBus.off.bind(eventBus)
+        : null;
+  const notify = () => {
+    const resolve = pendingResolve;
+    pendingResolve = null;
+    resolve?.();
+  };
+  if (on) {
+    for (const eventName of eventNames) {
+      try {
+        on(eventName, notify);
+      } catch {
+        // Zotero PDF.js versions differ; adaptive polling remains available.
+      }
+    }
+  }
+  return {
+    wait: (timeoutMs: number) =>
+      new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (pendingResolve === finish) pendingResolve = null;
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(finish, Math.max(1, timeoutMs));
+        pendingResolve = finish;
+      }),
+    dispose: () => {
+      notify();
+      if (!off) return;
+      for (const eventName of eventNames) {
+        try {
+          off(eventName, notify);
+        } catch {
+          // Best-effort cleanup for older event-bus implementations.
+        }
+      }
+    },
+  };
+}
+
+function getFindControllerPageMatches(findController: any): unknown[] {
+  const rawMatches = getFindControllerPageMatchesValue(findController);
+  return rawMatches != null && typeof (rawMatches as any).length === "number"
+    ? (rawMatches as unknown[])
+    : [];
+}
+
+function getFindControllerPendingMatchCount(findController: any): number {
+  return typeof findController?._pendingFindMatches?.size === "number"
+    ? Math.max(0, Number(findController._pendingFindMatches.size))
+    : 0;
+}
+
+function getFindControllerPagesToSearch(findController: any): number | null {
+  return Number.isFinite(findController?._pagesToSearch)
+    ? Math.max(0, Number(findController._pagesToSearch))
     : null;
 }
 
-async function waitForFindControllerPageMatches(
-  findController: any,
-  pagesCount: number,
-  expectedQuery: string,
-  timeoutMs = 2000,
-): Promise<unknown[]> {
+function mergeFindControllerResultSnapshot(params: {
+  findController: any;
+  pagesCount: number;
+  expectedQuery: string;
+  previousSnapshot: FindControllerSearchSnapshot;
+  acceptanceMs: number;
+  completion: FindControllerSearchResult["completion"];
+  resultsComplete?: boolean;
+  completionReason?: FindControllerSearchResult["completionReason"];
+  snapshotCount: number;
+  allowUnobservableQuery?: boolean;
+}): FindControllerSearchResult {
+  const pageMatches = getFindControllerPageMatches(params.findController);
+  const currentQuery = getFindControllerQuery(params.findController);
+  const queryConfirmed =
+    currentQuery === params.expectedQuery ||
+    (currentQuery === undefined && params.allowUnobservableQuery === true);
+  // PDF.js replaces pageMatches in place for the newest query. Never attribute
+  // a newer click's positive results to an older, superseded navigation.
+  const summary = queryConfirmed
+    ? summarizeFindControllerMatches(pageMatches)
+    : {
+        matchedPageIndexes: [],
+        totalMatches: 0,
+        pageMatchCounts: [],
+      };
+  const selectedPageIndex = getFindControllerSelectedPageIndex(
+    params.findController,
+  );
+  const selectedMatchIndex = getFindControllerSelectedMatchIndex(
+    params.findController,
+  );
+  const findControllerTotal = getFindControllerMatchCount(
+    params.findController,
+  );
+  const matchStateChanged =
+    findControllerTotal !== params.previousSnapshot.matchCount ||
+    selectedPageIndex !== params.previousSnapshot.selectedPageIndex;
+
+  if (findControllerTotal > summary.totalMatches && queryConfirmed) {
+    summary.totalMatches = findControllerTotal;
+    if (
+      selectedPageIndex !== null &&
+      (matchStateChanged ||
+        params.previousSnapshot.query === params.expectedQuery)
+    ) {
+      if (!summary.matchedPageIndexes.includes(selectedPageIndex)) {
+        summary.matchedPageIndexes.push(selectedPageIndex);
+      }
+      summary.pageMatchCounts[selectedPageIndex] = findControllerTotal;
+    }
+  }
+
+  return {
+    ...summary,
+    pagesCount: params.pagesCount,
+    selectedPageIndex:
+      queryConfirmed &&
+      selectedPageIndex !== null &&
+      (summary.matchedPageIndexes.includes(selectedPageIndex) ||
+        summary.totalMatches > 0)
+        ? selectedPageIndex
+        : null,
+    selectedMatchIndex: queryConfirmed ? selectedMatchIndex : null,
+    acceptanceMs: params.acceptanceMs,
+    completion: params.completion,
+    resultsComplete: params.resultsComplete === true,
+    completionReason: params.completionReason,
+    snapshotCount: params.snapshotCount,
+  };
+}
+
+async function waitForFindControllerPageMatches(params: {
+  findController: any;
+  eventBus?: any;
+  pagesCount: number;
+  expectedQuery: string;
+  previousSnapshot: FindControllerSearchSnapshot;
+  acceptanceMs: number;
+  hardDeadlineAt: number;
+  isCancelled?: () => boolean;
+  requireCompleteResults?: boolean;
+}): Promise<FindControllerSearchResult> {
   const startedAt = Date.now();
-  let latestMatches: unknown[] = [];
+  let lastProgressAt = startedAt;
+  let lastProgressSignature = "";
   let queryConfirmed = false;
   let confirmedFromRawQuery = false;
+  let snapshotCount = 0;
+  const progressWaiter = createFindControllerProgressWaiter(params.eventBus);
 
-  while (Date.now() - startedAt < timeoutMs) {
-    // Verify the FindController is processing our query.
-    // _rawQuery is a private property that may not exist in all PDF.js
-    // forks (e.g. Zotero's bundled version).  When it's undefined we
-    // fall back to a short grace period before reading results.
-    if (!queryConfirmed) {
-      const rawQuery = getFindControllerQuery(findController);
-      if (rawQuery !== undefined && String(rawQuery) === expectedQuery) {
+  try {
+    while (true) {
+      snapshotCount += 1;
+      const rawQuery = getFindControllerQuery(params.findController);
+      if (rawQuery === params.expectedQuery) {
         queryConfirmed = true;
         confirmedFromRawQuery = true;
-      } else if (rawQuery !== undefined) {
-        // _rawQuery exists but holds a different query → wait for ours
-        await delay(25);
-        continue;
-      } else {
-        // _rawQuery is undefined — property doesn't exist in this build.
-        // Allow a brief grace period for the find event to be processed.
-        if (Date.now() - startedAt < 250) {
-          await delay(25);
-          continue;
-        }
+      } else if (
+        rawQuery === undefined &&
+        (didFindControllerSearchStateChange(
+          params.findController,
+          params.previousSnapshot,
+        ) ||
+          Date.now() - startedAt >= FIND_CONTROLLER_ACCEPTANCE_TIMEOUT_MS)
+      ) {
         queryConfirmed = true;
       }
-    }
 
-    // Use an array-like length check instead of Array.isArray so that
-    // cross-realm arrays (created in the PDF viewer's content window) are
-    // correctly recognised in Firefox's privileged extension context.
-    const rawMatches =
-      findController?.pageMatches ?? findController?._pageMatches;
-    const pageMatches: unknown[] =
-      rawMatches != null && typeof (rawMatches as any).length === "number"
-        ? (rawMatches as unknown[])
-        : [];
-    if (pageMatches.length > latestMatches.length) {
-      latestMatches = pageMatches;
-    }
-    const pendingSize =
-      typeof findController?._pendingFindMatches?.size === "number"
-        ? findController._pendingFindMatches.size
-        : 0;
-    const pagesToSearch = Number.isFinite(findController?._pagesToSearch)
-      ? Number(findController._pagesToSearch)
-      : null;
-    const canTrustEmptyCompletion =
-      latestMatches.length > 0 ||
-      confirmedFromRawQuery ||
-      Date.now() - startedAt > 700;
-    if (
-      (pageMatches.length >= pagesCount || pagesToSearch === 0) &&
-      pendingSize === 0 &&
-      canTrustEmptyCompletion
-    ) {
-      return pageMatches;
-    }
+      const pageMatches = getFindControllerPageMatches(params.findController);
+      const summary = summarizeFindControllerMatches(pageMatches);
+      const findControllerTotal = getFindControllerMatchCount(
+        params.findController,
+      );
+      const pendingCount = getFindControllerPendingMatchCount(
+        params.findController,
+      );
+      const pagesToSearch = getFindControllerPagesToSearch(
+        params.findController,
+      );
+      const selectedPageIndex = getFindControllerSelectedPageIndex(
+        params.findController,
+      );
+      const selectedMatchIndex = getFindControllerSelectedMatchIndex(
+        params.findController,
+      );
+      const progressSignature = [
+        rawQuery ?? "<unknown>",
+        pageMatches.length,
+        summary.totalMatches,
+        findControllerTotal,
+        pendingCount,
+        pagesToSearch ?? "<unknown>",
+        selectedPageIndex ?? "<none>",
+        selectedMatchIndex ?? "<none>",
+      ].join("\u241f");
+      if (progressSignature !== lastProgressSignature) {
+        lastProgressSignature = progressSignature;
+        lastProgressAt = Date.now();
+      }
 
-    // Early bail-out: if the FindController has not produced any results
-    // after a longer grace period, the search mechanism is likely non-functional.
-    // Zotero's embedded reader can take noticeably longer than stock PDF.js to
-    // populate pageMatches right after a page navigation.
-    if (Date.now() - startedAt > 1400 && latestMatches.length === 0) {
-      return latestMatches;
+      const snapshot = mergeFindControllerResultSnapshot({
+        findController: params.findController,
+        pagesCount: params.pagesCount,
+        expectedQuery: params.expectedQuery,
+        previousSnapshot: params.previousSnapshot,
+        acceptanceMs: params.acceptanceMs,
+        completion: "found",
+        resultsComplete: false,
+        snapshotCount,
+        allowUnobservableQuery: queryConfirmed,
+      });
+      if (
+        queryConfirmed &&
+        snapshot.totalMatches > 0 &&
+        !params.requireCompleteResults
+      ) {
+        return snapshot;
+      }
+
+      if (params.isCancelled?.() === true) {
+        return {
+          ...snapshot,
+          completion: "deferred",
+          completionReason: "cancelled",
+          resultsComplete: false,
+        };
+      }
+
+      const canTrustEmptyCompletion =
+        confirmedFromRawQuery ||
+        pageMatches.length > 0 ||
+        Date.now() - startedAt >= 700;
+      if (
+        queryConfirmed &&
+        (pageMatches.length >= params.pagesCount || pagesToSearch === 0) &&
+        pendingCount === 0 &&
+        canTrustEmptyCompletion
+      ) {
+        return {
+          ...snapshot,
+          completion: snapshot.totalMatches > 0 ? "found" : "complete",
+          resultsComplete: true,
+        };
+      }
+
+      const cancelled = params.isCancelled?.() === true;
+      const now = Date.now();
+      const absoluteDeadlineReached = now >= params.hardDeadlineAt;
+      const inactivityDeadlineReached =
+        now - lastProgressAt >= FIND_CONTROLLER_INACTIVITY_DEADLINE_MS;
+      if (cancelled || absoluteDeadlineReached || inactivityDeadlineReached) {
+        // This is deliberately the final state read. A match observed here is
+        // success even when it arrived at the deadline boundary.
+        const finalSnapshot = mergeFindControllerResultSnapshot({
+          findController: params.findController,
+          pagesCount: params.pagesCount,
+          expectedQuery: params.expectedQuery,
+          previousSnapshot: params.previousSnapshot,
+          acceptanceMs: params.acceptanceMs,
+          completion: "deferred",
+          resultsComplete: false,
+          completionReason: cancelled
+            ? "cancelled"
+            : absoluteDeadlineReached
+              ? "absolute-deadline"
+              : "inactivity",
+          snapshotCount: snapshotCount + 1,
+          allowUnobservableQuery: queryConfirmed,
+        });
+        if (queryConfirmed && finalSnapshot.totalMatches > 0) {
+          return { ...finalSnapshot, completion: "found" };
+        }
+        return finalSnapshot;
+      }
+
+      await progressWaiter.wait(
+        Math.min(
+          queryConfirmed
+            ? FIND_CONTROLLER_ACCEPTED_POLL_MS
+            : FIND_CONTROLLER_ACTIVE_POLL_MS,
+          Math.max(1, params.hardDeadlineAt - now),
+          Math.max(
+            1,
+            FIND_CONTROLLER_INACTIVITY_DEADLINE_MS - (now - lastProgressAt),
+          ),
+        ),
+      );
     }
-    await delay(50);
+  } finally {
+    progressWaiter.dispose();
   }
-  return latestMatches;
 }
+
+export const waitForFindControllerPageMatchesForTests =
+  waitForFindControllerPageMatches;
 
 function summarizeFindControllerMatches(pageMatches: unknown[]): {
   matchedPageIndexes: number[];
@@ -2375,10 +2758,15 @@ function summarizeFindControllerMatches(pageMatches: unknown[]): {
 async function searchFindControllerForQuery(
   reader: any,
   query: string,
-  options?: { matchTimeoutMs?: number; deadlineAt?: number },
+  options: {
+    hardDeadlineAt: number;
+    isCancelled?: () => boolean;
+    requireCompleteResults?: boolean;
+  },
 ): Promise<FindControllerSearchResult | null> {
   const app = getPdfViewerApplication(reader);
   const findController = app?.findController;
+  const eventBus = app?.eventBus;
   const pagesCount = getPagesCount(app);
   if (!findController || pagesCount < 1) {
     return null;
@@ -2394,9 +2782,6 @@ async function searchFindControllerForQuery(
     findBar?._findField ?? findBar?.findField ?? null;
   const previousSearchSnapshot =
     captureFindControllerSearchSnapshot(findController);
-  const previousQuery = previousSearchSnapshot.query;
-  const previousMatchCount = previousSearchSnapshot.matchCount;
-  const previousSelectedPage = previousSearchSnapshot.selectedPageIndex;
   const dispatchStartedAt = Date.now();
 
   let shouldRunCommandFallback = true;
@@ -2424,6 +2809,11 @@ async function searchFindControllerForQuery(
         findController,
         query,
         previousSearchSnapshot,
+        {
+          eventBus,
+          hardDeadlineAt: options.hardDeadlineAt,
+          isCancelled: options.isCancelled,
+        },
       );
       shouldRunCommandFallback = findFieldAcceptanceMs === null;
       if (findFieldAcceptanceMs !== null) {
@@ -2440,7 +2830,6 @@ async function searchFindControllerForQuery(
   // Fallback: direct eventBus / executeCommand dispatch (may not work in all
   // Zotero builds, but costs nothing to try).
   if (shouldRunCommandFallback) {
-    const eventBus = app?.eventBus;
     if (!eventBus && typeof findController.executeCommand !== "function") {
       return null;
     }
@@ -2476,82 +2865,35 @@ async function searchFindControllerForQuery(
       findController,
       query,
       previousSearchSnapshot,
+      {
+        eventBus,
+        hardDeadlineAt: options.hardDeadlineAt,
+        isCancelled: options.isCancelled,
+      },
     );
     if (commandAcceptanceMs !== null) {
       acceptanceMs = Date.now() - dispatchStartedAt;
     }
   }
 
-  // Wait for the FindController to process and populate results.
-  // Use waitForFindControllerPageMatches first (reads pageMatches array),
-  // then fall back to reading matchesCount (what the find-bar "1/1" uses).
-  const pageMatches = await waitForFindControllerPageMatches(
+  // Wait for PDF.js progress without monopolizing the main thread. Event-bus
+  // notifications wake the observer promptly; bounded adaptive polling covers
+  // Zotero builds that do not expose those events.
+  return waitForFindControllerPageMatches({
     findController,
+    eventBus,
     pagesCount,
-    query,
-    Math.max(
-      50,
-      Math.min(
-        Math.floor(options?.matchTimeoutMs ?? 2000),
-        options?.deadlineAt
-          ? Math.max(50, options.deadlineAt - Date.now())
-          : Number.MAX_SAFE_INTEGER,
-      ),
-    ),
-  );
-  const result = {
-    ...summarizeFindControllerMatches(pageMatches),
-    pagesCount,
-    selectedPageIndex: null as number | null,
-    selectedMatchIndex: null as number | null,
+    expectedQuery: query,
+    previousSnapshot: previousSearchSnapshot,
     acceptanceMs:
       acceptanceMs ??
       (getFindControllerQuery(findController) === query
         ? Date.now() - dispatchStartedAt
         : 0),
-  };
-  const selectedPageAfterSearch =
-    getFindControllerSelectedPageIndex(findController);
-  const currentQueryAfterSearch = getFindControllerQuery(findController);
-  const queryConfirmedAfterSearch = currentQueryAfterSearch === query;
-  if (
-    queryConfirmedAfterSearch &&
-    selectedPageAfterSearch !== null &&
-    result.matchedPageIndexes.includes(selectedPageAfterSearch)
-  ) {
-    result.selectedPageIndex = selectedPageAfterSearch;
-    result.selectedMatchIndex =
-      getFindControllerSelectedMatchIndex(findController);
-  }
-
-  // Fallback: if pageMatches reading returned 0 (cross-realm array issues or
-  // different property name in this PDF.js build), check the FindController's
-  // own matchesCount — this is the same value the find bar uses to show "1/1".
-  if (result.totalMatches === 0) {
-    const fcTotal = getFindControllerMatchCount(findController);
-    if (fcTotal > 0) {
-      const selectedPage = getFindControllerSelectedPageIndex(findController);
-      const currentQuery = getFindControllerQuery(findController);
-      const queryConfirmed = currentQuery === query;
-      const matchStateChanged =
-        fcTotal !== previousMatchCount || selectedPage !== previousSelectedPage;
-      result.totalMatches = fcTotal;
-      if (
-        selectedPage !== null &&
-        queryConfirmed &&
-        (matchStateChanged || previousQuery === query)
-      ) {
-        result.selectedPageIndex = selectedPage;
-        result.selectedMatchIndex =
-          getFindControllerSelectedMatchIndex(findController);
-        result.matchedPageIndexes = [selectedPage];
-        result.pageMatchCounts = [];
-        result.pageMatchCounts[selectedPage] = fcTotal;
-      }
-    }
-  }
-
-  return result;
+    hardDeadlineAt: options.hardDeadlineAt,
+    isCancelled: options.isCancelled,
+    requireCompleteResults: options.requireCompleteResults,
+  });
 }
 
 export type PageNativeFindControllerQuery = {
@@ -2917,26 +3259,34 @@ async function restoreFindControllerUserState(
       previous.selectedPageIndex !== null &&
       previous.selectedMatchIndex !== null
     ) {
+      const restoreDeadlineAt = Date.now() + 800;
       await waitForFindControllerSearchAcceptance(
         findController,
         query,
         restoreSnapshot,
+        {
+          eventBus,
+          timeoutMs: 800,
+          hardDeadlineAt: restoreDeadlineAt,
+        },
       );
-      const pageMatches = await waitForFindControllerPageMatches(
+      const restoredSearch = await waitForFindControllerPageMatches({
         findController,
-        getPagesCount(app),
-        query,
-        800,
-      );
-      const summary = summarizeFindControllerMatches(pageMatches);
+        eventBus,
+        pagesCount: getPagesCount(app),
+        expectedQuery: query,
+        previousSnapshot: restoreSnapshot,
+        acceptanceMs: 0,
+        hardDeadlineAt: restoreDeadlineAt,
+      });
       const pageMatchCount =
-        summary.pageMatchCounts[previous.selectedPageIndex] || 0;
+        restoredSearch.pageMatchCounts[previous.selectedPageIndex] || 0;
       if (pageMatchCount > 0) {
         await selectNativeFindControllerMatch({
           app,
           pageIndex: previous.selectedPageIndex,
           occurrenceIndex: previous.selectedMatchIndex,
-          totalMatches: summary.totalMatches,
+          totalMatches: restoredSearch.totalMatches,
           pageMatchCount,
           deadlineAt: Date.now() + 800,
         });
@@ -3325,7 +3675,8 @@ async function runPageNativeFindControllerJump(
     expectedPageIndex?: number | null;
     sourceFingerprint?: string;
     sourceMatchPageOccurrence?: number;
-    deadlineAt?: number;
+    hardDeadlineAt?: number;
+    isAttemptCurrent?: () => boolean;
     queryRole?: "displayed-quote" | "source-locator";
     normalizationHintText?: string;
     requireUniqueMatch?: boolean;
@@ -3342,13 +3693,9 @@ async function runPageNativeFindControllerJump(
   } = {};
   const ready = await waitForFindControllerReady(reader);
   const readyAt = Date.now();
-  const localDeadlineAt = readyAt + FIND_CONTROLLER_NAVIGATION_DEADLINE_MS;
-  const deadlineAt = Math.min(
-    localDeadlineAt,
-    Number.isFinite(options?.deadlineAt)
-      ? Number(options?.deadlineAt)
-      : localDeadlineAt,
-  );
+  const hardDeadlineAt = Number.isFinite(options?.hardDeadlineAt)
+    ? Number(options?.hardDeadlineAt)
+    : startedAt + FIND_CONTROLLER_ABSOLUTE_DEADLINE_MS;
   const app = ready?.app ?? getPdfViewerApplication(reader);
   const findController = ready?.findController ?? app?.findController;
   const expectedPageIndex =
@@ -3383,6 +3730,9 @@ async function runPageNativeFindControllerJump(
     );
     return {
       matched: false,
+      matchStatus:
+        failureStage === "full-match-not-found" ? "not-found" : "deferred",
+      navigationStatus: "none",
       failureStage,
       reason,
       expectedPageIndex,
@@ -3390,6 +3740,20 @@ async function runPageNativeFindControllerJump(
       debugSummary,
     };
   };
+  const restorePreviousUserStateIfCurrent = async (
+    app: any,
+    previousUserState: ReturnType<typeof captureFindControllerUserState>,
+  ): Promise<void> => {
+    if (options?.isAttemptCurrent?.() === false) return;
+    await restoreFindControllerUserState(app, previousUserState);
+  };
+
+  if (options?.isAttemptCurrent?.() === false) {
+    return failure(
+      "cancelled",
+      "A newer citation navigation replaced this attempt.",
+    );
+  }
 
   if (!app || !findController || !ready?.eventBus) {
     return failure(
@@ -3424,7 +3788,7 @@ async function runPageNativeFindControllerJump(
 
   const pageTextResult = await settleBeforeDeadline(
     extractFindControllerPageText(app, expectedPageIndex),
-    deadlineAt,
+    hardDeadlineAt,
   );
   if (!pageTextResult.completed) {
     return failure(
@@ -3468,13 +3832,14 @@ async function runPageNativeFindControllerJump(
 
   const previousUserState = captureFindControllerUserState(app);
   const diagnostic = findControllerQueryDiagnostic(resolvedQuery.query);
-  const remainingMs = Math.max(50, deadlineAt - Date.now());
   const searchResult = await searchFindControllerForQuery(
     reader,
     resolvedQuery.query,
     {
-      matchTimeoutMs: Math.min(2000, remainingMs),
-      deadlineAt,
+      hardDeadlineAt,
+      isCancelled: () => options?.isAttemptCurrent?.() === false,
+      requireCompleteResults:
+        usedPartialSourceMatch || options?.requireUniqueMatch === true,
     },
   );
   const attempts: ExactQuoteJumpQueryAttempt[] = searchResult
@@ -3488,14 +3853,22 @@ async function runPageNativeFindControllerJump(
     : [];
   findControllerDiagnosticState.acceptanceMs = searchResult?.acceptanceMs;
   findControllerDiagnosticState.matchCount = searchResult?.totalMatches;
-  const debugSummary = [diagnostic];
+  const debugSummary = [
+    diagnostic,
+    ...(searchResult
+      ? [
+          `FindController completion=${searchResult.completion} snapshots=${searchResult.snapshotCount}`,
+        ]
+      : []),
+  ];
   const retryWithDerivedPartialSource =
     async (): Promise<ExactQuoteJumpResult | null> => {
       if (
         !completeQuery ||
         usedPartialSourceMatch ||
         options?.allowDerivedPartialAfterSearchFailure === false ||
-        Date.now() >= deadlineAt
+        Date.now() >= hardDeadlineAt ||
+        options?.isAttemptCurrent?.() === false
       ) {
         return null;
       }
@@ -3519,14 +3892,14 @@ async function runPageNativeFindControllerJump(
           quoteTokenCoverage: fallback.quoteTokenCoverage,
         },
       );
-      await restoreFindControllerUserState(app, previousUserState);
+      await restorePreviousUserStateIfCurrent(app, previousUserState);
       const retried = await runPageNativeFindControllerJump(
         reader,
         fallback.query,
         {
           ...options,
           sourceMatchPageOccurrence: fallback.occurrenceIndex,
-          deadlineAt,
+          hardDeadlineAt,
           queryRole: "source-locator",
           normalizationHintText: options?.normalizationHintText || quoteText,
           requireUniqueMatch: true,
@@ -3546,19 +3919,8 @@ async function runPageNativeFindControllerJump(
         ],
       };
     };
-  if (Date.now() > deadlineAt) {
-    await restoreFindControllerUserState(app, previousUserState);
-    return failure(
-      "deadline-exceeded",
-      "Exact quote navigation exceeded its FindController search deadline.",
-      debugSummary,
-      attempts,
-    );
-  }
   if (!searchResult) {
-    const retried = await retryWithDerivedPartialSource();
-    if (retried) return retried;
-    await restoreFindControllerUserState(app, previousUserState);
+    await restorePreviousUserStateIfCurrent(app, previousUserState);
     return failure(
       "query-not-accepted",
       `FindController could not accept the ${
@@ -3568,53 +3930,93 @@ async function runPageNativeFindControllerJump(
       attempts,
     );
   }
-  if (getFindControllerQuery(findController) !== resolvedQuery.query) {
-    const retried = await retryWithDerivedPartialSource();
-    if (retried) return retried;
-    await restoreFindControllerUserState(app, previousUserState);
+
+  if (searchResult.totalMatches <= 0) {
+    if (searchResult.completion === "complete") {
+      const retried = await retryWithDerivedPartialSource();
+      if (retried) return retried;
+      await restorePreviousUserStateIfCurrent(app, previousUserState);
+      return failure(
+        "full-match-not-found",
+        `FindController completed the full-PDF search and found no ${
+          usedPartialSourceMatch ? "unique partial source" : "complete quote"
+        } match.`,
+        debugSummary,
+        attempts,
+      );
+    }
+    await restorePreviousUserStateIfCurrent(app, previousUserState);
+    const cancelled = searchResult.completionReason === "cancelled";
     return failure(
-      "query-not-accepted",
-      `FindController did not retain the ${
-        usedPartialSourceMatch ? "unique partial source" : "complete quote"
-      } query.`,
-      debugSummary,
-      attempts,
-    );
-  }
-  if (
-    (usedPartialSourceMatch || options?.requireUniqueMatch) &&
-    searchResult.totalMatches !== 1
-  ) {
-    await restoreFindControllerUserState(app, previousUserState);
-    return failure(
-      "full-match-not-found",
-      searchResult.totalMatches > 1
-        ? "The largest partial source span was not unique in the complete PDF."
-        : "FindController did not find the largest partial source span in the complete PDF.",
-      debugSummary,
-      attempts,
-    );
-  }
-  if (
-    searchResult.totalMatches <= 0 ||
-    !searchResult.matchedPageIndexes.includes(expectedPageIndex)
-  ) {
-    const retried = await retryWithDerivedPartialSource();
-    if (retried) return retried;
-    await restoreFindControllerUserState(app, previousUserState);
-    return failure(
-      "full-match-not-found",
-      `FindController found no ${
-        usedPartialSourceMatch ? "unique partial source" : "complete quote"
-      } match on the cited page.`,
+      cancelled ? "cancelled" : "deadline-exceeded",
+      cancelled
+        ? "A newer citation navigation replaced this attempt."
+        : "FindController did not complete the search before its progress-aware deadline.",
       debugSummary,
       attempts,
     );
   }
 
+  const matchedPageIndex = searchResult.matchedPageIndexes.includes(
+    expectedPageIndex,
+  )
+    ? expectedPageIndex
+    : (searchResult.selectedPageIndex ??
+      searchResult.matchedPageIndexes[0] ??
+      expectedPageIndex);
+  const highlightCoverage =
+    options?.highlightCoverage !== undefined
+      ? options.highlightCoverage
+      : partialSourceMatch?.quoteTokenCoverage !== undefined
+        ? partialSourceMatch.quoteTokenCoverage
+        : 1;
+  const foundPageOnly = (
+    reason: string,
+    failureStage?: ExactQuoteJumpResult["failureStage"],
+  ): ExactQuoteJumpResult => ({
+    matched: true,
+    matchStatus: "found",
+    navigationStatus: "page-only",
+    ...(failureStage ? { failureStage } : {}),
+    reason,
+    expectedPageIndex,
+    matchedPageIndex,
+    queryUsed: resolvedQuery.query,
+    highlightCoverage,
+    queries: attempts,
+    debugSummary,
+  });
+
+  if (getFindControllerQuery(findController) !== resolvedQuery.query) {
+    // A positive snapshot is monotonic. A later query change can prevent exact
+    // occurrence selection, but it cannot erase the match already reported by
+    // FindController or revoke quote provenance.
+    return foundPageOnly(
+      `FindController found the quote on page ${matchedPageIndex + 1}, but a newer search replaced the active highlight.`,
+      options?.isAttemptCurrent?.() === false ? "cancelled" : undefined,
+    );
+  }
+  if (options?.isAttemptCurrent?.() === false) {
+    return foundPageOnly(
+      `FindController found the quote on page ${matchedPageIndex + 1} before a newer navigation replaced this attempt.`,
+      "cancelled",
+    );
+  }
+  if (
+    (usedPartialSourceMatch || options?.requireUniqueMatch) &&
+    (!searchResult.resultsComplete || searchResult.totalMatches !== 1)
+  ) {
+    return foundPageOnly(
+      searchResult.resultsComplete
+        ? `FindController found the source locator ${searchResult.totalMatches} times; the quote remains source-backed but no unique paragraph was selected.`
+        : `FindController found the source locator before the full-PDF search completed; the quote remains source-backed but no unique paragraph was selected.`,
+      "intended-match-not-selected",
+    );
+  }
+
   const pageMatchCount =
-    searchResult.pageMatchCounts[expectedPageIndex] ||
-    (searchResult.matchedPageIndexes.length === 1
+    searchResult.pageMatchCounts[matchedPageIndex] ||
+    (searchResult.matchedPageIndexes.length <= 1
       ? searchResult.totalMatches
       : 0);
   const intendedOccurrence =
@@ -3623,25 +4025,16 @@ async function runPageNativeFindControllerJump(
       : (options?.sourceMatchPageOccurrence ?? resolvedQuery.occurrenceIndex);
   const selected = await selectNativeFindControllerMatch({
     app,
-    pageIndex: expectedPageIndex,
+    pageIndex: matchedPageIndex,
     occurrenceIndex: intendedOccurrence,
     totalMatches: searchResult.totalMatches,
     pageMatchCount,
-    deadlineAt,
+    deadlineAt: Date.now() + FIND_CONTROLLER_SELECTION_DEADLINE_MS,
   });
   if (!selected) {
-    const retried = await retryWithDerivedPartialSource();
-    if (retried) return retried;
-    await restoreFindControllerUserState(app, previousUserState);
-    return failure(
-      Date.now() >= deadlineAt
-        ? "deadline-exceeded"
-        : "intended-match-not-selected",
-      Date.now() >= deadlineAt
-        ? "Exact quote navigation exceeded its FindController selection deadline."
-        : "FindController found the quote but could not select its intended occurrence.",
-      debugSummary,
-      attempts,
+    return foundPageOnly(
+      `FindController found the quote on page ${matchedPageIndex + 1}, but could not select its intended occurrence.`,
+      "intended-match-not-selected",
     );
   }
 
@@ -3650,30 +4043,29 @@ async function runPageNativeFindControllerJump(
     queryLength: resolvedQuery.query.length,
     queryHash: hashFindControllerQuery(resolvedQuery.query),
     normalizationResult,
-    pageIndex: expectedPageIndex,
+    pageIndex: matchedPageIndex,
+    expectedPageIndex,
     sourceOccurrence: resolvedQuery.occurrenceIndex,
     queryRole: options?.queryRole || "displayed-quote",
     totalMatches: searchResult.totalMatches,
     acceptanceMs: searchResult.acceptanceMs,
+    searchSnapshots: searchResult.snapshotCount,
     readyElapsedMs: Date.now() - readyAt,
     elapsedMs: Date.now() - startedAt,
   });
   return {
     matched: true,
+    matchStatus: "found",
+    navigationStatus: "paragraph-selected",
     reason: `FindController highlighted the ${
       usedPartialSourceMatch || options?.queryRole === "source-locator"
         ? "largest unique source locator"
         : "complete displayed quote"
-    } on page ${expectedPageIndex + 1}.`,
+    } on page ${matchedPageIndex + 1}.`,
     expectedPageIndex,
-    matchedPageIndex: expectedPageIndex,
+    matchedPageIndex,
     queryUsed: resolvedQuery.query,
-    highlightCoverage:
-      options?.highlightCoverage !== undefined
-        ? options.highlightCoverage
-        : partialSourceMatch?.quoteTokenCoverage !== undefined
-          ? partialSourceMatch.quoteTokenCoverage
-          : 1,
+    highlightCoverage,
     queries: attempts,
     debugSummary,
   };
@@ -3698,6 +4090,7 @@ export async function scrollToExactQuoteInReader(
     fallbackQuoteTexts?: string[];
   },
 ): Promise<ExactQuoteJumpResult> {
+  const navigationStartedAt = Date.now();
   const { fallbackQuoteTexts = [], ...navigationOptions } = options || {};
   const quoteTexts = Array.from(
     new Set(
@@ -3707,7 +4100,9 @@ export async function scrollToExactQuoteInReader(
     ),
   );
   await waitForFindControllerReady(reader);
-  const deadlineAt = Date.now() + FIND_CONTROLLER_NAVIGATION_DEADLINE_MS;
+  const attempt = beginFindControllerNavigationAttempt(reader);
+  const hardDeadlineAt =
+    navigationStartedAt + FIND_CONTROLLER_ABSOLUTE_DEADLINE_MS;
   let lastResult: ExactQuoteJumpResult | null = null;
   for (
     let candidateIndex = 0;
@@ -3717,17 +4112,26 @@ export async function scrollToExactQuoteInReader(
     const candidate = quoteTexts[candidateIndex];
     const result = await runPageNativeFindControllerJump(reader, candidate, {
       ...navigationOptions,
-      deadlineAt,
+      hardDeadlineAt,
+      isAttemptCurrent: attempt.isCurrent,
       queryRole: candidateIndex === 0 ? "displayed-quote" : "source-locator",
       normalizationHintText: quoteTexts[0],
     });
     if (result.matched) return result;
     lastResult = result;
-    if (Date.now() >= deadlineAt) break;
+    if (
+      result.matchStatus === "deferred" ||
+      Date.now() >= hardDeadlineAt ||
+      !attempt.isCurrent()
+    ) {
+      break;
+    }
   }
   return (
     lastResult || {
       matched: false,
+      matchStatus: "deferred",
+      navigationStatus: "none",
       failureStage: "page-text-unavailable",
       reason: "No searchable quote text was provided.",
       expectedPageIndex: null,
@@ -3742,5 +4146,10 @@ export async function scrollToSelectedTextInReader(
   selectedText: string,
   options?: { expectedPageIndex?: number | null },
 ): Promise<ExactQuoteJumpResult> {
-  return runPageNativeFindControllerJump(reader, selectedText, options);
+  const attempt = beginFindControllerNavigationAttempt(reader);
+  return runPageNativeFindControllerJump(reader, selectedText, {
+    ...options,
+    hardDeadlineAt: Date.now() + FIND_CONTROLLER_ABSOLUTE_DEADLINE_MS,
+    isAttemptCurrent: attempt.isCurrent,
+  });
 }

@@ -6,6 +6,7 @@ import {
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
+  finalizeAssistantQuoteCitationsCooperatively,
   findUnresolvedQuoteCitationPlaceholderIds,
   isCanonicalQuoteSourceLabel,
   isNonSourceQuoteLabel,
@@ -17,6 +18,7 @@ import {
   sanitizeInvalidStructuredSourceMarkers,
 } from "../src/modules/contextPanel/quoteCitations";
 import { stripLeadingCitationSeparators } from "../src/modules/contextPanel/citationText";
+import { buildQuoteTextIndex } from "../src/modules/contextPanel/quoteTextNormalization";
 import { renderMarkdown } from "../src/utils/markdown";
 
 describe("quoteCitations", function () {
@@ -24,6 +26,124 @@ describe("quoteCitations", function () {
     if (!needle) return 0;
     return value.split(needle).length - 1;
   }
+
+  it("reuses the immutable page-text index supplied by extraction", function () {
+    const sourceText =
+      "A prepared source index must be reused instead of normalized again for each assistant message.";
+    const textIndex = buildQuoteTextIndex(sourceText);
+
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText,
+          textIndex,
+          sourceLabel: "(Cache et al., 2026)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 22,
+          itemId: 11,
+        },
+      ],
+    });
+
+    assert.lengthOf(sourceIndex.sources, 1);
+    assert.strictEqual(sourceIndex.sources[0].textIndex, textIndex);
+  });
+
+  it("verifies fifty quote cards across a ten-paper source scope cooperatively", async function () {
+    this.timeout(10_000);
+    const sourceTexts = Array.from({ length: 10 }, (_paper, paperIndex) => {
+      const quotes = Array.from(
+        { length: 5 },
+        (_quote, quoteIndex) =>
+          `Paper ${paperIndex + 1} source result ${quoteIndex + 1} reports a distinct longitudinal neural population observation for validation.`,
+      );
+      return {
+        quotes,
+        source: {
+          sourceText: quotes.join(" "),
+          sourceLabel: `(Author${paperIndex + 1} et al., 2026)`,
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 1_000 + paperIndex,
+          itemId: 2_000 + paperIndex,
+          pageHintIndex: 0,
+          sourceFingerprint: `paper-${paperIndex + 1}`,
+        },
+      };
+    });
+    const markdown = sourceTexts
+      .flatMap((entry) => entry.quotes)
+      .map((quote) => `> ${quote}`)
+      .join("\n\n");
+
+    let yields = 0;
+    const sliceDurations: number[] = [];
+    const finalized = await finalizeAssistantQuoteCitationsCooperatively(
+      {
+        markdown,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: sourceTexts.map((entry) => entry.source),
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      },
+      {
+        yieldToMain: async () => {
+          yields += 1;
+        },
+        onSliceComplete: (elapsedMs) => {
+          sliceDurations.push(elapsedMs);
+        },
+      },
+    );
+
+    assert.isNotNull(finalized);
+    assert.equal(countOccurrences(finalized!.markdown, "[[quote:"), 50);
+    assert.lengthOf(finalized!.quoteCitations, 50);
+    assert.notInclude(finalized!.markdown, "Not a source quote");
+    assert.isAtLeast(yields, 5);
+    assert.isBelow(Math.max(...sliceDurations), 50);
+  });
+
+  it("cancels cooperative quote matching before stale results can be returned", async function () {
+    const quote =
+      "A cooperative provenance match must stop when its conversation generation becomes stale.";
+    let current = true;
+    let yields = 0;
+    let now = 0;
+
+    const finalized = await finalizeAssistantQuoteCitationsCooperatively(
+      {
+        markdown: `> ${quote}`,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: [
+            {
+              sourceText: quote,
+              sourceLabel: "(Cancellation et al., 2026)",
+              sourceMatchSource: "pdf-page-text",
+              contextItemId: 31,
+              itemId: 30,
+              pageHintIndex: 0,
+              sourceFingerprint: "cancel-source",
+            },
+          ],
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      },
+      {
+        now: () => {
+          now += 7;
+          return now;
+        },
+        shouldContinue: () => current,
+        yieldToMain: async () => {
+          yields += 1;
+          current = false;
+        },
+      },
+    );
+
+    assert.isNull(finalized);
+    assert.equal(yields, 1);
+  });
 
   it("rejects publication metadata and front-matter boilerplate as quote-worthy text", function () {
     const cases = [
@@ -2193,6 +2313,60 @@ describe("quoteCitations", function () {
 
     assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
     assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("rejects the Eppler paraphrase despite an incidental four-token source overlap", function () {
+    const quote =
+      "Among neuron pairs that begin with roughly similar noise correlation, does noise correlation change more favorably for pairs with high signal correlation than for pairs with low signal correlation?";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The least reduction of noise correlations was observed for pairs with high signal correlations in the first interval.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3097,
+            itemId: 3096,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("defers an ambiguous partial quote when the overlap meets the trusted threshold", function () {
+    const sharedSourceText =
+      "Noise correlations remained stable for neuron pairs with consistently high signal correlations";
+    const quote = `${sharedSourceText} because the model imposed a causal balancing mechanism.`;
+    const markdown = `> ${quote}\n>\n> (Eppler et al., 2026)`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [1, 2].map((pageHintIndex) => ({
+          sourceText: `${sharedSourceText} in this experimental condition.`,
+          sourceLabel: "(Eppler et al., 2026)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 3097,
+          itemId: 3096,
+          pageHintIndex,
+        })),
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
     assert.lengthOf(finalized.quoteCitations, 0);
   });
 

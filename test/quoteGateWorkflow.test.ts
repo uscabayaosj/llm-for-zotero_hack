@@ -2,10 +2,17 @@ import { assert } from "chai";
 import {
   buildAssistantDisplayMarkdownForRender,
   finalizeAssistantMessageQuoteCitationsForTests,
+  getQuoteValidationDecisionCacheStatsForTests,
+  resetQuoteValidationDecisionCacheForTests,
+  scheduleConversationQuoteRevalidation,
   waitForAssistantQuoteValidationForTests,
 } from "../src/modules/contextPanel/chat";
 import { buildQuoteCitation } from "../src/modules/contextPanel/quoteCitations";
 import { clearPageTextCache } from "../src/modules/contextPanel/livePdfSelectionLocator";
+import {
+  beginQuoteNavigationActivity,
+  resetQuoteValidationActivityForTests,
+} from "../src/modules/contextPanel/quoteValidationActivity";
 import {
   chatHistory,
   pdfTextCache,
@@ -19,6 +26,7 @@ import type {
 function installPdfSource(
   contextItemId: number,
   sourceText: string,
+  options: { hasCompletePageBoundaries?: () => boolean } = {},
 ): { getCallCount: () => number; restore: () => void } {
   const originalZotero = globalThis.Zotero;
   const originalZtoolkit = globalThis.ztoolkit;
@@ -40,10 +48,12 @@ function installPdfSource(
     PDFWorker: {
       getFullText: async () => {
         calls += 1;
-        return {
-          text: sourceText,
-          pageChars: [sourceText.length],
-        };
+        return options.hasCompletePageBoundaries?.() === false
+          ? { text: sourceText }
+          : {
+              text: sourceText,
+              pageChars: [sourceText.length],
+            };
       },
     },
   } as typeof Zotero;
@@ -82,6 +92,8 @@ describe("minimal source-match quote gate workflow", function () {
     pdfTextCache.clear();
     pdfTextLoadingTasks.clear();
     clearPageTextCache();
+    resetQuoteValidationDecisionCacheForTests();
+    resetQuoteValidationActivityForTests();
   });
 
   it("keeps a registered Eppler anchor trusted without source I/O", async function () {
@@ -177,6 +189,171 @@ describe("minimal source-match quote gate workflow", function () {
     );
   });
 
+  it("extracts and computes once for repeated quote and source scopes", async function () {
+    resetQuoteValidationDecisionCacheForTests();
+    const quote =
+      "Cached provenance decisions preserve the same verified source wording across a warm reopening.";
+    const source = installPdfSource(contextItemId, `Results. ${quote}`);
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the result.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const first: Message = {
+      role: "assistant",
+      text: `> ${quote}`,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, first]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(first, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    const second: Message = {
+      role: "assistant",
+      text: `> ${quote}`,
+      timestamp: 3,
+    };
+    chatHistory.set(conversationKey, [userMessage, first, second]);
+    finalizeAssistantMessageQuoteCitationsForTests(second, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(source.getCallCount(), 1);
+    const cacheStats = getQuoteValidationDecisionCacheStatsForTests();
+    assert.equal(cacheStats.entries, 1);
+    assert.isAbove(cacheStats.bytes, 0);
+    assert.equal(cacheStats.hits, 1);
+    assert.equal(cacheStats.computations, 1);
+    assert.equal(cacheStats.sourceIndexEntries, 1);
+    assert.isAbove(cacheStats.sourceIndexBytes, 0);
+    assert.equal(cacheStats.sourceIndexHits, 1);
+    assert.equal(cacheStats.sourceIndexBuilds, 1);
+    assert.deepEqual(second.quoteDisplayOverride, first.quoteDisplayOverride);
+  });
+
+  it("reuses one immutable source index for different quotes in the same scope", async function () {
+    resetQuoteValidationDecisionCacheForTests();
+    const firstQuote =
+      "The first source-backed result remains available in the prepared attachment index.";
+    const secondQuote =
+      "The second source-backed result uses that same immutable attachment index.";
+    const source = installPdfSource(
+      contextItemId,
+      `${firstQuote} ${secondQuote}`,
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain both results.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const first: Message = {
+      role: "assistant",
+      text: `> ${firstQuote}`,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, first]);
+    finalizeAssistantMessageQuoteCitationsForTests(first, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    const second: Message = {
+      role: "assistant",
+      text: `> ${secondQuote}`,
+      timestamp: 3,
+    };
+    chatHistory.set(conversationKey, [userMessage, first, second]);
+    finalizeAssistantMessageQuoteCitationsForTests(second, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    const cacheStats = getQuoteValidationDecisionCacheStatsForTests();
+    assert.equal(source.getCallCount(), 1);
+    assert.equal(cacheStats.computations, 2);
+    assert.equal(cacheStats.sourceIndexBuilds, 1);
+    assert.equal(cacheStats.sourceIndexHits, 1);
+  });
+
+  it("lets user citation navigation preempt idle provenance validation", async function () {
+    const quote =
+      "Foreground citation navigation must settle before source validation begins in the background.";
+    const source = installPdfSource(contextItemId, quote);
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the result.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: `> ${quote}`,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+    const endNavigation = beginQuoteNavigationActivity();
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(source.getCallCount(), 0);
+
+    endNavigation();
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+    assert.equal(source.getCallCount(), 1);
+    assert.include(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "[[quote:",
+    );
+  });
+
+  it("cancels a stale conversation generation before extraction or UI mutation", async function () {
+    const quote =
+      "A stale conversation must never receive a provenance display mutation.";
+    const source = installPdfSource(contextItemId, quote);
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the result.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const staleAssistant: Message = {
+      role: "assistant",
+      text: `> ${quote}`,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, staleAssistant]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(staleAssistant, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    chatHistory.set(conversationKey, [
+      userMessage,
+      { role: "assistant", text: "Replacement answer.", timestamp: 3 },
+    ]);
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(source.getCallCount(), 0);
+    assert.isUndefined(staleAssistant.quoteDisplayOverride);
+  });
+
   it("binds the largest unique source span for a partial source match", async function () {
     const sourceSentence =
       "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
@@ -264,6 +441,93 @@ describe("minimal source-match quote gate workflow", function () {
     assert.include(
       buildAssistantDisplayMarkdownForRender(assistantMessage),
       "[[quote-occurrence:",
+    );
+  });
+
+  it("strips the Eppler label after complete evidence leaves only an incidental overlap", async function () {
+    const quote =
+      "Among neuron pairs that begin with roughly similar noise correlation, does noise correlation change more favorably for pairs with high signal correlation than for pairs with low signal correlation?";
+    const raw = `> ${quote}\n>\n> (Eppler et al., 2026)`;
+    const source = installPdfSource(
+      contextItemId,
+      "The least reduction of noise correlations was observed for pairs with high signal correlations in the first interval.",
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the prediction index.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: raw,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(assistantMessage.text, raw);
+    assert.equal(
+      assistantMessage.quoteDisplayOverride?.markdown,
+      `> ${quote}\n>\n> Not a source quote`,
+    );
+    assert.notInclude(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "Eppler",
+    );
+    assert.isUndefined(assistantMessage.quoteDisplayOverride?.quoteCitations);
+  });
+
+  it("revalidates deferred historical quotes after navigation makes the source scope complete", async function () {
+    let pageBoundariesAvailable = false;
+    const quote =
+      "Among neuron pairs that begin with roughly similar noise correlation, does noise correlation change more favorably for pairs with high signal correlation than for pairs with low signal correlation?";
+    const raw = `> ${quote}\n>\n> (Eppler et al., 2026)`;
+    const source = installPdfSource(
+      contextItemId,
+      "The least reduction of noise correlations was observed for pairs with high signal correlations in the first interval.",
+      { hasCompletePageBoundaries: () => pageBoundariesAvailable },
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain the prediction index.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: raw,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.isUndefined(assistantMessage.quoteDisplayOverride);
+    assert.include(assistantMessage.text, "(Eppler et al., 2026)");
+
+    pageBoundariesAvailable = true;
+    scheduleConversationQuoteRevalidation(conversationKey);
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(
+      assistantMessage.quoteDisplayOverride?.markdown,
+      `> ${quote}\n>\n> Not a source quote`,
+    );
+    assert.notInclude(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "Eppler",
     );
   });
 

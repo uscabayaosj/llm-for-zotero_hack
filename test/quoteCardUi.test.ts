@@ -81,7 +81,10 @@ describe("quote card UI contract", function () {
       renderSource,
       'type QuoteCardStatus = "verified" | "unverified" | "not-source"',
     );
-    assert.include(renderSource, 'card.dataset.quoteStatus = "unverified"');
+    assert.notInclude(
+      renderSource,
+      "markQuoteCardUnverifiedAfterNavigationFailure",
+    );
   });
 
   it("keeps the not-source card non-interactive without a visible label", function () {

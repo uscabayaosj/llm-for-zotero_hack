@@ -107,6 +107,23 @@ describe("panelContextLifecycle", function () {
     assert.isAbove(generationAllocation, disposeCall);
   });
 
+  it("cleans up the quote-provenance revalidation listener with panel handlers", function () {
+    const setupSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+
+    assert.include(setupSource, "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT");
+    assert.include(
+      setupSource,
+      "scheduleConversationQuoteRevalidation(activeConversationKey)",
+    );
+    assert.include(
+      setupSource,
+      "body.removeEventListener(\n      QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
+    );
+  });
+
   it("keeps selected-profile lookup callable during early setup refreshes", function () {
     const setupSource = readFileSync(
       resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),

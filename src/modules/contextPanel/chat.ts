@@ -4490,8 +4490,10 @@ function createCodexNativeActivityTraceController(
   const mcpRequestToolItemIds = new Map<string, string>();
   const activatedSkillIds = new Set<string>();
   const progressCoalescers = new Map<string, BlockStreamCoalescer>();
+  const agentMessageItemIds = new Set<string>();
   let seq = 0;
   let lastAgentMessageItemId = "";
+  let agentAnswerStartedAt: number | undefined;
 
   const createEvent = (payload: AgentEvent): AgentRunEventRecord => ({
     runId,
@@ -4536,6 +4538,7 @@ function createCodexNativeActivityTraceController(
     text: string,
     mode: "replace" | "append",
     status: "running" | "completed",
+    kind?: "assistant_message",
   ): boolean => {
     const cleanItemId = sanitizeText(itemId).trim();
     const cleanText = sanitizeText(text);
@@ -4555,8 +4558,10 @@ function createCodexNativeActivityTraceController(
           itemId: cleanItemId,
           text: nextText,
           status,
+          ...(kind || existing.payload.kind
+            ? { kind: kind || existing.payload.kind }
+            : {}),
         },
-        createdAt: Date.now(),
       };
       return true;
     }
@@ -4567,6 +4572,7 @@ function createCodexNativeActivityTraceController(
         itemId: cleanItemId,
         text: cleanText,
         status,
+        ...(kind ? { kind } : {}),
       }),
     );
     return true;
@@ -4577,7 +4583,13 @@ function createCodexNativeActivityTraceController(
     if (coalescer) return coalescer;
     coalescer = createBlockStreamCoalescer({
       onBlock: (block) => {
-        const changed = upsertProgressText(itemId, block, "append", "running");
+        const changed = upsertProgressText(
+          itemId,
+          block,
+          "append",
+          "running",
+          agentMessageItemIds.has(itemId) ? "assistant_message" : undefined,
+        );
         if (changed) sync();
       },
     });
@@ -4958,7 +4970,11 @@ function createCodexNativeActivityTraceController(
     event: CodexNativeTraceItemEvent,
     phase: "started" | "completed",
   ): void => {
-    if (isCodexNativeAgentMessageItem(event)) return;
+    if (isCodexNativeAgentMessageItem(event)) {
+      const itemId = sanitizeText(event.id || "").trim();
+      if (itemId) agentMessageItemIds.add(itemId);
+      return;
+    }
     flushAllProgressCoalescers("event");
     if (appendStructuredOperationStatus(event, phase)) {
       sync();
@@ -5008,6 +5024,19 @@ function createCodexNativeActivityTraceController(
   ): boolean => {
     const itemId = sanitizeText(event.itemId || "").trim();
     if (!itemId) return false;
+    agentAnswerStartedAt ||= Date.now();
+    agentMessageItemIds.add(itemId);
+    if (!progressEventIndexes.has(itemId)) {
+      const changed = upsertProgressText(
+        itemId,
+        event.delta,
+        "append",
+        "running",
+        "assistant_message",
+      );
+      if (changed) sync();
+      return changed;
+    }
     getProgressCoalescer(itemId).pushText(event.delta);
     return true;
   };
@@ -5085,11 +5114,20 @@ function createCodexNativeActivityTraceController(
     if (!isCodexNativeAgentMessageItem(event)) return;
     const itemId = sanitizeText(event.id || "").trim();
     if (!itemId) return;
+    agentMessageItemIds.add(itemId);
     flushProgressCoalescer(itemId, "event");
     lastAgentMessageItemId = itemId;
     const completedText = event.details || event.summary || "";
     if (completedText && !progressEventIndexes.has(itemId)) {
-      if (upsertProgressText(itemId, completedText, "replace", "completed")) {
+      if (
+        upsertProgressText(
+          itemId,
+          completedText,
+          "replace",
+          "completed",
+          "assistant_message",
+        )
+      ) {
         sync();
       }
     }
@@ -5119,7 +5157,15 @@ function createCodexNativeActivityTraceController(
     }
     const alreadyFinal = events.some((entry) => entry.payload.type === "final");
     if (!alreadyFinal) {
-      events.push(createEvent({ type: "final", text: finalText }));
+      events.push(
+        createEvent({
+          type: "final",
+          text: finalText,
+          ...(agentAnswerStartedAt
+            ? { answerStartedAt: agentAnswerStartedAt }
+            : {}),
+        }),
+      );
       changed = true;
     }
     if (changed) sync();

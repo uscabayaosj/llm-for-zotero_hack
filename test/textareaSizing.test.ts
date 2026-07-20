@@ -94,4 +94,38 @@ describe("adaptive composer textarea sizing", function () {
     assert.equal(style.height, "80px");
     assert.equal(style.overflowY, "hidden");
   });
+
+  it("preserves a manually selected textarea height while content changes", function () {
+    const style = {
+      height: "180px",
+      overflowY: "hidden",
+    };
+    const textarea = {
+      dataset: {
+        llmManualHeight: "true",
+      },
+      style,
+      scrollHeight: 240,
+      ownerDocument: {
+        defaultView: {
+          getComputedStyle: () => ({
+            minHeight: "60px",
+            maxHeight: "220px",
+            boxSizing: "border-box",
+            borderTopWidth: "1px",
+            borderBottomWidth: "1px",
+          }),
+        },
+      },
+    } as unknown as HTMLTextAreaElement;
+
+    const result = resizeTextareaToContent(textarea);
+
+    assert.deepEqual(result, {
+      height: 180,
+      overflowY: "auto",
+    });
+    assert.equal(style.height, "180px");
+    assert.equal(style.overflowY, "auto");
+  });
 });

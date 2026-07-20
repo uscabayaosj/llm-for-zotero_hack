@@ -3,6 +3,7 @@ import { describe, it } from "mocha";
 import {
   computeStandaloneManualVerticalResize,
   computeStandaloneContextFitHeight,
+  installStandaloneVerticalResizeBehavior,
   resizeStandaloneWindowToFitElement,
   scheduleStandaloneWindowFitForElement,
 } from "../src/modules/contextPanel/standaloneWindowSizing";
@@ -62,6 +63,79 @@ describe("standalone window sizing", function () {
         elementHeight: 220,
       },
     );
+  });
+
+  it("marks a composer drag as a manual textarea height", function () {
+    const rootListeners = new Map<string, EventListener>();
+    const windowListeners = new Map<string, EventListener>();
+    const input = {
+      dataset: {} as DOMStringMap,
+      style: { height: "100px" },
+      getBoundingClientRect: () => ({ height: 100 }),
+    } as unknown as HTMLTextAreaElement;
+    const inputWrap = {
+      querySelector: () => input,
+    };
+    const handle = {
+      dataset: { resizeTarget: "input" },
+      parentElement: inputWrap,
+      closest: () => handle,
+      setCapture: () => {},
+      releaseCapture: () => {},
+    };
+    const root = {
+      contains: () => true,
+      classList: {
+        add: () => {},
+        remove: () => {},
+      },
+      addEventListener: (type: string, listener: EventListener) => {
+        rootListeners.set(type, listener);
+      },
+      removeEventListener: (type: string) => {
+        rootListeners.delete(type);
+      },
+    } as unknown as HTMLElement;
+    const resizeCalls: Array<{ width: number; height: number }> = [];
+    const win = {
+      outerHeight: 900,
+      outerWidth: 820,
+      getComputedStyle: () => ({
+        minHeight: "60px",
+        maxHeight: "220px",
+      }),
+      resizeTo: (width: number, height: number) => {
+        resizeCalls.push({ width, height });
+      },
+      addEventListener: (type: string, listener: EventListener) => {
+        windowListeners.set(type, listener);
+      },
+      removeEventListener: (type: string) => {
+        windowListeners.delete(type);
+      },
+    } as unknown as Window;
+    const cleanup = installStandaloneVerticalResizeBehavior(win, root);
+
+    rootListeners.get("mousedown")?.({
+      button: 0,
+      target: handle,
+      screenY: 760,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+    windowListeners.get("mousemove")?.({
+      screenY: 850,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+
+    assert.equal(input.dataset.llmManualHeight, "true");
+    assert.equal(input.style.height, "190px");
+    assert.deepEqual(resizeCalls, [{ width: 820, height: 990 }]);
+
+    cleanup();
+    assert.isUndefined(rootListeners.get("mousedown"));
+    assert.isUndefined(windowListeners.get("mousemove"));
   });
 
   it("honors both window and element minimums while dragging upward", function () {

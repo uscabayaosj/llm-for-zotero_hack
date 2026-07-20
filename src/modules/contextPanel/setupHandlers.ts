@@ -42,7 +42,10 @@ import {
   isAtAutoFollowBottom,
   resolveStreamingScrollFollowAction,
 } from "./scrollFollowPolicy";
-import { resizeTextareaToContent } from "./textareaSizing";
+import {
+  clearManualTextareaHeight,
+  resizeTextareaToContent,
+} from "./textareaSizing";
 import {
   noteQuoteValidationUserActivity,
   QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
@@ -1805,11 +1808,10 @@ export function setupHandlers(
   // Capture scroll before click/focus interactions that may trigger a panel
   // re-render, so restore uses the most recent user position.
   body.addEventListener("pointerdown", persistCurrentChatScrollSnapshot, true);
-  body.addEventListener(
-    "pointerdown",
-    () => noteQuoteValidationUserActivity(),
-    true,
-  );
+  const handleQuoteValidationUserActivity = () => {
+    noteQuoteValidationUserActivity();
+  };
+  body.addEventListener("pointerdown", handleQuoteValidationUserActivity, true);
   // NOTE: We intentionally do NOT persist on "focusin" because focusin fires
   // AFTER focus() has already caused a potential scroll adjustment in Gecko.
   // Persisting at that point overwrites the correct pre-interaction snapshot
@@ -6406,6 +6408,7 @@ export function setupHandlers(
   }
 
   const resetComposerInputHeight = (): void => {
+    clearManualTextareaHeight(inputBox);
     resizeTextareaToContent(inputBox);
   };
 
@@ -7654,6 +7657,11 @@ export function setupHandlers(
     body.removeEventListener(
       QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
       handleQuoteProvenanceRevalidationRequest,
+    );
+    body.removeEventListener(
+      "pointerdown",
+      handleQuoteValidationUserActivity,
+      true,
     );
     unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;

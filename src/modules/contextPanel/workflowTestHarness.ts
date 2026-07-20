@@ -26,8 +26,9 @@ import type {
   WorkflowTestReaderSelectionTrackingDiagnostics,
   WorkflowTestRuntimeGeometry,
   WorkflowTestRuntimeSystemToggle,
-  WorkflowTestStandaloneNoteFixture,
+  WorkflowTestStandaloneComposerResizeDiagnostics,
   WorkflowTestStandaloneDiagnostics,
+  WorkflowTestStandaloneNoteFixture,
 } from "./workflowTestTypes";
 import type { Message } from "./types";
 import {
@@ -1217,6 +1218,50 @@ async function measureStandaloneRuntimeGeometry(input: {
   }
 }
 
+async function exerciseStandaloneComposerManualResize(): Promise<WorkflowTestStandaloneComposerResizeDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const win = getStandaloneWindowForTest();
+  const input = doc.querySelector(
+    ".llm-standalone-content #llm-input",
+  ) as HTMLTextAreaElement | null;
+  const handle = doc.querySelector(
+    '.llm-standalone-resize-handle[data-resize-target="input"]',
+  ) as HTMLElement | null;
+  if (!win || !input || !handle) {
+    throw new Error("Standalone composer resize controls were not rendered");
+  }
+
+  const heightBeforeDrag = input.getBoundingClientRect().height;
+  const startScreenY = 500;
+  handle.dispatchEvent(
+    new win.MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      screenY: startScreenY,
+    }),
+  );
+  win.dispatchEvent(
+    new win.MouseEvent("mousemove", {
+      bubbles: true,
+      screenY: startScreenY + 60,
+    }),
+  );
+  win.dispatchEvent(new win.MouseEvent("mouseup", { bubbles: true }));
+  const heightAfterDrag = Number.parseFloat(input.style.height || "0") || 0;
+
+  input.value = "Manual standalone composer height survives typed input.";
+  input.dispatchEvent(new win.Event("input", { bubbles: true }));
+  const heightAfterInput = Number.parseFloat(input.style.height || "0") || 0;
+
+  return {
+    heightBeforeDrag,
+    heightAfterDrag,
+    heightAfterInput,
+    manualHeightMarked: input.dataset.llmManualHeight === "true",
+  };
+}
+
 async function askStandalone(text: string): Promise<SendQuestionOptions> {
   assertWorkflowTestEnabled();
   lastSend = null;
@@ -2062,6 +2107,7 @@ export function installWorkflowTestHarness(targetAddon: {
     clickStandaloneSystemToggle,
     clickStandaloneSystemTogglesRapidly,
     measureStandaloneRuntimeGeometry,
+    exerciseStandaloneComposerManualResize,
     askStandalone,
     seedStandaloneUserMessage,
     notifyStandaloneItemChanged,

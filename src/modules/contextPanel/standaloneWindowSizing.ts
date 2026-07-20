@@ -1,3 +1,5 @@
+import { applyManualTextareaHeight } from "./textareaSizing";
+
 export const STANDALONE_CONTEXT_FIT_MARGIN_PX = 24;
 
 type StandaloneContextFitMetrics = {
@@ -227,7 +229,10 @@ export function installStandaloneVerticalResizeBehavior(
       drag.kind === "input" &&
       frame.elementHeight !== drag.lastElementHeight
     ) {
-      drag.element.style.height = `${frame.elementHeight}px`;
+      applyManualTextareaHeight(
+        drag.element as HTMLTextAreaElement,
+        frame.elementHeight,
+      );
       drag.lastElementHeight = frame.elementHeight;
     }
     if (frame.windowHeight !== drag.lastWindowHeight) {

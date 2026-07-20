@@ -124,6 +124,22 @@ describe("panelContextLifecycle", function () {
     );
   });
 
+  it("cleans up the panel-level quote-validation activity listener", function () {
+    const setupSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+
+    assert.match(
+      setupSource,
+      /body\.addEventListener\(\s*"pointerdown",\s*handleQuoteValidationUserActivity,\s*true,?\s*\)/,
+    );
+    assert.match(
+      setupSource,
+      /body\.removeEventListener\(\s*"pointerdown",\s*handleQuoteValidationUserActivity,\s*true,?\s*\)/,
+    );
+  });
+
   it("keeps selected-profile lookup callable during early setup refreshes", function () {
     const setupSource = readFileSync(
       resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),

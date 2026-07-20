@@ -63,6 +63,13 @@ export type WorkflowTestRuntimeGeometry = {
   centeredContentOffset: number;
 };
 
+export type WorkflowTestStandaloneComposerResizeDiagnostics = {
+  heightBeforeDrag: number;
+  heightAfterDrag: number;
+  heightAfterInput: number;
+  manualHeightMarked: boolean;
+};
+
 export type WorkflowTestDiagnostics = {
   panelId?: string;
   activeItemId?: number;
@@ -230,6 +237,7 @@ export type WorkflowTestApi = {
     width: number;
     fontScale: number;
   }) => Promise<WorkflowTestRuntimeGeometry>;
+  exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
   seedStandaloneUserMessage: (

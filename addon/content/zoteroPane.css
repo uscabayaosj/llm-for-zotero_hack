@@ -4083,10 +4083,18 @@
 .llm-agent-activity {
   --llm-agent-surface-bg: rgba(0, 0, 0, 0.15);
   --llm-agent-surface-padding: 10px 12px;
-  margin-top: 8px;
+  --llm-agent-activity-spacing: calc(10px * var(--llm-font-scale, 1));
+  margin-block: var(--llm-agent-activity-spacing);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--llm-agent-activity-spacing);
+}
+
+/* The answer that follows the trace owns no top margin of its own — otherwise
+   the gap under the divider would depend on whether the response happens to
+   start with a <p> (0) or a <blockquote>/<ul> (8px). */
+.llm-bubble.assistant > .llm-agent-activity + * {
+  margin-top: 0;
 }
 
 .llm-agent-activity-details {
@@ -4097,7 +4105,6 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 24px;
   padding: 2px 0;
   list-style: none;
   color: var(--fill-tertiary);
@@ -4302,9 +4309,10 @@
 
 .llm-agent-output-divider {
   height: 0;
-  margin: 2px 0 0;
-  border-top: 1px solid
-    color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+  /* The shared activity spacing centres the rule between the disclosure and
+     the answer at every supported font scale. */
+  margin: 0;
+  border-top: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.22));
 }
 
 .llm-agent-inline-text {

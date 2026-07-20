@@ -38,6 +38,7 @@ describe("quote card UI contract", function () {
     const css = source("addon/content/zoteroPane.css");
 
     assert.include(css, '.llm-quote-card[data-quote-status="not-source"]');
+    assert.include(css, '.llm-quote-card[data-quote-status="unverified"]');
     assert.include(css, "--llm-quote-card-rail: #f59e0b");
     assert.include(css, "font-style: normal");
     assert.include(css, "cursor: default");
@@ -76,6 +77,11 @@ describe("quote card UI contract", function () {
       'wrapper.dataset.expanded = interactive ? "false" : "true"',
     );
     assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.include(
+      renderSource,
+      'type QuoteCardStatus = "verified" | "unverified" | "not-source"',
+    );
+    assert.include(renderSource, 'card.dataset.quoteStatus = "unverified"');
   });
 
   it("keeps the not-source card non-interactive without a visible label", function () {

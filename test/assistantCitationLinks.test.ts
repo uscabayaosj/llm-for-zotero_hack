@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   clearCachedCitationPagesForTests,
+  classifyBackgroundQuoteVerificationForTests,
   collectAssistantCitationCandidates,
   decorateAssistantCitationLinks,
   extractInlineCitationMentions,
@@ -16,17 +17,20 @@ import {
   isPdfBackedCitationCandidateForTests,
   lookupCachedCitationPageForContextIdsForTests,
   lookupCachedCitationPage,
+  markQuoteCardUnverifiedAfterNavigationFailureForTests,
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
   refreshAllCitationButtonPagesForTests,
   resolveQuoteCitationPageHintForTests,
   resolveAutoNavigableCitationCandidatesForTests,
   resolveAuthoritativeNonPdfCitationCandidateForTests,
+  shouldMarkQuoteCardUnverifiedAfterNavigationForTests,
   INLINE_CITATION_SKIP_SELECTOR,
   type AssistantCitationPaperCandidate,
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import * as citationLinks from "../src/modules/contextPanel/assistantCitationLinks";
 import { stripLeadingCitationSeparators } from "../src/modules/contextPanel/citationText";
+import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -749,6 +753,247 @@ describe("assistantCitationLinks", function () {
     ]) {
       assert.include(INLINE_CITATION_SKIP_SELECTOR, selector);
     }
+  });
+
+  it("turns any quote card that cannot jump amber and removes its citation control", function () {
+    const removedAttributes: string[] = [];
+    const removedClasses: string[] = [];
+    let citationRemoved = false;
+    const citation = {
+      parentNode: {
+        removeChild(node: unknown) {
+          citationRemoved = node === citation;
+        },
+      },
+    };
+    const card = {
+      dataset: {
+        quoteStatus: "verified",
+        expanded: "false",
+        quoteCitationId: "Q_test",
+      } as Record<string, string>,
+      classList: {
+        remove(className: string) {
+          removedClasses.push(className);
+        },
+      },
+      querySelector(selector: string) {
+        if (selector === ".llm-quote-card-content") {
+          return {
+            removeAttribute(attribute: string) {
+              removedAttributes.push(attribute);
+            },
+          };
+        }
+        if (selector === ".llm-quote-card-citation") return citation;
+        return null;
+      },
+    };
+    const button = {
+      closest: () => card,
+    } as unknown as HTMLButtonElement;
+
+    assert.isTrue(
+      markQuoteCardUnverifiedAfterNavigationFailureForTests(button),
+    );
+    assert.equal(card.dataset.quoteStatus, "unverified");
+    assert.equal(card.dataset.expanded, "true");
+    assert.equal(card.dataset.quoteCitationId, "Q_test");
+    assert.deepEqual(removedClasses, ["llm-quote-citation-anchor"]);
+    assert.sameMembers(removedAttributes, [
+      "role",
+      "tabindex",
+      "aria-expanded",
+    ]);
+    assert.isTrue(citationRemoved);
+  });
+
+  it("leaves ordinary inline citations unchanged when no quote card exists", function () {
+    const button = {
+      closest: () => null,
+    } as unknown as HTMLButtonElement;
+
+    assert.isFalse(
+      markQuoteCardUnverifiedAfterNavigationFailureForTests(button),
+    );
+  });
+
+  it("downgrades a quote only when its completed jump did not succeed", function () {
+    assert.isTrue(
+      shouldMarkQuoteCardUnverifiedAfterNavigationForTests({
+        hasQuoteText: true,
+        quoteJumpSucceeded: false,
+      }),
+    );
+    assert.isFalse(
+      shouldMarkQuoteCardUnverifiedAfterNavigationForTests({
+        hasQuoteText: true,
+        quoteJumpSucceeded: true,
+      }),
+      "a successful FindController jump must keep the verified quote card",
+    );
+    assert.isFalse(
+      shouldMarkQuoteCardUnverifiedAfterNavigationForTests({
+        hasQuoteText: false,
+        quoteJumpSucceeded: false,
+      }),
+      "ordinary inline citations are not quote cards",
+    );
+  });
+
+  it("downgrades terminal PDF.js-unavailable quote navigation instead of exempting it", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+    const navigationStart = source.indexOf(
+      "async function resolveAndNavigateAssistantCitation",
+    );
+    const navigationEnd = source.indexOf(
+      "function refreshAllCitationButtonPages",
+      navigationStart,
+    );
+    const navigationSource = source.slice(navigationStart, navigationEnd);
+
+    assert.isAtLeast(navigationStart, 0);
+    assert.isAbove(navigationEnd, navigationStart);
+    assert.include(
+      navigationSource,
+      "shouldMarkQuoteCardUnverifiedAfterNavigation({",
+    );
+    assert.include(
+      navigationSource,
+      "markQuoteCardUnverifiedAfterNavigationFailure(params.button)",
+    );
+    assert.notInclude(navigationSource, "transientLocateFailureSeen");
+    assert.notInclude(navigationSource, "shouldMarkQuoteUnverifiedAfterSearch");
+  });
+
+  it("classifies background quote verification without requiring FindController", function () {
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "trusted-quote",
+        statuses: ["resolved", "not-found"],
+      }),
+      "searchable",
+    );
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "trusted-quote",
+        statuses: ["not-found"],
+      }),
+      "unsearchable",
+    );
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "trusted-quote",
+        statuses: ["unavailable"],
+      }),
+      "deferred",
+    );
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "untrusted-quote",
+        statuses: ["resolved", "not-found"],
+      }),
+      "searchable",
+    );
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "untrusted-quote",
+        statuses: ["resolved", "resolved"],
+      }),
+      "unsearchable",
+      "a plain Markdown quote cannot bind to two PDFs",
+    );
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "untrusted-quote",
+        statuses: ["resolved", "unavailable"],
+      }),
+      "deferred",
+      "a second unresolved PDF must not cause premature attribution",
+    );
+  });
+
+  it("keeps a trusted quote verified when it occurs twice on one PDF page", function () {
+    const quote =
+      "A sufficiently long genuine source quotation repeated verbatim.";
+    const located = locateQuoteInPageTexts(
+      [{ pageIndex: 0, text: `${quote} Middle. ${quote}` }],
+      quote,
+      0,
+    );
+
+    assert.equal(located.status, "ambiguous");
+    assert.equal(located.totalMatches, 2);
+    assert.deepEqual(located.matchedPageIndexes, [0]);
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "trusted-quote",
+        statuses: [located.status],
+      }),
+      "searchable",
+      "multiple locations affect navigation, not the trusted quote's provenance",
+    );
+    assert.equal(
+      classifyBackgroundQuoteVerificationForTests({
+        mode: "untrusted-quote",
+        statuses: [located.status],
+      }),
+      "unsearchable",
+      "an untrusted Markdown quote must still resolve uniquely",
+    );
+  });
+
+  it("schedules background verification for rendered trusted and plain-Markdown quote cards", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+    const schedulerStart = source.indexOf(
+      "function startBackgroundQuoteCardVerification",
+    );
+    const schedulerEnd = source.indexOf(
+      "function cancelBackgroundQuoteCardVerification",
+      schedulerStart,
+    );
+    const schedulerSource = source.slice(schedulerStart, schedulerEnd);
+    const verifierStart = source.indexOf(
+      "async function verifyQuoteCardSearchabilityInBackground",
+    );
+    const verifierEnd = source.indexOf(
+      "const BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS",
+      verifierStart,
+    );
+    const verifierSource = source.slice(verifierStart, verifierEnd);
+    const renderStart = source.indexOf(
+      "export function decorateAssistantCitationLinks",
+    );
+    const renderSource = source.slice(renderStart);
+
+    assert.isAtLeast(schedulerStart, 0);
+    assert.isAbove(schedulerEnd, schedulerStart);
+    assert.include(schedulerSource, "verifyQuoteCardSearchabilityInBackground");
+    assert.include(
+      schedulerSource,
+      "markQuoteCardUnverifiedAfterNavigationFailure(button)",
+    );
+    assert.include(
+      schedulerSource,
+      "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS",
+    );
+    assert.notInclude(verifierSource, "scrollToExactQuoteInReader");
+    assert.notInclude(verifierSource, "searchFindControllerForQuery");
+    assert.include(
+      source,
+      "cancelBackgroundQuoteCardVerification(params.button)",
+    );
+    assert.isAtLeast(
+      renderSource.split("startBackgroundQuoteCardVerification({").length - 1,
+      2,
+      "both trusted and plain-Markdown render paths must verify in background",
+    );
   });
 
   it("does not render source-less fallback quote cards for unresolved blockquotes", function () {
@@ -1531,6 +1776,26 @@ describe("assistantCitationLinks", function () {
       assert.isAbove(lookupText.length, 250);
     });
 
+    it("uses a page-backed largest-partial locator for native PDF lookup", function () {
+      const displayQuote =
+        "We modeled the propensity function to be weight-dependent ρ(w)=tanh(10w) based on experimental observations.";
+      const sourceMatchText =
+        "We modeled the propensity function to be weight-dependent";
+
+      const lookupText = getQuoteCitationLookupTextForTests({
+        id: "Q_bauer_methods",
+        quoteText: displayQuote,
+        citationLabel: "(Bauer et al., 2024)",
+        sourceMatchText,
+        sourceMatchKind: "raw-prefix",
+        sourceMatchSource: "pdf-page-text",
+        contextItemId: 2505,
+        pageHintIndex: 9,
+      });
+
+      assert.equal(lookupText, sourceMatchText);
+    });
+
     it("removes a sourceMatchText section-heading prefix before quote lookup", function () {
       const quoteText = [
         "## 3 Discussion",
@@ -1580,7 +1845,8 @@ describe("assistantCitationLinks", function () {
       assert.include(hintSection, "navigateToStoredQuotePageHint");
       assert.include(hintSection, "attemptCitationParagraphJump");
       assert.include(hintSection, "rememberCachedCitationPage");
-      assert.include(hintSection, "if (hinted.paragraphJump.matched) return");
+      assert.include(hintSection, "quoteJumpSucceeded = true");
+      assert.include(hintSection, "return;");
       assert.include(hintSection, "continue to full quote-location fallback");
     });
 
@@ -1601,7 +1867,7 @@ describe("assistantCitationLinks", function () {
         quoteAnchorStart,
       );
       const sourceBackedStart = source.indexOf(
-        "const citationElement = createCitationButton",
+        "quoteCitation: trustedQuoteCitation",
         quoteAnchorEnd,
       );
       const sourceBackedEnd = source.indexOf(
@@ -1895,6 +2161,10 @@ describe("assistantCitationLinks", function () {
       assert.notInclude(warmSection, "updateCitationButtonPage");
       assert.notInclude(warmSection, "rememberCachedCitationPage");
       assert.include(source, "lookupCachedQuoteLocationForAttachment");
+      assert.match(
+        source,
+        /lookupCachedQuoteLocationForAttachment\([\s\S]*?\)\s*\?\?\s*\(await warmQuoteLocationCacheForAttachment\(/,
+      );
       assert.include(source, "navigateToHiddenQuoteLocation");
     });
 

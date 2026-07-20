@@ -12,9 +12,11 @@ import {
   getCurrentSelectionPageLocationFromReader,
   getPageLabelForIndex,
   hasCompleteSearchablePageTextForAttachment,
+  normalizePageNativeFindControllerComparableText,
   resolvePageNativeFindControllerQuery,
   scrollToExactQuoteInReader,
   scrollToSelectedTextInReader,
+  verifyQuoteLocationForAttachment,
   warmPageTextCacheForAttachment,
   warmQuoteLocationCacheForAttachment,
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
@@ -151,7 +153,7 @@ describe("livePdfSelectionLocator", function () {
     assert.isNull(result.computedPageIndex);
   });
 
-  it("fails closed for a truncated long quote instead of accepting a prefix or suffix", function () {
+  it("recovers the largest unique source span from a truncated long quote", function () {
     const pages = [
       {
         pageIndex: 0,
@@ -169,11 +171,62 @@ describe("livePdfSelectionLocator", function () {
       23,
     );
 
-    assert.equal(result.status, "not-found");
-    assert.isNull(result.computedPageIndex);
+    assert.equal(result.status, "resolved");
+    assert.equal(result.computedPageIndex, 23);
+    assert.equal(result.sourceMatchKind, "raw-middle");
+    assert.include(
+      result.sourceMatchText || "",
+      "inhibitory feedback cannot selectively cancel shared components",
+    );
+    assert.isAbove(result.sourceMatchQuoteTokenCoverage || 0, 0.4);
   });
 
-  it("keeps quote matches ambiguous when exact text appears on multiple pages", function () {
+  it("recovers the historical Eppler quote from its unique prose prefix", function () {
+    const result = locateQuoteInPageTexts(
+      [
+        {
+          pageIndex: 0,
+          text: "The introduction defines signal and noise correlations.",
+        },
+        {
+          pageIndex: 9,
+          text: "The prediction index is the change in spread, χpred = S(t+1) − S(t), with positive values indicating that SC at day t predicts a more ordered NC structure at day t + 1.",
+        },
+      ],
+      "The prediction index is the change in spread, $\\chi",
+      null,
+    );
+
+    assert.equal(result.status, "resolved");
+    assert.equal(result.confidence, "high");
+    assert.equal(result.computedPageIndex, 9);
+    assert.equal(
+      result.sourceMatchText,
+      "The prediction index is the change in spread",
+    );
+    assert.equal(result.sourceMatchKind, "raw-prefix");
+    assert.equal(result.sourceMatchPageOccurrence, 0);
+    assert.closeTo(result.sourceMatchQuoteTokenCoverage || 0, 8 / 9, 0.001);
+  });
+
+  it("does not navigate when the same partial prose span repeats in the PDF", function () {
+    const repeated =
+      "The prediction index is the change in spread, χpred = S(t+1) − S(t).";
+    const result = locateQuoteInPageTexts(
+      [
+        { pageIndex: 2, text: repeated },
+        { pageIndex: 9, text: repeated },
+      ],
+      "The prediction index is the change in spread, $\\chi",
+      null,
+    );
+
+    assert.equal(result.status, "not-found");
+    assert.isNull(result.computedPageIndex);
+    assert.isUndefined(result.sourceMatchText);
+  });
+
+  it("uses the expected page to resolve exact text repeated on multiple pages", function () {
     const duplicatedPassage =
       "learning reduces overlap only approximately leaving residual responses in the perpendicular to the original representation subspace directions";
     const result = locateQuoteInPageTexts(
@@ -191,9 +244,36 @@ describe("livePdfSelectionLocator", function () {
       4,
     );
 
-    assert.equal(result.status, "ambiguous");
-    assert.isNull(result.computedPageIndex);
+    assert.equal(result.status, "resolved");
+    assert.equal(result.confidence, "high");
+    assert.equal(result.computedPageIndex, 4);
     assert.deepEqual(result.matchedPageIndexes, [4, 9]);
+    assert.equal(result.totalMatches, 2);
+  });
+
+  it("uses the first exact page occurrence when no matching page hint exists", function () {
+    const duplicatedPassage =
+      "learning reduces overlap only approximately leaving residual responses in the perpendicular to the original representation subspace directions";
+    const pages = [
+      {
+        pageIndex: 4,
+        text: `Context before. ${duplicatedPassage}. Context after.`,
+      },
+      {
+        pageIndex: 9,
+        text: `Another section. ${duplicatedPassage}. Ending text.`,
+      },
+    ];
+
+    const withoutHint = locateQuoteInPageTexts(pages, duplicatedPassage, null);
+    const wrongHint = locateQuoteInPageTexts(pages, duplicatedPassage, 6);
+
+    assert.equal(withoutHint.status, "resolved");
+    assert.equal(withoutHint.confidence, "medium");
+    assert.equal(withoutHint.computedPageIndex, 4);
+    assert.equal(wrongHint.status, "resolved");
+    assert.equal(wrongHint.confidence, "medium");
+    assert.equal(wrongHint.computedPageIndex, 4);
   });
 
   it("keeps repeated complete matches on one page ambiguous without an occurrence", function () {
@@ -216,7 +296,7 @@ describe("livePdfSelectionLocator", function () {
     assert.equal(result.totalMatches, 2);
   });
 
-  it("preserves exact duplicate quote ambiguity without FindController", async function () {
+  it("selects the first exact page occurrence before FindController verification", async function () {
     clearPageTextCache();
     const quote =
       "evolution candidates have expected log probability strictly beyond the shell boundary";
@@ -237,15 +317,100 @@ describe("livePdfSelectionLocator", function () {
         skipFindController: true,
       });
 
-      assert.equal(result.status, "ambiguous");
-      assert.isNull(result.computedPageIndex);
+      assert.equal(result.status, "resolved");
+      assert.equal(result.confidence, "medium");
+      assert.equal(result.computedPageIndex, 0);
       assert.deepEqual(result.matchedPageIndexes, [0, 2]);
     } finally {
       restore();
     }
   });
 
-  it("returns not-found for quotes with math fragments absent from the page text", function () {
+  it("rechecks a PDFWorker miss against the loaded PDF.js document", async function () {
+    clearPageTextCache();
+    const storedQuote = "the prediction index is the change in spread chi";
+    const livePageText =
+      "The prediction index is the change in spread, 𝜒pred = S(t+1) − S(t), with positive values indicating ordered structure.";
+    const restore = installPdfWorkerStub(async () => ({
+      text: "The cached indexed text omitted the target methods paragraph.",
+      pageChars: [59],
+    }));
+    const reader = {
+      _item: { id: 3097 },
+      itemID: 3097,
+      _window: {
+        PDFViewerApplication: {
+          page: 1,
+          pdfDocument: {
+            numPages: 2,
+            fingerprints: ["eppler-test"],
+            getPage: async (pageNumber: number) => ({
+              getTextContent: async () => ({
+                items: [
+                  {
+                    str:
+                      pageNumber === 2
+                        ? livePageText
+                        : "Unrelated opening page.",
+                  },
+                ],
+              }),
+            }),
+          },
+          pdfViewer: { pageLabels: ["1", "10"] },
+        },
+      },
+    };
+
+    try {
+      const result = await locateQuoteInLivePdfReader(reader, storedQuote, {
+        skipFindController: true,
+      });
+
+      assert.equal(result.status, "resolved");
+      assert.equal(result.computedPageIndex, 1);
+      assert.equal(
+        result.sourceMatchText,
+        "The prediction index is the change in spread",
+      );
+      assert.equal(result.sourceMatchKind, "raw-prefix");
+      assert.equal(
+        getCachedPageTextForAttachment(3097)?.coverage,
+        "full-viewer",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps a cached miss retryable when loaded PDF.js text is unavailable", async function () {
+    clearPageTextCache();
+    const restore = installPdfWorkerStub(async () => ({
+      text: "The indexed cache does not contain the requested quotation.",
+      pageChars: [59],
+    }));
+    const reader = {
+      _item: { id: 3098 },
+      itemID: 3098,
+    };
+
+    try {
+      const result = await locateQuoteInLivePdfReader(
+        reader,
+        "The prediction index is the change in spread",
+        { skipFindController: true },
+      );
+
+      assert.equal(result.status, "unavailable");
+      assert.equal(result.confidence, "none");
+      assert.isNull(result.computedPageIndex);
+      assert.include(result.reason || "", "cached result is not conclusive");
+    } finally {
+      restore();
+    }
+  });
+
+  it("uses the largest unique prose side when a model math fragment is absent", function () {
     const result = locateQuoteInPageTexts(
       [
         {
@@ -257,12 +422,16 @@ describe("livePdfSelectionLocator", function () {
       6,
     );
 
-    // Without anchor-based voting, the search cannot bridge math
-    // fragments that the LLM added but are not in the page text.
-    assert.equal(result.status, "not-found");
+    assert.equal(result.status, "resolved");
+    assert.equal(result.computedPageIndex, 6);
+    assert.equal(
+      result.sourceMatchText,
+      "and the model converges to a stable solution after alternating optimization.",
+    );
+    assert.equal(result.sourceMatchKind, "raw-suffix");
   });
 
-  it("fails closed for a punctuation-heavy truncated classifier quote", function () {
+  it("recovers a punctuation-heavy truncated classifier quote", function () {
     const result = locateQuoteInPageTexts(
       [
         {
@@ -274,8 +443,13 @@ describe("livePdfSelectionLocator", function () {
       1,
     );
 
-    assert.equal(result.status, "not-found");
-    assert.isNull(result.computedPageIndex);
+    assert.equal(result.status, "resolved");
+    assert.equal(result.computedPageIndex, 1);
+    assert.include(
+      result.sourceMatchText || "",
+      "Support Vector Machine with soft margins",
+    );
+    assert.isAbove(result.sourceMatchQuoteTokenCoverage || 0, 0.8);
   });
 });
 
@@ -557,6 +731,77 @@ describe("citation page cache warming", function () {
     }
   });
 
+  it("returns complete background quote-verification outcomes without invoking FindController", async function () {
+    clearPageTextCache();
+    const quote =
+      "The background verifier finds this complete source sentence without changing the reader.";
+    const restore = installPdfWorkerStub(async () => ({
+      text: `${quote} Unrelated trailing text.`,
+      pageChars: [`${quote} Unrelated trailing text.`.length],
+    }));
+
+    try {
+      const resolved = await verifyQuoteLocationForAttachment(506, quote);
+      const missing = await verifyQuoteLocationForAttachment(
+        506,
+        "This generated explanation is absent from the source PDF.",
+      );
+
+      assert.equal(resolved.status, "resolved");
+      assert.equal(resolved.computedPageIndex, 0);
+      assert.equal(missing.status, "not-found");
+      assert.equal(missing.computedPageIndex, null);
+    } finally {
+      restore();
+    }
+  });
+
+  it("defers background quote verification when complete attachment text is unavailable", async function () {
+    clearPageTextCache();
+    const restore = installPdfWorkerStub(async () => null);
+
+    try {
+      const result = await verifyQuoteLocationForAttachment(
+        507,
+        "A quote cannot be classified until searchable PDF text is available.",
+      );
+
+      assert.equal(result.status, "unavailable");
+      assert.match(result.reason || "", /background quote verification/i);
+    } finally {
+      restore();
+    }
+  });
+
+  it("caches the historical Eppler quote through its unique partial source span", async function () {
+    clearPageTextCache();
+    const pageOne = "Opening page with unrelated methods text.";
+    const pageTen =
+      "The prediction index is the change in spread, χpred = S(t+1) − S(t), with positive values indicating ordered structure.";
+    const restore = installPdfWorkerStub(async () => ({
+      text: pageOne + pageTen,
+      pageChars: [pageOne.length, pageTen.length],
+    }));
+
+    try {
+      const quote = "The prediction index is the change in spread, $\\chi";
+      const location = await warmQuoteLocationCacheForAttachment(3097, quote);
+
+      assert.equal(location?.pageIndex, 1);
+      assert.equal(
+        location?.sourceMatchText,
+        "The prediction index is the change in spread",
+      );
+      assert.equal(location?.sourceMatchPageOccurrence, 0);
+      assert.equal(
+        lookupCachedQuoteLocationForAttachment(3097, quote)?.sourceMatchText,
+        "The prediction index is the change in spread",
+      );
+    } finally {
+      restore();
+    }
+  });
+
   it("expires hidden quote locations after the cache TTL and recomputes them", async function () {
     clearPageTextCache();
     const originalNow = Date.now;
@@ -618,7 +863,7 @@ describe("citation page cache warming", function () {
     }
   });
 
-  it("does not cache hidden quote locations for exact duplicate quotes", async function () {
+  it("caches the first page when an exact quote is duplicated across pages", async function () {
     clearPageTextCache();
     const quote =
       "evolution candidates have expected log probability strictly beyond the shell boundary";
@@ -632,8 +877,13 @@ describe("citation page cache warming", function () {
     try {
       const location = await warmQuoteLocationCacheForAttachment(808, quote);
 
-      assert.isNull(location);
-      assert.isNull(lookupCachedQuoteLocationForAttachment(808, quote));
+      assert.equal(location?.pageIndex, 0);
+      assert.equal(location?.confidence, "medium");
+      assert.deepEqual(location?.matchedPageIndexes, [0, 1]);
+      assert.equal(
+        lookupCachedQuoteLocationForAttachment(808, quote)?.pageIndex,
+        0,
+      );
     } finally {
       restore();
     }
@@ -859,6 +1109,7 @@ describe("page-native scrollToExactQuoteInReader", function () {
     targetPageIndex: number;
     matchCount?: number;
     shouldMatch?: boolean;
+    matchesQuery?: (query: string) => boolean;
     previousQuery?: string;
     delayedAcceptanceMs?: number;
     fingerprint?: string;
@@ -888,7 +1139,9 @@ describe("page-native scrollToExactQuoteInReader", function () {
         query,
       };
       findController.pageMatches = params.pageItems.map(() => []);
-      if (params.shouldMatch !== false && query !== params.previousQuery) {
+      const shouldMatch =
+        params.matchesQuery?.(query) ?? params.shouldMatch !== false;
+      if (shouldMatch && query !== params.previousQuery) {
         findController.pageMatches[params.targetPageIndex] = Array.from(
           { length: matchCount },
           (_value, index) => index,
@@ -1017,6 +1270,68 @@ describe("page-native scrollToExactQuoteInReader", function () {
     assert.match(resolved?.query || "", /\(Fig\. 3B\)\.$/);
   });
 
+  it("reconstructs a complete FindController query through a separate PDF.js citation range", function () {
+    const boundary = "\u0003";
+    const quote =
+      "This propensity function was inspired by experimental results showing that the magnitudes of changes in spine size—commonly considered a proxy for synaptic strength—is proportional to the initial size of the spines.";
+    const pageText = [
+      "This propensity function was inspired by experimental results showing that the magnitudes of",
+      "changes in spine size",
+      "—",
+      "commonly considered a proxy for synaptic strength",
+      "—",
+      "is proportional to the initial size of the spines",
+      "47,50",
+      "–",
+      "53",
+      ".",
+    ].join(boundary);
+    const resolved = resolvePageNativeFindControllerQuery(pageText, quote);
+
+    assert.isNotNull(resolved);
+    assert.notInclude(resolved?.query || "", boundary);
+    assert.match(resolved?.query || "", /spines47,50–53\.$/);
+  });
+
+  it("reconstructs FindController's dehyphenated spelling across an EOL item boundary", function () {
+    const boundary = "\u0003";
+    const quote =
+      "They learned to associate the presentation of a sound with a mild foot shock.";
+    const pageText = `They learned to associate the presenta-\n${boundary}tion of a sound with a mild foot shock.`;
+    const resolved = resolvePageNativeFindControllerQuery(pageText, quote);
+
+    assert.isNotNull(resolved);
+    assert.include(resolved?.query || "", "the presentation of a sound");
+    assert.notInclude(resolved?.query || "", "presenta- tion");
+  });
+
+  it("uses FindController's broken-word normalization when a compound word wraps across PDF lines", function () {
+    const boundary = "\u0003";
+    const quote =
+      "The model used a weight-dependent propensity function throughout training.";
+    const pageText = `The model used a weight-\n${boundary}dependent propensity function throughout training.`;
+    const resolved = resolvePageNativeFindControllerQuery(pageText, quote);
+
+    assert.isNotNull(resolved);
+    assert.include(resolved?.query || "", "weightdependent");
+    assert.notInclude(resolved?.query || "", "weight-dependent");
+    assert.include(
+      normalizePageNativeFindControllerComparableText(pageText),
+      normalizePageNativeFindControllerComparableText(resolved?.query || ""),
+    );
+  });
+
+  it("validates page-native queries after FindController joins adjacent text items", function () {
+    const boundary = "\u0003";
+    const pageText = `The${boundary}model used a reconfigur-\n${boundary}ing population code.`;
+    const query = "Themodel used a reconfiguring population code.";
+
+    assert.equal(
+      normalizePageNativeFindControllerComparableText(pageText),
+      normalizePageNativeFindControllerComparableText(query),
+    );
+  });
+
   it("submits exactly one complete page-native query and stops at FindController", async function () {
     const quote =
       "Consistently, pattern identity remained perfectly decodable from population activity throughout the drift period. Together, these results show that local predictive plasticity generates drifting but organized assemblies.";
@@ -1056,6 +1371,179 @@ describe("page-native scrollToExactQuoteInReader", function () {
     assert.equal(fixture.dispatched[0].query, result.queryUsed);
     assert.include(result.queryUsed || "", " 139 ");
     assert.notEqual(result.queryUsed, quote);
+  });
+
+  it("tries the complete displayed quote first, then the persisted largest unique locator", async function () {
+    const sourceSentence =
+      "We modeled the propensity function to be weight-dependent before describing the encoded equation.";
+    const displayQuote = `${sourceSentence} The displayed equation uses model-rendered Unicode that native search may reject.`;
+    const previousQuery = "previous user search";
+    const fixture = createExactFindControllerReader({
+      pageItems: [[{ str: displayQuote }]],
+      targetPageIndex: 0,
+      previousQuery,
+      matchesQuery: (query) => query === sourceSentence,
+    });
+
+    const result = await scrollToExactQuoteInReader(
+      fixture.reader,
+      displayQuote,
+      {
+        expectedPageIndex: 0,
+        fallbackQuoteTexts: [sourceSentence],
+      },
+    );
+
+    assert.isTrue(result.matched);
+    assert.equal(result.queryUsed, sourceSentence);
+    const dispatchedQueries = fixture.dispatched.map((entry) => entry.query);
+    assert.equal(dispatchedQueries[0], displayQuote);
+    assert.equal(
+      dispatchedQueries[dispatchedQueries.length - 1],
+      sourceSentence,
+    );
+    assert.isAtLeast(
+      dispatchedQueries.filter((query) => query === previousQuery).length,
+      1,
+    );
+    assert.isTrue(
+      dispatchedQueries.some(
+        (query) =>
+          query !== displayQuote &&
+          query !== previousQuery &&
+          query !== sourceSentence,
+      ),
+    );
+  });
+
+  it("navigates the Learning-induced DB quote through its page-backed partial locator", async function () {
+    const displayQuote =
+      "We acquired a second dataset (10 mice; 74 FOVs; 16,882 neurons) with four imaging time points at a 2-day interval using the same set of sound stimuli as before. On the day between imaging sessions two and three, mice underwent an ACFC paradigm in which they learned to associate the presentation of a sound with the subsequent application of a mild foot shock.";
+    const sourceLocator =
+      "On the day between imaging sessions two and three, mice underwent an ACFC paradigm in which they learned to associate the presenta- tion of a sound with the subsequent application of a mild foot shock.";
+    const pageItems = [
+      [
+        {
+          str: "To this end, we acquired a second dataset (10 mice; 74 FOVs; 16,882",
+          hasEOL: true,
+        },
+        {
+          str: "neurons) with four imaging time points at a 2-day interval using",
+          hasEOL: true,
+        },
+        {
+          str: "the same set of sound stimuli as before (Figure 6A). On the day",
+          hasEOL: true,
+        },
+        {
+          str: "between imaging sessions two and three, mice underwent an",
+          hasEOL: true,
+        },
+        {
+          str: "ACFC paradigm in which they learned to associate the presenta-",
+          hasEOL: true,
+        },
+        {
+          str: "tion of a sound with the subsequent application of a mild foot",
+          hasEOL: true,
+        },
+        { str: "shock." },
+      ],
+    ];
+    const fixture = createExactFindControllerReader({
+      pageItems,
+      targetPageIndex: 0,
+      matchesQuery: (query) =>
+        query.includes("On the day between imaging sessions") &&
+        query.includes("presentation of a sound"),
+    });
+
+    const result = await scrollToExactQuoteInReader(
+      fixture.reader,
+      displayQuote,
+      {
+        expectedPageIndex: 0,
+        fallbackQuoteTexts: [sourceLocator],
+      },
+    );
+
+    assert.isTrue(result.matched);
+    assert.include(
+      result.queryUsed || "",
+      "On the day between imaging sessions",
+    );
+    assert.include(result.queryUsed || "", "presentation of a sound");
+    assert.notInclude(result.queryUsed || "", "presenta- tion");
+    assert.notInclude(result.queryUsed || "", "(Figure 6A)");
+  });
+
+  it("navigates the historical Eppler quote with one native partial query", async function () {
+    const storedQuote = "The prediction index is the change in spread, $\\chi";
+    const fixture = createExactFindControllerReader({
+      pageItems: [
+        [{ str: "Unrelated opening page." }],
+        [
+          {
+            str: "The prediction index is the change in spread, χpred = S(t+1) − S(t), with positive values indicating that SC at day t predicts a more ordered NC structure at day t + 1.",
+          },
+        ],
+      ],
+      targetPageIndex: 1,
+      matchesQuery: (query) =>
+        query === "The prediction index is the change in spread,",
+    });
+
+    const result = await scrollToExactQuoteInReader(
+      fixture.reader,
+      storedQuote,
+      {
+        citationId: "Q_0gnim02",
+        expectedPageIndex: 1,
+        sourceFingerprint: "pdfjs:test-pdf",
+      },
+    );
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(
+      result.queryUsed,
+      "The prediction index is the change in spread,",
+    );
+    assert.closeTo(result.highlightCoverage || 0, 8 / 9, 0.001);
+    assert.deepEqual(
+      fixture.dispatched.map((entry) => entry.query),
+      ["The prediction index is the change in spread,"],
+    );
+  });
+
+  it("retries a full FindController miss with the largest unique prose span", async function () {
+    const quote =
+      "The prediction index is the change in spread, χpred = S(t+1) − S(t), with positive values indicating that SC at day t predicts a more ordered NC structure at day t + 1.";
+    const fixture = createExactFindControllerReader({
+      pageItems: [[{ str: quote }]],
+      targetPageIndex: 0,
+      matchesQuery: (query) =>
+        query.startsWith(
+          "with positive values indicating that SC at day t predicts",
+        ),
+    });
+
+    const result = await scrollToExactQuoteInReader(fixture.reader, quote, {
+      expectedPageIndex: 0,
+    });
+
+    assert.isTrue(
+      result.matched,
+      JSON.stringify({ result, dispatched: fixture.dispatched }),
+    );
+    assert.match(
+      result.queryUsed || "",
+      /^with positive values indicating that SC at day t predicts/u,
+    );
+    assert.isBelow(result.highlightCoverage || 1, 1);
+    assert.equal(result.queries[0]?.query, quote);
+    assert.equal(result.queries[0]?.totalMatches, 0);
+    assert.equal(result.queries[1]?.query, result.queryUsed);
   });
 
   it("prefers the unwrapped PDF.js application when Xray hides getPage", async function () {
@@ -1188,9 +1676,16 @@ describe("page-native scrollToExactQuoteInReader", function () {
 
     assert.isFalse(result.matched);
     assert.equal(result.failureStage, "full-match-not-found");
-    assert.deepEqual(
-      fixture.dispatched.map((entry) => entry.query),
-      [quote, previousQuery],
+    const dispatchedQueries = fixture.dispatched.map((entry) => entry.query);
+    assert.equal(dispatchedQueries[0], quote);
+    assert.equal(
+      dispatchedQueries[dispatchedQueries.length - 1],
+      previousQuery,
+    );
+    assert.isTrue(
+      dispatchedQueries.some(
+        (query) => query !== quote && query !== previousQuery,
+      ),
     );
     assert.equal(fixture.findController._rawQuery, previousQuery);
   });

@@ -4,15 +4,70 @@ const INVALID_TEXT_CONTROL_CODE_RANGES = [
 ] as const;
 const INVALID_TEXT_CONTROL_CODES = new Set([0x0b, 0x0c, 0x7f]);
 const STYLE_COMMAND_PATTERN =
-  /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol)\b/g;
+  /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol|left|right|quad|qquad|cdot|times)\b|\\[,;!]/g;
+const PRESENTATIONAL_HTML_TAG_PATTERN =
+  /<\/?(?:b|em|i|span|strong|sub|sup)\b[^>]*>/gi;
+const GREEK_TOKEN_TRANSLITERATIONS: Record<string, string> = {
+  α: "alpha",
+  β: "beta",
+  γ: "gamma",
+  δ: "delta",
+  ε: "epsilon",
+  ϵ: "epsilon",
+  ζ: "zeta",
+  η: "eta",
+  θ: "theta",
+  ϑ: "theta",
+  ι: "iota",
+  κ: "kappa",
+  λ: "lambda",
+  μ: "mu",
+  ν: "nu",
+  ξ: "xi",
+  ο: "omicron",
+  π: "pi",
+  ϖ: "pi",
+  ρ: "rho",
+  ϱ: "rho",
+  σ: "sigma",
+  ς: "sigma",
+  τ: "tau",
+  υ: "upsilon",
+  φ: "phi",
+  ϕ: "phi",
+  χ: "chi",
+  ψ: "psi",
+  ω: "omega",
+};
 // Keep letters and numbers as separate tokens. PDF.js can concatenate a
 // margin line-number item directly with the first word on the line (for
 // example, "\n151The net drive"). Splitting the letter/number transition
 // preserves offsets while allowing that injected number to be ignored.
-const QUOTE_WORD_PATTERN = /\p{N}+|\p{L}[\p{L}\p{N}]*/gu;
+const QUOTE_WORD_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|\p{N}+|\p{L}[\p{L}\p{M}\p{N}]*/gu;
 const LETTER_TOKEN_PATTERN = /^\p{L}+$/u;
 const SINGLE_LETTER_TOKEN_PATTERN = /^\p{L}$/u;
 const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
+const ATTACHED_CITATION_TOKEN_PATTERN = /^(\p{L}{6,})(\p{N}{1,3})$/u;
+const ATTACHED_CITATION_TAIL_GAP_PATTERN = /^[\s\u0003]*[,;–—−-][\s\u0003]*$/u;
+const SEMANTIC_NUMERIC_SUFFIX_WORDS = new Set([
+  "channel",
+  "condition",
+  "equation",
+  "figure",
+  "group",
+  "layer",
+  "level",
+  "model",
+  "phase",
+  "session",
+  "table",
+  "timepoint",
+  "trial",
+  "type",
+  "week",
+  "year",
+]);
 const LINE_BREAK_HYPHEN_GAP_PATTERN = /^[\u00ad\s]*[-‐‑‒–—][\u00ad\s]*$/u;
 const SOFT_HYPHEN_GAP_PATTERN = /^[\u00ad\s]+$/u;
 const SOURCE_SPAN_LEADING_BOUNDARY_CHARS = "\"'“‘([";
@@ -20,6 +75,8 @@ const SOURCE_SPAN_TRAILING_BOUNDARY_PATTERN = /[.,;:!?"'”’)\]}。！？、�
 const TERMINAL_SENTENCE_PUNCTUATION_PATTERN = /[.!?。！？]/u;
 const OMITTED_TRAILING_SOURCE_LOCATOR_PATTERN =
   /^[\s\u0003]*(\((?:(?:supplementary|supp\.?)\s+)?(?:fig(?:ure)?|table|eq(?:uation)?|appendix)\b[^()\n]{0,120}\))[.!?。！？]+["'”’]?/iu;
+const OMITTED_TRAILING_CITATION_SUFFIX_PATTERN =
+  /^([\s\u0003]*)([[(]?\s*\p{N}{1,3}(?:[\s\u0003]*(?:[,;]|[‐‑‒–—−-])[\s\u0003]*\p{N}{1,3})*\s*[\])]?)([\s\u0003]*[.!?。！？]+["'”’]?)/u;
 
 export type QuoteTextToken = {
   text: string;
@@ -80,13 +137,17 @@ function sanitizeForQuoteScan(value: string): string {
 }
 
 function maskIgnoredSourceSyntax(value: string): string {
-  return value.replace(STYLE_COMMAND_PATTERN, (match) =>
-    " ".repeat(match.length),
-  );
+  return value
+    .replace(STYLE_COMMAND_PATTERN, (match) => " ".repeat(match.length))
+    .replace(PRESENTATIONAL_HTML_TAG_PATTERN, (match) =>
+      " ".repeat(match.length),
+    );
 }
 
 function normalizeQuoteToken(value: string): string {
-  return value.normalize("NFKC").toLowerCase();
+  return Array.from(value.normalize("NFKC").toLowerCase())
+    .map((character) => GREEK_TOKEN_TRANSLITERATIONS[character] || character)
+    .join("");
 }
 
 function rawTokensFromSource(value: string): QuoteTextToken[] {
@@ -305,6 +366,25 @@ function resolveAlignedSourceEnd(params: {
     return adjacentEnd;
   }
 
+  // PDF.js commonly emits a superscript reference range as separate text
+  // items between the last prose word and its sentence-final punctuation,
+  // for example "spines\u000347,50\u0003–\u000353\u0003.". The displayed
+  // quotation normally omits that reference. Preserve the complete literal
+  // PDF.js source sentence so FindController can search its native item
+  // stream instead of rejecting otherwise exact prose.
+  const sourceTail = params.sourceText.slice(params.lastTokenEnd);
+  const citationSuffixMatch = sourceTail.match(
+    OMITTED_TRAILING_CITATION_SUFFIX_PATTERN,
+  );
+  if (citationSuffixMatch) {
+    const citationText = citationSuffixMatch[2] || "";
+    const hasStrongCitationMarker =
+      /^[\s]*[[(]/u.test(citationText) || /[,;‐‑‒–—−-]/u.test(citationText);
+    if (hasStrongCitationMarker) {
+      return params.lastTokenEnd + (citationSuffixMatch[0]?.length || 0);
+    }
+  }
+
   // Historical model quotes sometimes omit a trailing in-source locator such
   // as "(Fig. 3B)." while retaining the sentence-final period. Recover the
   // complete literal source sentence only for a recognized locator. Any other
@@ -397,6 +477,46 @@ type TokenAlignmentStep = {
   lastMatchedSourceIndex: number;
 };
 
+function matchAttachedCitationSuffix(params: {
+  sourceIndex: QuoteTextIndex;
+  sourceTokenIndex: number;
+  queryToken: QuoteTextToken;
+}): TokenAlignmentStep | null {
+  const sourceTokens = params.sourceIndex.tokens;
+  const sourceToken = sourceTokens[params.sourceTokenIndex];
+  const attached = sourceToken?.text.match(ATTACHED_CITATION_TOKEN_PATTERN);
+  const sourceWord = attached?.[1] || "";
+  if (
+    !sourceToken ||
+    !sourceWord ||
+    sourceWord !== params.queryToken.text ||
+    SEMANTIC_NUMERIC_SUFFIX_WORDS.has(sourceWord)
+  ) {
+    return null;
+  }
+
+  let lastMatchedSourceIndex = params.sourceTokenIndex;
+  let nextSourceIndex = params.sourceTokenIndex + 1;
+  while (nextSourceIndex < sourceTokens.length) {
+    const nextToken = sourceTokens[nextSourceIndex];
+    if (!nextToken || !/^\p{N}{1,3}$/u.test(nextToken.text)) break;
+    const previousToken = sourceTokens[nextSourceIndex - 1];
+    const gap = params.sourceIndex.sourceText.slice(
+      previousToken.sourceEnd,
+      nextToken.sourceStart,
+    );
+    if (!ATTACHED_CITATION_TAIL_GAP_PATTERN.test(gap)) break;
+    lastMatchedSourceIndex = nextSourceIndex;
+    nextSourceIndex += 1;
+  }
+
+  return {
+    nextSourceIndex,
+    nextQueryIndex: 0,
+    lastMatchedSourceIndex,
+  };
+}
+
 function matchTokenAlignmentStep(params: {
   sourceIndex: QuoteTextIndex;
   queryIndex: QuoteTextIndex;
@@ -454,6 +574,18 @@ function matchTokenAlignmentStep(params: {
       };
     }
     if (queryText.length >= sourceToken.text.length) break;
+  }
+
+  const attachedCitation = matchAttachedCitationSuffix({
+    sourceIndex: params.sourceIndex,
+    sourceTokenIndex: params.sourceTokenIndex,
+    queryToken,
+  });
+  if (attachedCitation) {
+    return {
+      ...attachedCitation,
+      nextQueryIndex: params.queryTokenIndex + 1,
+    };
   }
 
   return null;

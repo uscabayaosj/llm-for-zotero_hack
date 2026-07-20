@@ -177,7 +177,7 @@ describe("minimal source-match quote gate workflow", function () {
     );
   });
 
-  it("fails closed for a unique partial source match", async function () {
+  it("binds the largest unique source span for a partial source match", async function () {
     const sourceSentence =
       "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
     const quote = `${sourceSentence} This explanatory sentence was added by the model.`;
@@ -204,23 +204,28 @@ describe("minimal source-match quote gate workflow", function () {
 
     const displayCitation =
       assistantMessage.quoteDisplayOverride?.quoteCitations?.[0];
-    assert.isUndefined(displayCitation);
-    assert.notInclude(
+    assert.isDefined(displayCitation);
+    assert.equal(displayCitation?.quoteText, quote);
+    assert.equal(
+      displayCitation?.sourceMatchText,
+      sourceSentence.replace(/\.$/, ""),
+    );
+    assert.equal(displayCitation?.sourceMatchKind, "raw-prefix");
+    assert.equal(displayCitation?.sourceMatchSource, "pdf-page-text");
+    assert.equal(displayCitation?.contextItemId, contextItemId);
+    assert.equal(displayCitation?.pageHintIndex, 0);
+    assert.include(
       assistantMessage.quoteDisplayOverride?.markdown || "",
       "[[quote:",
     );
-    assert.include(
+    assert.notInclude(
       assistantMessage.quoteDisplayOverride?.markdown || "",
       "Not a source quote",
-    );
-    assert.include(
-      assistantMessage.quoteDisplayOverride?.markdown || "",
-      quote,
     );
     assert.equal(assistantMessage.text, `> ${quote}`);
   });
 
-  it("overlays Not a source quote only after a complete zero match", async function () {
+  it("adds Not a source quote only after a complete zero match", async function () {
     const quote =
       "Among neuron pairs, does noise correlation change more favorably for high signal correlation?";
     const raw = `> ${quote}\n>\n> (Eppler et al., 2026, page 3)`;

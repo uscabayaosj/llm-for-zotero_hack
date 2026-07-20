@@ -3,6 +3,8 @@ import {
   buildFindControllerFullCoverageQueries,
   buildFindControllerHighlightQueries,
   buildFindControllerQuoteQueries,
+  findLargestQuoteTextAnchorMatch,
+  findLargestUniqueQuoteTextAnchorMatch,
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
   splitQuoteAtEllipsis,
@@ -137,7 +139,7 @@ describe("quoteTextSearch", function () {
   it("preserves non-ASCII locator text during normalization", function () {
     assert.equal(
       normalizeLocatorText("记忆痕迹在巩固过程中具有高度动态性。"),
-      "记忆痕迹在巩固过程中具有高度动态性",
+      Array.from("记忆痕迹在巩固过程中具有高度动态性").join(" "),
     );
   });
 
@@ -303,5 +305,84 @@ describe("quoteTextSearch", function () {
     );
 
     assert.isNull(match);
+  });
+
+  it("selects the largest unique source span from an irregular ellipsized quote", function () {
+    const source = [
+      "We modeled the change in feedforward synaptic weights from a cortical layer of presynaptic neurons to a cortical layer of postsynaptic neurons as the sum of H and ξ scaled by a synaptic weight-dependent propensity function.",
+      "This propensity function was inspired by experimental results showing that the magnitudes of changes in spine size are proportional to the initial size of the spines.",
+    ].join(" ");
+    const quote = [
+      "We modeled the change in feedforward synaptic weights ... as the sum of H and ξ scaled by a synaptic weight-dependent propensity function.",
+      "This propensity function was inspired by experimental results showing that the magnitudes of changes in spine size are proportional to the initial size of the spines.",
+    ].join(" ");
+    const match = findLargestUniqueQuoteTextAnchorMatch(
+      [{ id: "bauer-page", text: source }],
+      quote,
+    );
+
+    assert.isNotNull(match);
+    assert.equal(match?.entryId, "bauer-page");
+    assert.equal(match?.matchKind, "ellipsis-segment");
+    assert.equal(
+      match?.query,
+      "as the sum of H and ξ scaled by a synaptic weight-dependent propensity function. This propensity function was inspired by experimental results showing that the magnitudes of changes in spine size are proportional to the initial size of the spines.",
+    );
+    assert.equal(match?.totalOccurrences, 1);
+  });
+
+  it("uses the unique prose prefix when PDF math encoding breaks the remainder", function () {
+    const quote =
+      "We modeled the propensity function to be weight-dependent ρ(w)=tanh⁡(10w) based on experimental observations.";
+    const source =
+      "We modeled the propensity function to be weight-dependent ρðwÞ ¼ tanhð10wÞ based on experimental observations.";
+    const match = findLargestUniqueQuoteTextAnchorMatch(
+      [{ id: "bauer-methods", text: source }],
+      quote,
+    );
+
+    assert.isNotNull(match);
+    assert.equal(match?.entryId, "bauer-methods");
+    assert.equal(
+      match?.query,
+      "We modeled the propensity function to be weight-dependent",
+    );
+    assert.equal(match?.matchKind, "raw-prefix");
+    assert.equal(match?.totalOccurrences, 1);
+  });
+
+  it("does not navigate a largest partial anchor that is repeated", function () {
+    const quote =
+      "We modeled the propensity function to be weight-dependent ρ(w)=tanh(10w).";
+    const repeated =
+      "We modeled the propensity function to be weight-dependent ρðwÞ ¼ tanhð10wÞ.";
+    const entries = [
+      { id: "page-1", text: repeated },
+      { id: "page-2", text: repeated },
+    ];
+
+    assert.isNull(findLargestUniqueQuoteTextAnchorMatch(entries, quote));
+    assert.isNotNull(findLargestQuoteTextAnchorMatch(entries, quote));
+  });
+
+  it("recovers a unique CJK source span despite two-column line interleaving", function () {
+    const quote =
+      "有学者将疼痛体验分成痛觉感觉和痛觉情感两个成分，其中痛觉感觉成分加工判断疼痛的不同属性，如位置、强度和持续时间；痛觉情感成分负责加工痛觉中让人不愉悦的方面。";
+    const twoColumnExtraction = [
+      "有学者将疼痛体验分成痛觉感觉和痛觉情感两 另一栏无关文字",
+      "个成分，其中痛觉感觉成分加工判断疼痛的不同属 另一栏继续",
+      "性，如位置、强度和持续时间；痛觉情感成分负责 另一栏结束",
+      "加工痛觉中让人不愉悦的方面。",
+    ].join("\n");
+    const match = findLargestUniqueQuoteTextAnchorMatch(
+      [{ id: "cjk-page", text: twoColumnExtraction }],
+      quote,
+    );
+
+    assert.isNotNull(match);
+    assert.equal(match?.entryId, "cjk-page");
+    assert.include(match?.query || "", "痛觉感觉成分加工");
+    assert.notInclude(match?.query || "", "另一栏");
+    assert.isAtLeast(match?.matchedTokenCount || 0, 12);
   });
 });

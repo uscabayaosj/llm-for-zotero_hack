@@ -110,15 +110,19 @@ describe("artificial quote corpus exact-grounding behavior", function () {
     ],
     ["truncated source word", "I have a very good partner as my frien"],
   ] as const) {
-    it(`fails closed for a quote with an ${name}`, function () {
+    it(`uses the largest unique source locator for a quote with an ${name}`, function () {
       const finalized = finalizeAssistantQuoteCitations({
         markdown: `> ${quote}`,
         sourceIndex: syntheticPageSourceIndex(),
       });
 
-      assert.notInclude(finalized.markdown, "[[quote:");
-      assert.isEmpty(finalized.quoteCitations);
-      assert.include(finalized.markdown, quote);
+      assert.include(finalized.markdown, "[[quote:");
+      assert.lengthOf(finalized.quoteCitations, 1);
+      assert.equal(finalized.quoteCitations[0].quoteText, quote);
+      assert.isAtLeast(
+        finalized.quoteCitations[0].sourceMatchText?.length || 0,
+        30,
+      );
     });
   }
 

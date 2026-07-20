@@ -1,10 +1,16 @@
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "./textUtils";
 import { clearCitationPageCache } from "./citationNavigationCache";
-import { normalizeLocatorText, stripBoundaryEllipsis } from "./quoteTextSearch";
+import {
+  findLargestUniqueQuoteTextAnchorMatch,
+  normalizeLocatorText,
+  stripBoundaryEllipsis,
+  type QuoteTextSearchQueryKind,
+} from "./quoteTextSearch";
 import {
   buildQuoteTextIndex,
   findQuoteSourceSpansAllowingLayoutArtifacts,
+  type QuoteTextIndex,
 } from "./quoteTextNormalization";
 
 export { splitQuoteAtEllipsis, stripBoundaryEllipsis } from "./quoteTextSearch";
@@ -46,6 +52,10 @@ export type LivePdfSelectionLocateResult = {
   matchedPageIndexes: number[];
   totalMatches: number;
   pagesScanned: number;
+  sourceMatchText?: string;
+  sourceMatchKind?: QuoteTextSearchQueryKind;
+  sourceMatchPageOccurrence?: number;
+  sourceMatchQuoteTokenCoverage?: number;
   excerpt?: string;
   reason?: string;
   debugSummary?: string[];
@@ -114,9 +124,8 @@ const PAGE_CONTAINER_SELECTOR = [
 // FindController concatenates adjacent text-content items without a separator.
 // Keep an internal one-character boundary while aligning so a margin line
 // number in its own item cannot fuse with a semantic word (for example,
-// "the152"). The marker is removed after alignment. PDF.js normalizes EOL
-// markers in its page cache to spaces, so we do the same before assigning the
-// query to FindController's single-line field.
+// "the152"). The marker is removed only when reconstructing the literal query
+// that FindController will normalize and search.
 const PDF_TEXT_ITEM_BOUNDARY = "\u0003";
 
 function buildPageTextIndex(pages: LivePdfPageText[]): PageTextIndexEntry[] {
@@ -567,11 +576,17 @@ export function locateSelectionInPageTexts(
   };
 }
 
-export function locateQuoteInPageTexts(
-  pages: LivePdfPageText[],
+type IndexedLivePdfPageText = {
+  page: LivePdfPageText;
+  textIndex: QuoteTextIndex;
+};
+
+function locateQuoteInIndexedPageTexts(
+  indexedPages: IndexedLivePdfPageText[],
   quoteText: string,
   expectedPageIndex?: number | null,
 ): LivePdfSelectionLocateResult {
+  const pages = indexedPages.map((entry) => entry.page);
   const cleanQuote = sanitizeText(quoteText || "").trim();
   const normalizedSelection = normalizeLocatorText(cleanQuote);
   if (!normalizedSelection) {
@@ -589,11 +604,11 @@ export function locateQuoteInPageTexts(
       reason: "Quote text was empty.",
     };
   }
-  const matches = pages
-    .map((page) => ({
-      page,
+  const matches = indexedPages
+    .map((entry) => ({
+      page: entry.page,
       spans: findQuoteSourceSpansAllowingLayoutArtifacts(
-        buildQuoteTextIndex(page.text),
+        entry.textIndex,
         cleanQuote,
       ),
     }))
@@ -604,6 +619,49 @@ export function locateQuoteInPageTexts(
     0,
   );
   if (!matches.length) {
+    const pageByEntryId = new Map<string, LivePdfPageText>();
+    const searchEntries = pages.map((page, index) => {
+      const id = `page-${page.pageIndex}-${index}`;
+      pageByEntryId.set(id, page);
+      return {
+        id,
+        text: page.text,
+      };
+    });
+    const sourceMatch = findLargestUniqueQuoteTextAnchorMatch(
+      searchEntries,
+      cleanQuote,
+      {
+        minQueryLength: 24,
+        rejectWeakQueries: true,
+      },
+    );
+    const matchedPage = sourceMatch
+      ? pageByEntryId.get(sourceMatch.entryId)
+      : undefined;
+    if (sourceMatch && matchedPage) {
+      return {
+        status: "resolved",
+        confidence: sourceMatch.confidence,
+        selectionText: cleanQuote,
+        normalizedSelection,
+        queryLabel: "Quote",
+        expectedPageIndex: expectedPageIndex ?? null,
+        computedPageIndex: matchedPage.pageIndex,
+        matchedPageIndexes: [matchedPage.pageIndex],
+        totalMatches: sourceMatch.totalOccurrences,
+        pagesScanned: pages.length,
+        sourceMatchText: sourceMatch.query,
+        sourceMatchKind: sourceMatch.matchKind,
+        sourceMatchPageOccurrence: 0,
+        sourceMatchQuoteTokenCoverage: sourceMatch.quoteTokenCoverage,
+        reason:
+          "The complete quote did not align, but its largest strong contiguous source span matched exactly once in the live PDF text.",
+        debugSummary: [
+          `Largest unique source span matched ${sourceMatch.matchedTokenCount}/${sourceMatch.quoteTokenCount} quote tokens.`,
+        ],
+      };
+    }
     return {
       status: "not-found",
       confidence: "none",
@@ -616,6 +674,64 @@ export function locateQuoteInPageTexts(
       totalMatches,
       pagesScanned: pages.length,
       reason: "The complete quote was not found in the live PDF text.",
+    };
+  }
+  const normalizedExpectedPageIndex =
+    Number.isFinite(expectedPageIndex) && Number(expectedPageIndex) >= 0
+      ? Math.floor(Number(expectedPageIndex))
+      : null;
+  const expectedPageMatch =
+    normalizedExpectedPageIndex === null
+      ? undefined
+      : matches.find(
+          (entry) => entry.page.pageIndex === normalizedExpectedPageIndex,
+        );
+  if (
+    totalMatches > 1 &&
+    expectedPageMatch &&
+    expectedPageMatch.spans.length === 1
+  ) {
+    return {
+      status: "resolved",
+      confidence: "high",
+      selectionText: cleanQuote,
+      normalizedSelection,
+      queryLabel: "Quote",
+      expectedPageIndex: normalizedExpectedPageIndex,
+      computedPageIndex: normalizedExpectedPageIndex,
+      matchedPageIndexes,
+      totalMatches,
+      pagesScanned: pages.length,
+      sourceMatchText: expectedPageMatch.spans[0].text.trim(),
+      sourceMatchKind: "exact",
+      sourceMatchPageOccurrence: expectedPageMatch.spans[0].occurrenceIndex,
+      sourceMatchQuoteTokenCoverage: 1,
+      reason:
+        "The complete quote matched the expected PDF page; identical complete matches elsewhere in the PDF do not make this navigation ambiguous.",
+    };
+  }
+  const firstSingleOccurrencePage = matches.find(
+    (entry) => entry.spans.length === 1,
+  );
+  if (matches.length > 1 && firstSingleOccurrencePage) {
+    return {
+      status: "resolved",
+      confidence: "medium",
+      selectionText: cleanQuote,
+      normalizedSelection,
+      queryLabel: "Quote",
+      expectedPageIndex: normalizedExpectedPageIndex,
+      computedPageIndex: firstSingleOccurrencePage.page.pageIndex,
+      matchedPageIndexes,
+      totalMatches,
+      pagesScanned: pages.length,
+      sourceMatchText: firstSingleOccurrencePage.spans[0].text.trim(),
+      sourceMatchKind: "exact",
+      sourceMatchPageOccurrence:
+        firstSingleOccurrencePage.spans[0].occurrenceIndex,
+      sourceMatchQuoteTokenCoverage: 1,
+      reason:
+        "The complete quote matched multiple PDF pages; navigation uses the first page containing one complete occurrence.",
     };
   }
   if (matches.length > 1 || totalMatches > 1) {
@@ -647,8 +763,27 @@ export function locateQuoteInPageTexts(
     matchedPageIndexes,
     totalMatches,
     pagesScanned: pages.length,
+    sourceMatchText: matches[0].spans[0].text.trim(),
+    sourceMatchKind: "exact",
+    sourceMatchPageOccurrence: matches[0].spans[0].occurrenceIndex,
+    sourceMatchQuoteTokenCoverage: 1,
     reason: "The complete quote matched a single PDF page.",
   };
+}
+
+export function locateQuoteInPageTexts(
+  pages: LivePdfPageText[],
+  quoteText: string,
+  expectedPageIndex?: number | null,
+): LivePdfSelectionLocateResult {
+  return locateQuoteInIndexedPageTexts(
+    pages.map((page) => ({
+      page,
+      textIndex: buildQuoteTextIndex(page.text),
+    })),
+    quoteText,
+    expectedPageIndex,
+  );
 }
 
 function getPdfViewerApplication(reader: any): any | null {
@@ -715,6 +850,9 @@ function getExpectedPageIndex(reader: any, app?: any | null): number | null {
     Number.isFinite(app?.page) ? Number(app.page) - 1 : null,
   ];
   for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === "") {
+      continue;
+    }
     const parsed = Number(candidate);
     if (Number.isFinite(parsed) && parsed >= 0) {
       return Math.floor(parsed);
@@ -959,6 +1097,7 @@ export interface CachedPageTextIndex {
     pageIndex: number;
     pageLabel?: string;
     normalizedText: string;
+    textIndex: QuoteTextIndex;
   }[];
   coverage: PageTextCacheCoverage;
   pageCount?: number;
@@ -974,7 +1113,10 @@ export type HiddenQuoteLocationCacheEntry = {
   contextItemId: number;
   pageIndex: number;
   sourceFingerprint?: string;
+  sourceMatchText?: string;
+  sourceMatchKind?: QuoteTextSearchQueryKind;
   sourceMatchPageOccurrence?: number;
+  sourceMatchQuoteTokenCoverage?: number;
   confidence: LivePdfSelectionLocateConfidence;
   reason?: string;
   matchedPageIndexes: number[];
@@ -1228,11 +1370,15 @@ function buildCachedPageTextIndex(
   pageCount?: number,
   sourceFingerprint?: string,
 ): CachedPageTextIndex {
-  const normalised = pages.map((p) => ({
-    pageIndex: p.pageIndex,
-    pageLabel: p.pageLabel,
-    normalizedText: normalizeLocatorText(p.text),
-  }));
+  const normalised = pages.map((p) => {
+    const textIndex = buildQuoteTextIndex(p.text);
+    return {
+      pageIndex: p.pageIndex,
+      pageLabel: p.pageLabel,
+      normalizedText: textIndex.canonicalText,
+      textIndex,
+    };
+  });
   const normalizedPageCount =
     Number.isFinite(pageCount) && Number(pageCount) > 0
       ? Math.floor(Number(pageCount))
@@ -1358,6 +1504,10 @@ function toHiddenQuoteLocationCacheEntry(
   return {
     contextItemId: Math.floor(contextItemId),
     pageIndex,
+    sourceMatchText: result.sourceMatchText,
+    sourceMatchKind: result.sourceMatchKind,
+    sourceMatchPageOccurrence: result.sourceMatchPageOccurrence,
+    sourceMatchQuoteTokenCoverage: result.sourceMatchQuoteTokenCoverage,
     confidence: result.confidence,
     reason: result.reason,
     matchedPageIndexes: result.matchedPageIndexes.slice(),
@@ -1371,29 +1521,36 @@ function locateQuoteLocationInCachedPages(
   quoteText: string,
   cached: CachedPageTextIndex,
 ): HiddenQuoteLocationCacheEntry | null {
-  const matches = cached.pages.flatMap((page) => {
-    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
-      buildQuoteTextIndex(page.text),
-      quoteText,
-    );
-    return spans.map((span) => ({
-      pageIndex: page.pageIndex,
-      occurrenceIndex: span.occurrenceIndex,
-    }));
-  });
-  if (matches.length !== 1) return null;
-  const match = matches[0];
-  return {
-    contextItemId: Math.floor(contextItemId),
-    pageIndex: match.pageIndex,
-    sourceFingerprint: cached.sourceFingerprint,
-    sourceMatchPageOccurrence: match.occurrenceIndex,
-    confidence: "high",
-    reason: "The complete quote matched one PDF page.",
-    matchedPageIndexes: [match.pageIndex],
-    pagesScanned: cached.pages.length,
-    debugSummary: ["Complete canonical quote match."],
-  };
+  const located = locateQuoteInCachedPageTexts(cached, quoteText, null);
+  const entry = toHiddenQuoteLocationCacheEntry(contextItemId, located);
+  return entry
+    ? {
+        ...entry,
+        sourceFingerprint: cached.sourceFingerprint,
+      }
+    : null;
+}
+
+function locateQuoteInCachedPageTexts(
+  cached: CachedPageTextIndex,
+  quoteText: string,
+  expectedPageIndex?: number | null,
+): LivePdfSelectionLocateResult {
+  const cachedIndexByPage = new Map(
+    cached.normalised.map((entry) => [entry.pageIndex, entry.textIndex]),
+  );
+  return locateQuoteInIndexedPageTexts(
+    cached.pages.map((page) => ({
+      page,
+      textIndex:
+        cachedIndexByPage.get(page.pageIndex) ??
+        // Partial DOM caches can be refreshed independently. Preserve
+        // correctness if a stale caller supplies a page missing its index.
+        buildQuoteTextIndex(page.text),
+    })),
+    quoteText,
+    expectedPageIndex,
+  );
 }
 
 // ── Text extraction strategies ──────────────────────────────────────
@@ -1568,6 +1725,24 @@ async function extractPageTextsFromViewer(
     ztoolkit.log("LLM quote-locator: viewer API strategy failed:", e);
     return null;
   }
+}
+
+async function refreshPageTextCacheFromLiveViewer(
+  reader: any,
+): Promise<CachedPageTextIndex | null> {
+  const extracted = await extractPageTextsFromViewer(reader);
+  if (!extracted?.pages.length) return null;
+  const fingerprint = getPdfDocumentFingerprint(
+    getPdfViewerApplication(reader),
+  );
+  const result = buildCachedPageTextIndex(
+    extracted.pages,
+    "full-viewer",
+    extracted.pageCount,
+    fingerprint ? `pdfjs:${fingerprint}` : undefined,
+  );
+  storeCachedPageTextIndex(getReaderCacheKeys(reader), result);
+  return result;
 }
 
 /**
@@ -1771,6 +1946,52 @@ export async function warmQuoteLocationCacheForAttachment(
   })();
   hiddenQuoteLocationTasks.set(key, task);
   return task;
+}
+
+/**
+ * Resolve a quote against an attachment's complete background text cache
+ * without invoking FindController or changing the visible reader state.
+ *
+ * Unlike `warmQuoteLocationCacheForAttachment()`, this preserves negative and
+ * ambiguous outcomes so render-time quote-card verification can distinguish a
+ * real search miss from unavailable PDF text.
+ */
+export async function verifyQuoteLocationForAttachment(
+  contextItemId: number,
+  quoteText: string,
+): Promise<LivePdfSelectionLocateResult> {
+  const cleanQuote = stripBoundaryEllipsis(
+    sanitizeText(quoteText || "").trim(),
+  );
+  const normalizedSelection = normalizeLocatorText(cleanQuote);
+  const unavailable = (reason: string): LivePdfSelectionLocateResult => ({
+    status: "unavailable",
+    confidence: "none",
+    selectionText: cleanQuote,
+    normalizedSelection,
+    queryLabel: "Quote",
+    expectedPageIndex: null,
+    computedPageIndex: null,
+    matchedPageIndexes: [],
+    totalMatches: 0,
+    pagesScanned: 0,
+    reason,
+  });
+  if (!cleanQuote || !normalizedSelection) {
+    return unavailable("No quote text was provided.");
+  }
+
+  const itemId = Math.floor(Number(contextItemId));
+  if (!Number.isFinite(itemId) || itemId <= 0) {
+    return unavailable("No searchable PDF attachment was available.");
+  }
+  const pageTextCache = await warmPageTextCacheForAttachment(itemId);
+  if (!pageTextCache) {
+    return unavailable(
+      "Could not read complete PDF page text for background quote verification.",
+    );
+  }
+  return locateQuoteInCachedPageTexts(pageTextCache, cleanQuote, null);
 }
 
 /** Clear cache (e.g. when switching documents). */
@@ -2294,10 +2515,54 @@ export type PageNativeFindControllerQuery = {
   totalOccurrences: number;
 };
 
+type PageNativeFindControllerSourceMatch = PageNativeFindControllerQuery & {
+  matchKind: QuoteTextSearchQueryKind;
+  quoteTokenCoverage: number;
+};
+
+export function buildPageNativeFindControllerPageText(
+  items: ArrayLike<{ str?: unknown; hasEOL?: unknown }>,
+): string {
+  const parts: string[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (index > 0) parts.push(PDF_TEXT_ITEM_BOUNDARY);
+    parts.push(String(item?.str || ""));
+    if (item?.hasEOL) parts.push("\n");
+  }
+  return parts.join("");
+}
+
+function normalizePageNativeFindControllerLiteral(
+  sourceText: string,
+  _quoteText: string,
+): string {
+  return sourceText
+    .split(PDF_TEXT_ITEM_BOUNDARY)
+    .join("")
+    .replace(/(\p{Ll})[-‐‑‒–—−]\s*\r?\n\s*(?=\p{Ll})/gu, "$1")
+    .replace(/(\p{Lu})[-‐‑‒–—−]\s*\r?\n\s*(?=\p{L})/gu, "$1")
+    .replace(/(\S)[-‐‑‒–—−]\s*\r?\n\s*/gu, "$1-")
+    .replace(
+      /([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}])\r?\n/gu,
+      "$1",
+    )
+    .replace(/\r\n?|\n/g, " ");
+}
+
+export function normalizePageNativeFindControllerComparableText(
+  value: string,
+): string {
+  return normalizeLocatorText(
+    normalizePageNativeFindControllerLiteral(value, ""),
+  );
+}
+
 export function resolvePageNativeFindControllerQuery(
   pageText: string,
   quoteText: string,
   requestedOccurrence?: number,
+  normalizationHintText?: string,
 ): PageNativeFindControllerQuery | null {
   const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
     buildQuoteTextIndex(pageText),
@@ -2312,15 +2577,209 @@ export function resolvePageNativeFindControllerQuery(
   const selected =
     spans[normalizedOccurrence === undefined ? 0 : normalizedOccurrence];
   if (!selected?.text) return null;
-  const literalQuery = selected.text
-    .split(PDF_TEXT_ITEM_BOUNDARY)
-    .join("")
-    .replace(/\r\n?|\n/g, " ");
+  const literalQuery = normalizePageNativeFindControllerLiteral(
+    selected.text,
+    normalizationHintText || quoteText,
+  );
   if (!literalQuery) return null;
   return {
     query: literalQuery,
     occurrenceIndex: selected.occurrenceIndex,
     totalOccurrences: spans.length,
+  };
+}
+
+function resolveLargestUniquePageNativeSourceMatch(
+  pageText: string,
+  quoteText: string,
+  normalizationHintText?: string,
+): PageNativeFindControllerSourceMatch | null {
+  const sourceMatch = findLargestUniqueQuoteTextAnchorMatch(
+    [
+      {
+        id: "live-page",
+        text: pageText,
+      },
+    ],
+    quoteText,
+    {
+      minQueryLength: 24,
+      rejectWeakQueries: true,
+    },
+  );
+  if (!sourceMatch || sourceMatch.matchKind === "exact") return null;
+  const resolved = resolvePageNativeFindControllerQuery(
+    pageText,
+    sourceMatch.query,
+    undefined,
+    normalizationHintText || quoteText,
+  );
+  return resolved
+    ? {
+        ...resolved,
+        matchKind: sourceMatch.matchKind,
+        quoteTokenCoverage: sourceMatch.quoteTokenCoverage,
+      }
+    : null;
+}
+
+const PAGE_NATIVE_MATH_GAP_PATTERN = /[=<>+*/^_\\{}$()[\]≤≥≈≠∑∏√∞∫−]/u;
+const PAGE_NATIVE_LATIN_PROSE_TOKEN_PATTERN = /^[\p{Script=Latin}\p{M}'’-]+$/u;
+const PAGE_NATIVE_CJK_PROSE_TOKEN_PATTERN =
+  /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u;
+
+function pageNativeProseTokenClass(value: string): "latin" | "cjk" | null {
+  if (PAGE_NATIVE_LATIN_PROSE_TOKEN_PATTERN.test(value)) return "latin";
+  if (PAGE_NATIVE_CJK_PROSE_TOKEN_PATTERN.test(value)) return "cjk";
+  return null;
+}
+
+function resolvePageNativeFallbackAfterCompleteSearchFailure(
+  pageText: string,
+  quoteText: string,
+  requestedOccurrence?: number,
+  normalizationHintText?: string,
+): PageNativeFindControllerSourceMatch | null {
+  const pageIndex = buildQuoteTextIndex(pageText);
+  const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+    pageIndex,
+    quoteText,
+  );
+  const normalizedOccurrence =
+    Number.isFinite(requestedOccurrence) && Number(requestedOccurrence) >= 0
+      ? Math.floor(Number(requestedOccurrence))
+      : undefined;
+  if (normalizedOccurrence === undefined && spans.length !== 1) return null;
+  const selected =
+    spans[normalizedOccurrence === undefined ? 0 : normalizedOccurrence];
+  if (!selected?.text) return null;
+
+  const selectedIndex = buildQuoteTextIndex(selected.text);
+  const quoteTokenCount = buildQuoteTextIndex(quoteText).tokens.length;
+  if (selectedIndex.tokens.length < 4 || quoteTokenCount < 4) return null;
+
+  type ProseRun = {
+    tokenStart: number;
+    tokenEnd: number;
+    sourceStart: number;
+    sourceEnd: number;
+  };
+  const proseRuns: ProseRun[] = [];
+  let activeRun: (ProseRun & { tokenClass: "latin" | "cjk" }) | null = null;
+  for (let index = 0; index < selectedIndex.tokens.length; index += 1) {
+    const token = selectedIndex.tokens[index];
+    const sourceToken = selectedIndex.sourceText.slice(
+      token.sourceStart,
+      token.sourceEnd,
+    );
+    const tokenClass = pageNativeProseTokenClass(sourceToken);
+    const gap =
+      activeRun && index > 0
+        ? selectedIndex.sourceText.slice(
+            selectedIndex.tokens[index - 1].sourceEnd,
+            token.sourceStart,
+          )
+        : "";
+    const canExtend = Boolean(
+      activeRun &&
+      tokenClass === activeRun.tokenClass &&
+      !PAGE_NATIVE_MATH_GAP_PATTERN.test(gap),
+    );
+    if (!tokenClass) {
+      if (activeRun) proseRuns.push(activeRun);
+      activeRun = null;
+      continue;
+    }
+    if (canExtend && activeRun) {
+      activeRun.tokenEnd = index + 1;
+      activeRun.sourceEnd = token.sourceEnd;
+      continue;
+    }
+    if (activeRun) proseRuns.push(activeRun);
+    activeRun = {
+      tokenStart: index,
+      tokenEnd: index + 1,
+      sourceStart: token.sourceStart,
+      sourceEnd: token.sourceEnd,
+      tokenClass,
+    };
+  }
+  if (activeRun) proseRuns.push(activeRun);
+
+  const fullRun = proseRuns.find(
+    (run) =>
+      run.tokenStart === 0 && run.tokenEnd === selectedIndex.tokens.length,
+  );
+  if (fullRun && selectedIndex.tokens.length > 4) {
+    const prefixLast = selectedIndex.tokens[selectedIndex.tokens.length - 2];
+    const suffixFirst = selectedIndex.tokens[1];
+    proseRuns.push(
+      {
+        tokenStart: 0,
+        tokenEnd: selectedIndex.tokens.length - 1,
+        sourceStart: selectedIndex.tokens[0].sourceStart,
+        sourceEnd: prefixLast.sourceEnd,
+      },
+      {
+        tokenStart: 1,
+        tokenEnd: selectedIndex.tokens.length,
+        sourceStart: suffixFirst.sourceStart,
+        sourceEnd:
+          selectedIndex.tokens[selectedIndex.tokens.length - 1].sourceEnd,
+      },
+    );
+  }
+
+  const candidates = proseRuns
+    .filter(
+      (run) =>
+        run.tokenEnd - run.tokenStart >= 4 &&
+        !(fullRun === run && run.tokenEnd === selectedIndex.tokens.length),
+    )
+    .map((run) => {
+      const text = selectedIndex.sourceText
+        .slice(run.sourceStart, run.sourceEnd)
+        .trim();
+      const normalizedText = normalizeLocatorText(text);
+      return {
+        ...run,
+        text,
+        normalizedText,
+      };
+    })
+    .filter(
+      (candidate) =>
+        candidate.normalizedText.length >= 24 &&
+        findQuoteSourceSpansAllowingLayoutArtifacts(pageIndex, candidate.text)
+          .length === 1,
+    )
+    .sort(
+      (left, right) =>
+        right.tokenEnd - right.tokenStart - (left.tokenEnd - left.tokenStart) ||
+        right.normalizedText.length - left.normalizedText.length ||
+        left.tokenStart - right.tokenStart,
+    );
+  const candidate = candidates[0];
+  if (!candidate) return null;
+  const resolved = resolvePageNativeFindControllerQuery(
+    pageText,
+    candidate.text,
+    undefined,
+    normalizationHintText || quoteText,
+  );
+  if (!resolved) return null;
+  return {
+    ...resolved,
+    matchKind:
+      candidate.tokenStart === 0
+        ? "raw-prefix"
+        : candidate.tokenEnd === selectedIndex.tokens.length
+          ? "raw-suffix"
+          : "raw-middle",
+    quoteTokenCoverage: Math.min(
+      1,
+      (candidate.tokenEnd - candidate.tokenStart) / quoteTokenCount,
+    ),
   };
 }
 
@@ -2523,14 +2982,11 @@ async function extractFindControllerPageText(
         typeof unwrappedTextContent.items.length === "number"
           ? unwrappedTextContent.items
           : [];
-      const parts: string[] = [];
+      const unwrappedItems: Array<{ str?: unknown; hasEOL?: unknown }> = [];
       for (let index = 0; index < items.length; index += 1) {
-        const item = unwrap(items[index]);
-        if (index > 0) parts.push(PDF_TEXT_ITEM_BOUNDARY);
-        parts.push(String(item?.str || ""));
-        if (item?.hasEOL) parts.push("\n");
+        unwrappedItems.push(unwrap(items[index]));
       }
-      const text = parts.join("");
+      const text = buildPageNativeFindControllerPageText(unwrappedItems);
       if (text) return text;
     } catch (error) {
       logFindControllerDiagnostic(
@@ -2744,12 +3200,11 @@ export async function locateQuoteInLivePdfReader(
 
   try {
     const cached = await warmPageTextCache(reader);
-    const pages = cached?.pages || [];
     const expectedPageIndex = getExpectedPageIndex(
       reader,
       getPdfViewerApplication(reader),
     );
-    if (!pages.length) {
+    if (!cached?.pages.length) {
       return {
         status: "unavailable",
         confidence: "none",
@@ -2764,7 +3219,43 @@ export async function locateQuoteInLivePdfReader(
         reason: "Could not read complete PDF page text from the active reader.",
       };
     }
-    return locateQuoteInPageTexts(pages, cleanQuote, expectedPageIndex);
+    const cachedResult = locateQuoteInCachedPageTexts(
+      cached,
+      cleanQuote,
+      expectedPageIndex,
+    );
+    if (
+      cachedResult.status === "resolved" &&
+      canUseCachedPageTextAsNegativeEvidence(cached)
+    ) {
+      return cachedResult;
+    }
+
+    // Zotero's indexed PDFWorker text and a prematurely warmed DOM cache can
+    // differ from the text currently searched by PDF.js FindController.
+    // Before accepting a negative/ambiguous result or a partial-cache result,
+    // rebuild from the loaded PDF.js document and apply the same locator there.
+    // Only this live-viewer pass is conclusive enough to mark a quote
+    // unsearchable; a cache/readiness miss must remain retryable.
+    const liveViewerCache = await refreshPageTextCacheFromLiveViewer(reader);
+    if (liveViewerCache) {
+      return locateQuoteInCachedPageTexts(
+        liveViewerCache,
+        cleanQuote,
+        expectedPageIndex,
+      );
+    }
+    if (cachedResult.status === "resolved") return cachedResult;
+    return {
+      ...cachedResult,
+      status: "unavailable",
+      confidence: "none",
+      computedPageIndex: null,
+      matchedPageIndexes: [],
+      totalMatches: 0,
+      reason:
+        "Could not verify the quote against the loaded PDF.js text. The cached result is not conclusive.",
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -2794,6 +3285,12 @@ async function runPageNativeFindControllerJump(
     expectedPageIndex?: number | null;
     sourceFingerprint?: string;
     sourceMatchPageOccurrence?: number;
+    deadlineAt?: number;
+    queryRole?: "displayed-quote" | "source-locator";
+    normalizationHintText?: string;
+    requireUniqueMatch?: boolean;
+    highlightCoverage?: number;
+    allowDerivedPartialAfterSearchFailure?: boolean;
   },
 ): Promise<ExactQuoteJumpResult> {
   const startedAt = Date.now();
@@ -2805,7 +3302,13 @@ async function runPageNativeFindControllerJump(
   } = {};
   const ready = await waitForFindControllerReady(reader);
   const readyAt = Date.now();
-  const deadlineAt = readyAt + FIND_CONTROLLER_NAVIGATION_DEADLINE_MS;
+  const localDeadlineAt = readyAt + FIND_CONTROLLER_NAVIGATION_DEADLINE_MS;
+  const deadlineAt = Math.min(
+    localDeadlineAt,
+    Number.isFinite(options?.deadlineAt)
+      ? Number(options?.deadlineAt)
+      : localDeadlineAt,
+  );
   const app = ready?.app ?? getPdfViewerApplication(reader);
   const findController = ready?.findController ?? app?.findController;
   const expectedPageIndex =
@@ -2831,6 +3334,7 @@ async function runPageNativeFindControllerJump(
         normalizationResult,
         pageIndex: expectedPageIndex,
         sourceOccurrence: options?.sourceMatchPageOccurrence,
+        queryRole: options?.queryRole || "displayed-quote",
         acceptanceMs: findControllerDiagnosticState.acceptanceMs,
         totalMatches: findControllerDiagnosticState.matchCount,
         failureStage,
@@ -2895,20 +3399,32 @@ async function runPageNativeFindControllerJump(
       "PDF.js could not provide searchable text for the cited page.",
     );
   }
-  const resolvedQuery = resolvePageNativeFindControllerQuery(
+  const completeQuery = resolvePageNativeFindControllerQuery(
     pageText,
     quoteText,
     options?.sourceMatchPageOccurrence,
+    options?.normalizationHintText,
   );
+  const partialSourceMatch = completeQuery
+    ? null
+    : resolveLargestUniquePageNativeSourceMatch(
+        pageText,
+        quoteText,
+        options?.normalizationHintText,
+      );
+  const resolvedQuery = completeQuery || partialSourceMatch;
+  const usedPartialSourceMatch = Boolean(partialSourceMatch);
   if (!resolvedQuery) {
-    normalizationResult = "no-complete-page-alignment";
+    normalizationResult = "no-unique-page-native-source-span";
     return failure(
       "full-quote-not-on-page",
-      "The complete quote could not be aligned to the cited PDF page.",
+      "Neither the complete quote nor a strong unique partial source span could be aligned to the cited PDF page.",
     );
   }
   diagnosticQuery = resolvedQuery.query;
-  normalizationResult = "page-native-aligned";
+  normalizationResult = usedPartialSourceMatch
+    ? `page-native-${partialSourceMatch?.matchKind || "partial"}`
+    : "page-native-aligned";
 
   const previousUserState = captureFindControllerUserState(app);
   const diagnostic = findControllerQueryDiagnostic(resolvedQuery.query);
@@ -2933,6 +3449,63 @@ async function runPageNativeFindControllerJump(
   findControllerDiagnosticState.acceptanceMs = searchResult?.acceptanceMs;
   findControllerDiagnosticState.matchCount = searchResult?.totalMatches;
   const debugSummary = [diagnostic];
+  const retryWithDerivedPartialSource =
+    async (): Promise<ExactQuoteJumpResult | null> => {
+      if (
+        !completeQuery ||
+        usedPartialSourceMatch ||
+        options?.allowDerivedPartialAfterSearchFailure === false ||
+        Date.now() >= deadlineAt
+      ) {
+        return null;
+      }
+      const fallback = resolvePageNativeFallbackAfterCompleteSearchFailure(
+        pageText,
+        quoteText,
+        options?.sourceMatchPageOccurrence,
+        options?.normalizationHintText,
+      );
+      if (!fallback || fallback.query === resolvedQuery.query) return null;
+      logFindControllerDiagnostic(
+        "LLM citation FindController retrying largest unique partial source span",
+        {
+          citationId: options?.citationId,
+          completeQueryLength: resolvedQuery.query.length,
+          completeQueryHash: hashFindControllerQuery(resolvedQuery.query),
+          partialQueryLength: fallback.query.length,
+          partialQueryHash: hashFindControllerQuery(fallback.query),
+          pageIndex: expectedPageIndex,
+          matchKind: fallback.matchKind,
+          quoteTokenCoverage: fallback.quoteTokenCoverage,
+        },
+      );
+      await restoreFindControllerUserState(app, previousUserState);
+      const retried = await runPageNativeFindControllerJump(
+        reader,
+        fallback.query,
+        {
+          ...options,
+          sourceMatchPageOccurrence: fallback.occurrenceIndex,
+          deadlineAt,
+          queryRole: "source-locator",
+          normalizationHintText: options?.normalizationHintText || quoteText,
+          requireUniqueMatch: true,
+          highlightCoverage: fallback.quoteTokenCoverage,
+          allowDerivedPartialAfterSearchFailure: false,
+        },
+      );
+      return {
+        ...retried,
+        queries: [...attempts, ...retried.queries],
+        debugSummary: [
+          ...debugSummary,
+          `Complete FindController query failed; retried a ${fallback.matchKind} source span covering ${Math.round(
+            fallback.quoteTokenCoverage * 100,
+          )}% of quote tokens.`,
+          ...retried.debugSummary,
+        ],
+      };
+    };
   if (Date.now() > deadlineAt) {
     await restoreFindControllerUserState(app, previousUserState);
     return failure(
@@ -2943,19 +3516,41 @@ async function runPageNativeFindControllerJump(
     );
   }
   if (!searchResult) {
+    const retried = await retryWithDerivedPartialSource();
+    if (retried) return retried;
     await restoreFindControllerUserState(app, previousUserState);
     return failure(
       "query-not-accepted",
-      "FindController could not accept the complete quote query.",
+      `FindController could not accept the ${
+        usedPartialSourceMatch ? "unique partial source" : "complete quote"
+      } query.`,
       debugSummary,
       attempts,
     );
   }
   if (getFindControllerQuery(findController) !== resolvedQuery.query) {
+    const retried = await retryWithDerivedPartialSource();
+    if (retried) return retried;
     await restoreFindControllerUserState(app, previousUserState);
     return failure(
       "query-not-accepted",
-      "FindController did not retain the complete quote query.",
+      `FindController did not retain the ${
+        usedPartialSourceMatch ? "unique partial source" : "complete quote"
+      } query.`,
+      debugSummary,
+      attempts,
+    );
+  }
+  if (
+    (usedPartialSourceMatch || options?.requireUniqueMatch) &&
+    searchResult.totalMatches !== 1
+  ) {
+    await restoreFindControllerUserState(app, previousUserState);
+    return failure(
+      "full-match-not-found",
+      searchResult.totalMatches > 1
+        ? "The largest partial source span was not unique in the complete PDF."
+        : "FindController did not find the largest partial source span in the complete PDF.",
       debugSummary,
       attempts,
     );
@@ -2964,10 +3559,14 @@ async function runPageNativeFindControllerJump(
     searchResult.totalMatches <= 0 ||
     !searchResult.matchedPageIndexes.includes(expectedPageIndex)
   ) {
+    const retried = await retryWithDerivedPartialSource();
+    if (retried) return retried;
     await restoreFindControllerUserState(app, previousUserState);
     return failure(
       "full-match-not-found",
-      "FindController found no complete quote match on the cited page.",
+      `FindController found no ${
+        usedPartialSourceMatch ? "unique partial source" : "complete quote"
+      } match on the cited page.`,
       debugSummary,
       attempts,
     );
@@ -2991,6 +3590,8 @@ async function runPageNativeFindControllerJump(
     deadlineAt,
   });
   if (!selected) {
+    const retried = await retryWithDerivedPartialSource();
+    if (retried) return retried;
     await restoreFindControllerUserState(app, previousUserState);
     return failure(
       Date.now() >= deadlineAt
@@ -3008,9 +3609,10 @@ async function runPageNativeFindControllerJump(
     citationId: options?.citationId,
     queryLength: resolvedQuery.query.length,
     queryHash: hashFindControllerQuery(resolvedQuery.query),
-    normalizationResult: "page-native-aligned",
+    normalizationResult,
     pageIndex: expectedPageIndex,
     sourceOccurrence: resolvedQuery.occurrenceIndex,
+    queryRole: options?.queryRole || "displayed-quote",
     totalMatches: searchResult.totalMatches,
     acceptanceMs: searchResult.acceptanceMs,
     readyElapsedMs: Date.now() - readyAt,
@@ -3018,11 +3620,20 @@ async function runPageNativeFindControllerJump(
   });
   return {
     matched: true,
-    reason: `FindController highlighted the complete quote on page ${expectedPageIndex + 1}.`,
+    reason: `FindController highlighted the ${
+      usedPartialSourceMatch || options?.queryRole === "source-locator"
+        ? "largest unique source locator"
+        : "complete displayed quote"
+    } on page ${expectedPageIndex + 1}.`,
     expectedPageIndex,
     matchedPageIndex: expectedPageIndex,
     queryUsed: resolvedQuery.query,
-    highlightCoverage: 1,
+    highlightCoverage:
+      options?.highlightCoverage !== undefined
+        ? options.highlightCoverage
+        : partialSourceMatch?.quoteTokenCoverage !== undefined
+          ? partialSourceMatch.quoteTokenCoverage
+          : 1,
     queries: attempts,
     debugSummary,
   };
@@ -3044,9 +3655,46 @@ export async function scrollToExactQuoteInReader(
     expectedPageIndex?: number | null;
     sourceFingerprint?: string;
     sourceMatchPageOccurrence?: number;
+    fallbackQuoteTexts?: string[];
   },
 ): Promise<ExactQuoteJumpResult> {
-  return runPageNativeFindControllerJump(reader, quoteText, options);
+  const { fallbackQuoteTexts = [], ...navigationOptions } = options || {};
+  const quoteTexts = Array.from(
+    new Set(
+      [quoteText, ...fallbackQuoteTexts]
+        .map((value) => sanitizeText(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  await waitForFindControllerReady(reader);
+  const deadlineAt = Date.now() + FIND_CONTROLLER_NAVIGATION_DEADLINE_MS;
+  let lastResult: ExactQuoteJumpResult | null = null;
+  for (
+    let candidateIndex = 0;
+    candidateIndex < quoteTexts.length;
+    candidateIndex += 1
+  ) {
+    const candidate = quoteTexts[candidateIndex];
+    const result = await runPageNativeFindControllerJump(reader, candidate, {
+      ...navigationOptions,
+      deadlineAt,
+      queryRole: candidateIndex === 0 ? "displayed-quote" : "source-locator",
+      normalizationHintText: quoteTexts[0],
+    });
+    if (result.matched) return result;
+    lastResult = result;
+    if (Date.now() >= deadlineAt) break;
+  }
+  return (
+    lastResult || {
+      matched: false,
+      failureStage: "page-text-unavailable",
+      reason: "No searchable quote text was provided.",
+      expectedPageIndex: null,
+      queries: [],
+      debugSummary: [],
+    }
+  );
 }
 
 export async function scrollToSelectedTextInReader(

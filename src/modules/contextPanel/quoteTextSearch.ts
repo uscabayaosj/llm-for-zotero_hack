@@ -2,7 +2,9 @@ import {
   buildQuoteTextIndex,
   countCanonicalTextMatches,
   extractQuoteTextTokens,
+  findQuoteSourceSpansAllowingLayoutArtifacts,
   normalizeQuoteTextCanonical,
+  type QuoteTextIndex,
 } from "./quoteTextNormalization";
 
 const SEARCH_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
@@ -95,6 +97,7 @@ export type QuoteTextSearchEntry = {
   text: string;
   normalizedText?: string;
   debugLabel?: string;
+  textIndex?: QuoteTextIndex;
 };
 
 export type QuoteTextSearchMatch = {
@@ -110,8 +113,30 @@ export type QuoteTextSearchMatch = {
 
 type NormalizedQuoteTextSearchEntry = {
   id: string;
+  text: string;
+  textIndex: QuoteTextIndex;
   normalizedText: string;
   debugLabel: string;
+};
+
+export type QuoteTextAnchorMatch = {
+  entryId: string;
+  /** Literal source text suitable for page-native FindController alignment. */
+  query: string;
+  normalizedQuery: string;
+  matchKind: QuoteTextSearchQueryKind;
+  confidence: "high" | "medium";
+  totalOccurrences: number;
+  matchedEntryIds: string[];
+  matchedTokenCount: number;
+  quoteTokenCount: number;
+  quoteTokenCoverage: number;
+  supportedQuoteTokenCount: number;
+  quoteTokenSupportCoverage: number;
+  quoteStartTokenSupported: boolean;
+  quoteEndTokenSupported: boolean;
+  quoteTokenStart: number;
+  quoteTokenEnd: number;
 };
 
 export type QuoteTextSearchOptions = {
@@ -506,12 +531,15 @@ function normalizeEntries(
 ): NormalizedQuoteTextSearchEntry[] {
   return entries
     .map((entry) => {
+      const textIndex = entry.textIndex || buildQuoteTextIndex(entry.text);
       const normalizedText =
         entry.normalizedText !== undefined
           ? normalizeLocatorText(entry.normalizedText)
-          : buildQuoteTextIndex(entry.text).canonicalText;
+          : textIndex.canonicalText;
       return {
         id: String(entry.id || ""),
+        text: entry.text,
+        textIndex,
         normalizedText,
         debugLabel: entry.debugLabel || String(entry.id || ""),
       };
@@ -643,4 +671,299 @@ export function findUniqueQuoteTextSearchMatch(
         debugSummary,
       }
     : null;
+}
+
+type CommonQuoteTokenRun = {
+  entry: NormalizedQuoteTextSearchEntry;
+  quoteTokenStart: number;
+  quoteTokenEnd: number;
+  sourceTokenStart: number;
+  sourceTokenEnd: number;
+};
+
+function collectCommonQuoteTokenRuns(
+  entry: NormalizedQuoteTextSearchEntry,
+  quoteIndex: QuoteTextIndex,
+): CommonQuoteTokenRun[] {
+  const quotePositions = new Map<string, number[]>();
+  for (let index = 0; index < quoteIndex.tokens.length; index += 1) {
+    const token = quoteIndex.tokens[index];
+    const positions = quotePositions.get(token.text) || [];
+    positions.push(index);
+    quotePositions.set(token.text, positions);
+  }
+
+  const completed: CommonQuoteTokenRun[] = [];
+  let active = new Map<number, CommonQuoteTokenRun>();
+  for (
+    let sourceTokenIndex = 0;
+    sourceTokenIndex < entry.textIndex.tokens.length;
+    sourceTokenIndex += 1
+  ) {
+    const sourceToken = entry.textIndex.tokens[sourceTokenIndex];
+    const next = new Map<number, CommonQuoteTokenRun>();
+    for (const quoteTokenIndex of quotePositions.get(sourceToken.text) || []) {
+      const diagonal = quoteTokenIndex - sourceTokenIndex;
+      const previous = active.get(diagonal);
+      next.set(
+        diagonal,
+        previous &&
+          previous.quoteTokenEnd === quoteTokenIndex &&
+          previous.sourceTokenEnd === sourceTokenIndex
+          ? {
+              ...previous,
+              quoteTokenEnd: quoteTokenIndex + 1,
+              sourceTokenEnd: sourceTokenIndex + 1,
+            }
+          : {
+              entry,
+              quoteTokenStart: quoteTokenIndex,
+              quoteTokenEnd: quoteTokenIndex + 1,
+              sourceTokenStart: sourceTokenIndex,
+              sourceTokenEnd: sourceTokenIndex + 1,
+            },
+      );
+    }
+    for (const [diagonal, run] of active.entries()) {
+      if (!next.has(diagonal)) completed.push(run);
+    }
+    active = next;
+  }
+  completed.push(...active.values());
+  return completed;
+}
+
+function quoteAnchorMatchKind(params: {
+  quoteText: string;
+  quoteTokenStart: number;
+  quoteTokenEnd: number;
+  quoteTokenCount: number;
+}): QuoteTextSearchQueryKind {
+  if (ELLIPSIS_RE.test(params.quoteText)) return "ellipsis-segment";
+  if (params.quoteTokenStart === 0) return "raw-prefix";
+  if (params.quoteTokenEnd === params.quoteTokenCount) return "raw-suffix";
+  return "raw-middle";
+}
+
+function sourceTextForTokenRun(
+  run: CommonQuoteTokenRun,
+  quoteTokenCount: number,
+): string {
+  const first = run.entry.textIndex.tokens[run.sourceTokenStart];
+  const last = run.entry.textIndex.tokens[run.sourceTokenEnd - 1];
+  if (!first || !last) return "";
+  const nextSourceToken = run.entry.textIndex.tokens[run.sourceTokenEnd];
+  const sourceEnd =
+    run.quoteTokenEnd === quoteTokenCount
+      ? (nextSourceToken?.sourceStart ?? run.entry.textIndex.sourceText.length)
+      : last.sourceEnd;
+  return run.entry.textIndex.sourceText
+    .slice(first.sourceStart, sourceEnd)
+    .trim();
+}
+
+function buildQuoteTextAnchorMatches(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch[] {
+  const minQueryLength = Math.max(1, options?.minQueryLength ?? 24);
+  const rejectWeakQueries = options?.rejectWeakQueries ?? true;
+  const normalizedEntries = normalizeEntries(entries);
+  if (!normalizedEntries.length) return [];
+  const cleanQuote = stripBoundaryEllipsis(
+    sanitizeText(quoteText || "").trim(),
+  );
+  const quoteIndex = buildQuoteTextIndex(cleanQuote);
+  if (!quoteIndex.tokens.length) return [];
+
+  const exactLocations = normalizedEntries.flatMap((entry) =>
+    findQuoteSourceSpansAllowingLayoutArtifacts(
+      entry.textIndex,
+      cleanQuote,
+    ).map((span) => ({ entry, span })),
+  );
+  if (exactLocations.length) {
+    const location = exactLocations[0];
+    const matchedEntryIds = Array.from(
+      new Set(exactLocations.map((match) => match.entry.id)),
+    );
+    return [
+      {
+        entryId: location.entry.id,
+        query: location.span.text.trim(),
+        normalizedQuery: quoteIndex.canonicalText,
+        matchKind: "exact",
+        confidence: "high",
+        totalOccurrences: exactLocations.length,
+        matchedEntryIds,
+        matchedTokenCount: quoteIndex.tokens.length,
+        quoteTokenCount: quoteIndex.tokens.length,
+        quoteTokenCoverage: 1,
+        supportedQuoteTokenCount: quoteIndex.tokens.length,
+        quoteTokenSupportCoverage: 1,
+        quoteStartTokenSupported: true,
+        quoteEndTokenSupported: true,
+        quoteTokenStart: 0,
+        quoteTokenEnd: quoteIndex.tokens.length,
+      },
+    ];
+  }
+
+  const candidates = normalizedEntries
+    .flatMap((entry) => collectCommonQuoteTokenRuns(entry, quoteIndex))
+    .map((run) => {
+      const query = sourceTextForTokenRun(run, quoteIndex.tokens.length);
+      const normalizedQuery = normalizeLocatorText(query);
+      const matchedTokenCount = run.quoteTokenEnd - run.quoteTokenStart;
+      return {
+        run,
+        query,
+        normalizedQuery,
+        matchedTokenCount,
+        score: quoteIndex.tokens
+          .slice(run.quoteTokenStart, run.quoteTokenEnd)
+          .reduce((sum, token) => sum + scoreSearchToken(token.text), 0),
+      };
+    })
+    .filter(
+      (candidate) =>
+        isLocatorQueryLongEnough(candidate.normalizedQuery, minQueryLength) &&
+        (!rejectWeakQueries ||
+          !isWeakQuoteSearchQuery(candidate.normalizedQuery)),
+    );
+  const supportedQuoteTokensByEntry = new Map<string, Set<number>>();
+  for (const candidate of candidates) {
+    if (
+      candidate.matchedTokenCount < 3 ||
+      candidate.normalizedQuery.length < 12
+    ) {
+      continue;
+    }
+    let supported = supportedQuoteTokensByEntry.get(candidate.run.entry.id);
+    if (!supported) {
+      supported = new Set();
+      supportedQuoteTokensByEntry.set(candidate.run.entry.id, supported);
+    }
+    for (
+      let tokenIndex = candidate.run.quoteTokenStart;
+      tokenIndex < candidate.run.quoteTokenEnd;
+      tokenIndex += 1
+    ) {
+      supported.add(tokenIndex);
+    }
+  }
+  candidates.sort(
+    (left, right) =>
+      right.matchedTokenCount - left.matchedTokenCount ||
+      right.normalizedQuery.length - left.normalizedQuery.length ||
+      right.score - left.score ||
+      left.run.quoteTokenStart - right.run.quoteTokenStart,
+  );
+
+  const out: QuoteTextAnchorMatch[] = [];
+  const seenQueries = new Set<string>();
+  for (const candidate of candidates) {
+    if (
+      !candidate.normalizedQuery ||
+      seenQueries.has(candidate.normalizedQuery)
+    ) {
+      continue;
+    }
+    seenQueries.add(candidate.normalizedQuery);
+    const matchedEntryIds: string[] = [];
+    let totalOccurrences = 0;
+    for (const entry of normalizedEntries) {
+      const occurrences = countCanonicalTextMatches(
+        entry.normalizedText,
+        candidate.normalizedQuery,
+      );
+      if (!occurrences) continue;
+      matchedEntryIds.push(entry.id);
+      totalOccurrences += occurrences;
+    }
+    if (!totalOccurrences) continue;
+    const matchedTokenCount = candidate.matchedTokenCount;
+    const supportedQuoteTokenCount =
+      supportedQuoteTokensByEntry.get(candidate.run.entry.id)?.size || 0;
+    const supportedQuoteTokens = supportedQuoteTokensByEntry.get(
+      candidate.run.entry.id,
+    );
+    out.push({
+      entryId: candidate.run.entry.id,
+      query: candidate.query,
+      normalizedQuery: candidate.normalizedQuery,
+      matchKind: quoteAnchorMatchKind({
+        quoteText: cleanQuote,
+        quoteTokenStart: candidate.run.quoteTokenStart,
+        quoteTokenEnd: candidate.run.quoteTokenEnd,
+        quoteTokenCount: quoteIndex.tokens.length,
+      }),
+      confidence:
+        matchedTokenCount >= 6 || candidate.normalizedQuery.length >= 40
+          ? "high"
+          : "medium",
+      totalOccurrences,
+      matchedEntryIds,
+      matchedTokenCount,
+      quoteTokenCount: quoteIndex.tokens.length,
+      quoteTokenCoverage: Math.min(
+        1,
+        matchedTokenCount / quoteIndex.tokens.length,
+      ),
+      supportedQuoteTokenCount,
+      quoteTokenSupportCoverage: Math.min(
+        1,
+        supportedQuoteTokenCount / quoteIndex.tokens.length,
+      ),
+      quoteStartTokenSupported: Boolean(supportedQuoteTokens?.has(0)),
+      quoteEndTokenSupported: Boolean(
+        supportedQuoteTokens?.has(quoteIndex.tokens.length - 1),
+      ),
+      quoteTokenStart: candidate.run.quoteTokenStart,
+      quoteTokenEnd: candidate.run.quoteTokenEnd,
+    });
+  }
+  return out;
+}
+
+/**
+ * Return the largest strong contiguous source span that occurs exactly once
+ * across the eligible PDF pages. The query is reconstructed from source text,
+ * so callers can align it against the live PDF.js page before FindController.
+ */
+export function findLargestUniqueQuoteTextAnchorMatch(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch | null {
+  return (
+    buildQuoteTextAnchorMatches(entries, quoteText, options).find(
+      (match) =>
+        match.totalOccurrences === 1 && match.matchedEntryIds.length === 1,
+    ) || null
+  );
+}
+
+/**
+ * Return the largest strong source overlap even when it is repeated. This is
+ * negative-evidence protection: a repeated source phrase cannot navigate
+ * uniquely, but it still proves that a cache miss is not evidence of
+ * model-generated text.
+ */
+export function findLargestQuoteTextAnchorMatch(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch | null {
+  return buildQuoteTextAnchorMatches(entries, quoteText, options)[0] || null;
 }

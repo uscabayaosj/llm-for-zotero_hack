@@ -1504,8 +1504,8 @@ describe("agentTrace render", function () {
   it("dedupes adjacent identical Codex tool activity rows with different item IDs", function () {
     const args = {
       command:
-        "rm -- '/Users/yat-lok/Desktop/Screenshot.png' && test ! -e '/Users/yat-lok/Desktop/Screenshot.png'",
-      cwd: "/Users/yat-lok/Documents/zotero-dev/agent-runtime/profile-79d985cc",
+        "rm -- '/Users/example/Desktop/Screenshot.png' && test ! -e '/Users/example/Desktop/Screenshot.png'",
+      cwd: "/Users/example/Documents/zotero-dev/agent-runtime/profile-example",
       timeoutMs: 30000,
     };
     const events: AgentRunEventRecord[] = [
@@ -1628,7 +1628,7 @@ describe("agentTrace render", function () {
           citationKey: "chambersStableBrainUnstable2017",
           contentSourceMode: "mineru",
           mineruCacheDir:
-            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3484",
+            "/Users/example/Documents/zotero-dev/llm-for-zotero-mineru/3484",
         },
       },
       maxChars: 6000,
@@ -1760,7 +1760,7 @@ describe("agentTrace render", function () {
           attachmentTitle: "PDF",
           contentSourceMode: "mineru",
           mineruCacheDir:
-            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3442",
+            "/Users/example/Documents/zotero-dev/llm-for-zotero-mineru/3442",
         },
       },
       maxChars: 6000,

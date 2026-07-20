@@ -113,8 +113,10 @@ import { normalizeAttachmentContentHash } from "../../normalizers";
 import { replaceOwnerAttachmentRefs } from "../../../../utils/attachmentRefStore";
 import { extractManagedBlobHash } from "../../attachmentStorage";
 import {
+  getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
+  setLastUsedUpstreamGlobalConversationKey,
   setLastUsedPaperConversationKey,
   setLockedGlobalConversationKey,
   buildPaperStateKey,
@@ -2196,6 +2198,10 @@ export function createHistoryLifecycleController(
         libraryID,
         normalizedConversationKey,
       );
+      setLastUsedUpstreamGlobalConversationKey(
+        libraryID,
+        normalizedConversationKey,
+      );
     }
     syncConversationIdentity();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
@@ -3411,6 +3417,10 @@ export function createHistoryLifecycleController(
       setLastUsedCodexGlobalConversationKey(libraryID, targetConversationKey);
     } else {
       activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
+      setLastUsedUpstreamGlobalConversationKey(
+        libraryID,
+        targetConversationKey,
+      );
     }
 
     ztoolkit.log("LLM: + conversation action", {
@@ -3675,7 +3685,9 @@ export function createHistoryLifecycleController(
               const lockedKey = getLockedGlobalConversationKey(libraryID);
               if (lockedKey !== null) return lockedKey;
               const activeKey = Number(
-                activeGlobalConversationByLibrary.get(libraryID) || 0,
+                activeGlobalConversationByLibrary.get(libraryID) ||
+                  getLastUsedUpstreamGlobalConversationKey(libraryID) ||
+                  0,
               );
               if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
               return activeKey === GLOBAL_CONVERSATION_KEY_BASE

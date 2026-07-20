@@ -16,6 +16,13 @@ function readStandaloneWindowSource(): string {
   );
 }
 
+function readStandaloneWindowMarkup(): string {
+  return readFileSync(
+    resolve(here, "../addon/content/standaloneChat.xhtml"),
+    "utf8",
+  );
+}
+
 function extractCssRule(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`));
@@ -23,6 +30,13 @@ function extractCssRule(css: string, selector: string): string {
 }
 
 describe("standalone window layout CSS", function () {
+  it("opens standalone chats at the roomy default size", function () {
+    const markup = readStandaloneWindowMarkup();
+
+    assert.match(markup, /\bwidth="1100"/);
+    assert.match(markup, /\bheight="800"/);
+  });
+
   it("lets the standalone chat panel widen beyond the default window width", function () {
     const rule = extractCssRule(
       readPanelCss(),

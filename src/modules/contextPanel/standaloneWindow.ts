@@ -25,12 +25,16 @@ import {
   resolveShortcutMode,
   createGlobalPortalItem,
   createPaperPortalItem,
+  isGlobalPortalItem,
 } from "./portalScope";
 import {
   applyPanelFontScale,
   buildPaperStateKey,
   getClaudeCodeModeEnabled,
+  getLastUsedUpstreamGlobalConversationKey,
   getLockedGlobalConversationKey,
+  setLastUsedUpstreamConversationMode,
+  setLastUsedUpstreamGlobalConversationKey,
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
@@ -548,6 +552,14 @@ export function openStandaloneChat(options?: {
       : sourceItem && (sourceItem as any).__llmCodexGlobalPortalItem === true
         ? Number(sourceItem.id || 0)
         : 0;
+  const sourceUpstreamGlobalKey = isGlobalPortalItem(resolvedSourceState.item)
+    ? Number(resolvedSourceState.item?.id || 0)
+    : isGlobalPortalItem(sourceItem)
+      ? Number(sourceItem?.id || 0)
+      : 0;
+  const rememberedUpstreamGlobalKey =
+    activeGlobalConversationByLibrary.get(libraryID) ??
+    getLastUsedUpstreamGlobalConversationKey(libraryID);
   const conversationKey = isClaudeConversationSystem()
     ? sourceClaudeGlobalKey > 0
       ? sourceClaudeGlobalKey
@@ -563,12 +575,13 @@ export function openStandaloneChat(options?: {
           ) ||
           getLastUsedCodexGlobalConversationKey(libraryID) ||
           buildDefaultCodexGlobalConversationKey(libraryID)
-      : (lockedKey ??
-        (activeGlobalConversationByLibrary.get(libraryID) ===
-        GLOBAL_CONVERSATION_KEY_BASE
-          ? buildDefaultUpstreamGlobalConversationKey(libraryID)
-          : activeGlobalConversationByLibrary.get(libraryID)) ??
-        buildDefaultUpstreamGlobalConversationKey(libraryID));
+      : sourceUpstreamGlobalKey > 0
+        ? sourceUpstreamGlobalKey
+        : (lockedKey ??
+          (rememberedUpstreamGlobalKey === GLOBAL_CONVERSATION_KEY_BASE
+            ? buildDefaultUpstreamGlobalConversationKey(libraryID)
+            : rememberedUpstreamGlobalKey) ??
+          buildDefaultUpstreamGlobalConversationKey(libraryID));
   const globalPortalItem = isClaudeConversationSystem()
     ? createClaudeGlobalPortalItem(libraryID, conversationKey)
     : isCodexConversationSystem()
@@ -2822,6 +2835,7 @@ export function openStandaloneChat(options?: {
             setLastUsedCodexGlobalConversationKey(currentLibraryID, key);
           } else {
             activeGlobalConversationByLibrary.set(currentLibraryID, key);
+            setLastUsedUpstreamGlobalConversationKey(currentLibraryID, key);
           }
           const newItem = buildStandalonePortalItem({
             mode: "open",
@@ -3134,6 +3148,7 @@ export function openStandaloneChat(options?: {
             setLastUsedCodexGlobalConversationKey(currentLibraryID, key);
           } else {
             activeGlobalConversationByLibrary.set(currentLibraryID, key);
+            setLastUsedUpstreamGlobalConversationKey(currentLibraryID, key);
           }
           const newItem = buildStandalonePortalItem({
             mode: "open",
@@ -3248,6 +3263,10 @@ export function openStandaloneChat(options?: {
             currentLibraryID,
             normalizedKey,
           );
+          setLastUsedUpstreamGlobalConversationKey(
+            currentLibraryID,
+            normalizedKey,
+          );
         }
         const nextItem = buildStandalonePortalItem({
           mode: "open",
@@ -3335,6 +3354,10 @@ export function openStandaloneChat(options?: {
               setLastUsedCodexGlobalConversationKey(currentLibraryID, newKey);
             } else {
               activeGlobalConversationByLibrary.set(currentLibraryID, newKey);
+              setLastUsedUpstreamGlobalConversationKey(
+                currentLibraryID,
+                newKey,
+              );
             }
             const newItem = buildStandalonePortalItem({
               mode: "open",
@@ -3455,6 +3478,7 @@ export function openStandaloneChat(options?: {
                 setLastUsedCodexGlobalConversationKey(libraryID, newKey);
               } else {
                 activeGlobalConversationByLibrary.set(libraryID, newKey);
+                setLastUsedUpstreamGlobalConversationKey(libraryID, newKey);
               }
               activeConversationKey = newKey;
             } else {
@@ -3531,6 +3555,10 @@ export function openStandaloneChat(options?: {
               setLastUsedCodexGlobalConversationKey(libraryID, conversationKey);
             } else {
               activeGlobalConversationByLibrary.set(libraryID, conversationKey);
+              setLastUsedUpstreamGlobalConversationKey(
+                libraryID,
+                conversationKey,
+              );
             }
             mountChatPanel(nextItem as Zotero.Item);
             scheduleStandaloneSidebarRender();
@@ -3709,6 +3737,11 @@ export function openStandaloneChat(options?: {
           );
         } else if (isCodexConversationSystem()) {
           setLastUsedCodexConversationMode(
+            getCurrentLibraryScopeID(),
+            mode === "open" ? "global" : "paper",
+          );
+        } else {
+          setLastUsedUpstreamConversationMode(
             getCurrentLibraryScopeID(),
             mode === "open" ? "global" : "paper",
           );

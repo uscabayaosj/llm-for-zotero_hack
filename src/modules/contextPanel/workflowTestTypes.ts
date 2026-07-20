@@ -179,6 +179,12 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
   renderStartupPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  startNewPanelConversation: (
+    panelId: string,
+  ) => Promise<WorkflowTestDiagnostics>;
+  togglePanelConversationMode: (
+    panelId: string,
+  ) => Promise<WorkflowTestDiagnostics>;
   exerciseDuplicatePanelSetup: (
     panelId: string,
   ) => Promise<WorkflowTestDuplicatePanelSetupDiagnostics>;
@@ -210,6 +216,7 @@ export type WorkflowTestApi = {
   openStandaloneForItem: (
     itemId: number,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  openStandaloneForLibraryAfterRestart: () => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneTab: (
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;

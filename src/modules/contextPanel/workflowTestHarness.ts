@@ -1,9 +1,12 @@
 import { buildUI } from "./buildUI";
 import { disposeSetupHandlers, setupHandlers } from "./setupHandlers";
 import {
+  activeConversationModeByLibrary,
   activeContextPanels,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
+  activeGlobalConversationByLibrary,
+  activePaperConversationByPaper,
   chatHistory,
   loadedConversationKeys,
 } from "./state";
@@ -38,6 +41,7 @@ import {
   getSelectedTextContextEntries,
   resolveContextSourceItemAsync,
 } from "./contextResolution";
+import { resolveInitialPanelItemState } from "./portalScope";
 import { syncNoteEditingSelectedText } from "./noteEditing/selectionController";
 import {
   decorateAssistantCitationLinks,
@@ -57,7 +61,6 @@ import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
 import { appendMessage } from "../../utils/chatStore";
 import { appendCodexMessage } from "../../codexAppServer/store";
 import { appendClaudeMessage } from "../../claudeCode/store";
-import { FreshStartupConversationSession } from "./freshStartupConversation";
 import {
   ensureMarkedReaderSelectionTrackingListener,
   READER_TEXT_SELECTION_POPUP_EVENT,
@@ -68,6 +71,20 @@ import type { RuntimeConversationSystem } from "./runtimeSystemControls";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import type { ConversationSystem } from "../../shared/types";
+import {
+  activeClaudeConversationModeByLibrary,
+  activeClaudeGlobalConversationByLibrary,
+  activeClaudePaperConversationByPaper,
+} from "../../claudeCode/state";
+import {
+  activeCodexConversationModeByLibrary,
+  activeCodexGlobalConversationByLibrary,
+  activeCodexPaperConversationByPaper,
+} from "../../codexAppServer/state";
+import {
+  removeLastUsedUpstreamConversationMode,
+  removeLastUsedUpstreamGlobalConversationKey,
+} from "./prefHelpers";
 
 async function appendWorkflowStoredMessage(
   system: ConversationSystem,
@@ -195,7 +212,6 @@ const panels = new Map<string, PanelRecord>();
 let panelCounter = 0;
 let lastSend: SendQuestionOptions | null = null;
 let lastFinalRequest: WorkflowTestFinalRequestSnapshot | null = null;
-const workflowFreshStartupConversation = new FreshStartupConversationSession();
 
 function assertWorkflowTestEnabled(): void {
   if (__env__ !== "test" && __env__ !== "development") {
@@ -491,34 +507,34 @@ async function createStandaloneNoteFixture(input: {
 }
 
 async function renderPanelForItem(itemId: number): Promise<WorkflowTestPanel> {
-  return renderPanelForItemInternal(itemId, {
-    startWithFreshConversation: false,
-  });
+  return renderPanelForItemInternal(itemId);
 }
 
 async function renderStartupPanelForItem(
   itemId: number,
 ): Promise<WorkflowTestPanel> {
-  return renderPanelForItemInternal(itemId, {
-    startWithFreshConversation: workflowFreshStartupConversation.consume(),
-  });
+  disposeWorkflowPanels();
+  clearWorkflowConversationRuntimeState();
+  return renderPanelForItemInternal(itemId, { resolveRememberedState: true });
 }
 
-async function waitForStartupFreshConversation(
-  body: HTMLElement,
-): Promise<void> {
-  const startedAt = Date.now();
-  while ((body as any).__llmFreshStartupConversationInFlight) {
-    if (Date.now() - startedAt > 5000) {
-      throw new Error("Timed out waiting for startup fresh conversation");
-    }
-    await Zotero.Promise.delay(25);
-  }
+function clearWorkflowConversationRuntimeState(): void {
+  chatHistory.clear();
+  loadedConversationKeys.clear();
+  activeConversationModeByLibrary.clear();
+  activeGlobalConversationByLibrary.clear();
+  activePaperConversationByPaper.clear();
+  activeClaudeConversationModeByLibrary.clear();
+  activeClaudeGlobalConversationByLibrary.clear();
+  activeClaudePaperConversationByPaper.clear();
+  activeCodexConversationModeByLibrary.clear();
+  activeCodexGlobalConversationByLibrary.clear();
+  activeCodexPaperConversationByPaper.clear();
 }
 
 async function renderPanelForItemInternal(
   itemId: number,
-  options: { startWithFreshConversation: boolean },
+  options?: { resolveRememberedState?: boolean },
 ): Promise<WorkflowTestPanel> {
   assertWorkflowTestEnabled();
   const item = Zotero.Items.get(itemId);
@@ -527,22 +543,13 @@ async function renderPanelForItemInternal(
   const body = appendHost(doc);
   const panelId = `workflow-panel-${++panelCounter}`;
   body.dataset.workflowPanelId = panelId;
-  buildUI(body, item);
-  activeContextPanels.set(body, () => item);
+  const initialPanelItem = options?.resolveRememberedState
+    ? resolveInitialPanelItemState(item).item
+    : item;
+  buildUI(body, initialPanelItem);
+  activeContextPanels.set(body, () => initialPanelItem);
   activeContextPanelRawItems.set(body, item);
-  if (!options.startWithFreshConversation) {
-    loadedConversationKeys.add(getConversationKey(item));
-  }
-  setupHandlers(
-    body,
-    item,
-    options.startWithFreshConversation
-      ? { startWithFreshConversation: true }
-      : undefined,
-  );
-  if (options.startWithFreshConversation) {
-    await waitForStartupFreshConversation(body);
-  }
+  setupHandlers(body, item);
   const mountedItem = activeContextPanels.get(body)?.() || item;
   await ensureConversationLoaded(mountedItem).catch(() => undefined);
   refreshChat(body, mountedItem);
@@ -551,6 +558,69 @@ async function renderPanelForItemInternal(
   const panel = { id: panelId, body, item: mountedItem, contextSnapshot };
   panels.set(panelId, panel);
   return { panelId, itemId, contextSnapshot };
+}
+
+function dispatchWorkflowClick(
+  body: HTMLElement,
+  selector: string,
+  label: string,
+): void {
+  const button = body.querySelector(selector) as HTMLButtonElement | null;
+  if (!button) throw new Error(`${label} was not rendered`);
+  const eventCtor = body.ownerDocument.defaultView?.MouseEvent;
+  if (eventCtor) {
+    button.dispatchEvent(
+      new eventCtor("click", { bubbles: true, cancelable: true }),
+    );
+    return;
+  }
+  button.click();
+}
+
+async function waitForPanelConversationChange(params: {
+  panelId: string;
+  previousConversationKey?: number;
+  previousConversationKind?: string;
+}): Promise<WorkflowTestDiagnostics> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5000) {
+    const diagnostics = await getDiagnostics(params.panelId);
+    const keyChanged =
+      params.previousConversationKey === undefined ||
+      diagnostics.conversationKey !== params.previousConversationKey;
+    const kindChanged =
+      params.previousConversationKind === undefined ||
+      diagnostics.conversationKind !== params.previousConversationKind;
+    if (keyChanged && kindChanged) return diagnostics;
+    await Zotero.Promise.delay(25);
+  }
+  throw new Error(`Timed out waiting for panel ${params.panelId} to switch`);
+}
+
+async function startNewPanelConversation(
+  panelId: string,
+): Promise<WorkflowTestDiagnostics> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const before = await getDiagnostics(panelId);
+  dispatchWorkflowClick(panel.body, "#llm-history-new", "New chat button");
+  return waitForPanelConversationChange({
+    panelId,
+    previousConversationKey: before.conversationKey,
+  });
+}
+
+async function togglePanelConversationMode(
+  panelId: string,
+): Promise<WorkflowTestDiagnostics> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const before = await getDiagnostics(panelId);
+  dispatchWorkflowClick(panel.body, "#llm-mode-chip", "Chat mode button");
+  return waitForPanelConversationChange({
+    panelId,
+    previousConversationKind: before.conversationKind,
+  });
 }
 
 async function exerciseDuplicatePanelSetup(
@@ -1023,6 +1093,17 @@ async function openStandaloneForItem(
   openStandaloneChat({ initialItem: item });
   await waitForStandaloneReady();
   await Zotero.Promise.delay(150);
+  return readStandaloneDiagnostics();
+}
+
+async function openStandaloneForLibraryAfterRestart(): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  await closeStandalone();
+  disposeWorkflowPanels();
+  clearWorkflowConversationRuntimeState();
+  openStandaloneChat();
+  await waitForStandaloneReady();
+  await Zotero.Promise.delay(250);
   return readStandaloneDiagnostics();
 }
 
@@ -1896,10 +1977,27 @@ async function exerciseHighlightAwareContextRetrieval(input: {
 
 async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
-  workflowFreshStartupConversation.begin();
   await closeStandalone();
   lastSend = null;
   lastFinalRequest = null;
+  disposeWorkflowPanels();
+  clearWorkflowConversationRuntimeState();
+  const userLibraryID = Math.floor(
+    Number(Zotero.Libraries?.userLibraryID || 0),
+  );
+  if (userLibraryID > 0) {
+    removeLastUsedUpstreamConversationMode(userLibraryID);
+    removeLastUsedUpstreamGlobalConversationKey(userLibraryID);
+  }
+  setWorkflowTestSendInterceptor((opts) => {
+    lastSend = opts;
+  });
+  setWorkflowTestFinalRequestInterceptor((snapshot) => {
+    lastFinalRequest = snapshot;
+  });
+}
+
+function disposeWorkflowPanels(): void {
   for (const panel of panels.values()) {
     disposeSetupHandlers(panel.body);
     activeContextPanels.delete(panel.body);
@@ -1907,12 +2005,6 @@ async function reset(): Promise<void> {
     panel.body.remove();
   }
   panels.clear();
-  setWorkflowTestSendInterceptor((opts) => {
-    lastSend = opts;
-  });
-  setWorkflowTestFinalRequestInterceptor((snapshot) => {
-    lastFinalRequest = snapshot;
-  });
 }
 
 async function cleanupFixture(
@@ -1954,6 +2046,8 @@ export function installWorkflowTestHarness(targetAddon: {
     createStandaloneNoteFixture,
     renderPanelForItem,
     renderStartupPanelForItem,
+    startNewPanelConversation,
+    togglePanelConversationMode,
     exerciseDuplicatePanelSetup,
     seedPanelStoredUserMessage,
     clickPanelSystemToggle,
@@ -1963,6 +2057,7 @@ export function installWorkflowTestHarness(targetAddon: {
     ask,
     renderAssistantForPanel,
     openStandaloneForItem,
+    openStandaloneForLibraryAfterRestart,
     clickStandaloneTab,
     clickStandaloneSystemToggle,
     clickStandaloneSystemTogglesRapidly,

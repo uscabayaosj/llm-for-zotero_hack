@@ -141,6 +141,8 @@ import {
   getLastUsedReasoningLevelForProvider,
   setLastUsedReasoningLevel,
   setLastUsedReasoningLevelForProvider,
+  setLastUsedUpstreamConversationMode,
+  setLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   setLastUsedPaperConversationKey,
   removeLastUsedPaperConversationKey,
@@ -553,7 +555,6 @@ export type ContextPreviewRenderMetrics = {
 };
 
 export type SetupHandlersHooks = {
-  startWithFreshConversation?: boolean;
   onConversationHistoryChanged?: () => void;
   onDefaultContextRendered?: () => void;
   onContextPreviewRendered?: (metrics: ContextPreviewRenderMetrics) => void;
@@ -1442,8 +1443,10 @@ export function setupHandlers(
         }
       } else {
         activeConversationModeByLibrary.set(libraryID, mode);
+        setLastUsedUpstreamConversationMode(libraryID, mode);
         if (mode === "global") {
           activeGlobalConversationByLibrary.set(libraryID, item.id);
+          setLastUsedUpstreamGlobalConversationKey(libraryID, item.id);
         } else if (
           Number.isFinite(conversationKey) &&
           (conversationKey as number) > 0 &&
@@ -4576,31 +4579,6 @@ export function setupHandlers(
       void switchRuntimeSystemFromControl(system);
     });
   }
-
-  const maybeStartWithFreshConversation = () => {
-    const startupBody = body as Element & {
-      __llmFreshStartupConversationInFlight?: boolean;
-    };
-    if (!hooks?.startWithFreshConversation) return;
-    if (isStandalonePanel || isWebChatMode()) return;
-    if (!item || startupBody.__llmFreshStartupConversationInFlight) return;
-    startupBody.__llmFreshStartupConversationInFlight = true;
-    void (async () => {
-      try {
-        const kind = resolveDisplayConversationKind(item);
-        if (kind === "global") {
-          await createAndSwitchGlobalConversation(true);
-        } else if (kind === "paper") {
-          await createAndSwitchPaperConversation(true);
-        }
-      } catch (err) {
-        ztoolkit.log("LLM: Failed to start fresh startup conversation", err);
-      } finally {
-        delete startupBody.__llmFreshStartupConversationInFlight;
-      }
-    })();
-  };
-  maybeStartWithFreshConversation();
 
   const getModelChoices = () => {
     const choices = isClaudeConversationSystem()

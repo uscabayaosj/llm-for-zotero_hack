@@ -8,6 +8,8 @@ import { isSupportedContextAttachment } from "./contextAttachmentSupport";
 import { normalizePositiveInt } from "./normalizers";
 import {
   buildPaperStateKey,
+  getLastUsedUpstreamConversationMode,
+  getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
 } from "./prefHelpers";
@@ -413,7 +415,9 @@ function resolvePreferredConversationMode(
       ) || getLastUsedCodexConversationMode(libraryID);
     return rememberedMode === "global" ? "global" : "paper";
   }
-  const rememberedMode = activeConversationModeByLibrary.get(libraryID);
+  const rememberedMode =
+    activeConversationModeByLibrary.get(libraryID) ||
+    getLastUsedUpstreamConversationMode(libraryID);
   if (rememberedMode === "paper") {
     return "paper";
   }
@@ -456,7 +460,9 @@ function resolveGlobalConversationKey(
       : lockedKey;
   }
   const activeKey = Number(
-    activeGlobalConversationByLibrary.get(libraryID) || 0,
+    activeGlobalConversationByLibrary.get(libraryID) ||
+      getLastUsedUpstreamGlobalConversationKey(libraryID) ||
+      0,
   );
   if (isUpstreamGlobalConversationKey(activeKey)) {
     return activeKey === GLOBAL_CONVERSATION_KEY_BASE

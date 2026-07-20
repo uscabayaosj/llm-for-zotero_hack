@@ -112,7 +112,6 @@ import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
-import { freshStartupConversationSession } from "./freshStartupConversation";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -236,7 +235,6 @@ function isPanelConversationLoaded(
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
-  freshStartupConversationSession.begin();
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;
@@ -244,18 +242,8 @@ export function registerReaderContextPanel() {
   const setupEmbeddedPanelHandlers = (
     body: Element,
     rawItem: Zotero.Item | null | undefined,
-    resolvedItem: Zotero.Item | null | undefined,
   ) => {
-    const startWithFreshConversation = resolvedItem
-      ? freshStartupConversationSession.consume()
-      : false;
-    setupHandlers(
-      body,
-      rawItem,
-      startWithFreshConversation
-        ? { startWithFreshConversation: true }
-        : undefined,
-    );
+    setupHandlers(body, rawItem);
   };
   Zotero.ItemPaneManager.registerSection({
     paneID: PANE_ID,
@@ -412,13 +400,12 @@ export function registerReaderContextPanel() {
           void retainClaudeRuntimeForBody(body, resolvedState.item);
           // Attach handlers synchronously so buttons are
           // immediately interactive — don't gate on ensureConversationLoaded.
-          setupEmbeddedPanelHandlers(body, item, resolvedState.item);
+          setupEmbeddedPanelHandlers(body, item);
           // Flag: onAsyncRender can skip the duplicate buildUI + setupHandlers.
           (body as any).__llmSyncRendered = true;
           // Defer conversation loading and chat rendering
           void (async () => {
             try {
-              if ((body as any).__llmFreshStartupConversationInFlight) return;
               if (resolvedState.item)
                 await ensureConversationLoaded(resolvedState.item);
               if (isStandaloneWindowActive()) return;
@@ -496,7 +483,6 @@ export function registerReaderContextPanel() {
       }
 
       if (resolvedItem) {
-        if ((body as any).__llmFreshStartupConversationInFlight) return;
         await ensureConversationLoaded(resolvedItem);
       }
       // Bail if a newer render has started while we were awaiting,
@@ -511,7 +497,7 @@ export function registerReaderContextPanel() {
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;
       if (!syncAlreadyRendered && !contextRefreshOnly) {
-        setupEmbeddedPanelHandlers(body, item, resolvedItem);
+        setupEmbeddedPanelHandlers(body, item);
       }
       if (contextRefreshOnly) {
         const refreshContextSource = (body as any)

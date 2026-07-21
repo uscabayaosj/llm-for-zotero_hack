@@ -3358,7 +3358,7 @@ function canUsePdfPageTextQuoteSource(
   contextItem: Zotero.Item | null,
 ): boolean {
   if (!contextItem?.isAttachment?.()) return false;
-  return !["markdown", "html", "txt", "docx"].includes(
+  return !["markdown", "html", "txt", "docx", "epub"].includes(
     paper.contentSourceMode || "",
   );
 }
@@ -7961,7 +7961,8 @@ function getAttachmentReadableVia(
     attachmentType === "markdown" ||
     attachmentType === "html" ||
     attachmentType === "txt" ||
-    attachmentType === "docx"
+    attachmentType === "docx" ||
+    attachmentType === "epub"
   ) {
     return "read_attachment";
   }
@@ -7999,7 +8000,8 @@ function buildAttachmentResourceForChild(params: {
     attachmentType === "markdown" ||
     attachmentType === "html" ||
     attachmentType === "txt" ||
-    attachmentType === "docx"
+    attachmentType === "docx" ||
+    attachmentType === "epub"
       ? attachmentType
       : undefined;
   return {

@@ -954,6 +954,24 @@
   .llm-clear-btn::before {
     display: block;
   }
+
+  /* At this width the mode chip's scaled text can grow wide enough to push
+     the runtime toggle group past the header-info column, overlapping
+     .llm-header-actions (most visible with both Codex and Claude Code
+     toggles visible at once, which doubles the runtime group's width). Cap
+     and truncate the chip and tighten the history-bar gap to keep the whole
+     leading column within its grid track. */
+  .llm-history-bar {
+    gap: 6px;
+  }
+
+  .llm-mode-chip {
+    max-width: 72px;
+    padding: 2px 6px;
+    font-size: calc(10px * var(--llm-font-scale, 1));
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .llm-panel[data-webchat-mode="true"] .llm-clear-btn {

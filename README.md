@@ -55,9 +55,10 @@ Documentation:
 
 ## At a Glance
 
-- Chat with the current PDF, selected text, figures, screenshots, and uploaded
-  documents directly inside Zotero.
-- Get grounded answers with citations that jump back to the source passage.
+- Chat with the current PDF or EPUB, selected text, figures, screenshots, and
+  uploaded documents directly inside Zotero.
+- Get grounded answers with citations that jump back to the source passage —
+  page-level paragraph jumps in PDFs, passage search in EPUBs.
 - Compare multiple open papers or add external files as extra context.
 - Save answers, full conversations, and research notes to Zotero notes or local
   Markdown folders such as Obsidian and Logseq.
@@ -71,6 +72,14 @@ Documentation:
 
 ## What's New
 
+- **EPUB grounding** — EPUB attachments are now first-class sources: their
+  text is extracted locally in spine order for chat context and agent reads,
+  and clicking a citation opens the EPUB in Zotero's reader and jumps to the
+  cited passage. See `doc/GROUNDED_ASSISTANT_REBUILD.md`.
+- **Security hardening** — `run_command` and `zotero_script` (both modes) now
+  always require user confirmation, and the WebChat relay endpoints require a
+  bearer token so no other local process can read or inject chat traffic.
+  Details and the remaining roadmap are in `doc/GROUNDED_ASSISTANT_REBUILD.md`.
 - **Codex App Server** is the recommended Codex path for ChatGPT Plus users.
   It runs through the local `codex app-server` runtime and is configured from
   the **Agent** tab.
@@ -671,7 +680,13 @@ Setup:
    **Load unpacked**, and select the unzipped extension folder.
 4. In Zotero, open `Preferences` -> `llm-for-zotero` and set
    **Auth Mode** -> `WebChat`.
-5. ⚠️: Keep a ChatGPT tab open in your browser. A green dot in Zotero means the extension and ChatGPT tab are connected. Make sure the tab and Zotero stay in the same monitor. No minimization or backgrounding, or the connection may drop.
+5. Copy the **Relay Access Token** shown under the WebChat auth mode into the
+   browser extension's options. The relay endpoints on Zotero's local HTTP
+   server require this bearer token on every request (`Authorization: Bearer
+<token>`, an `X-Zotero-Relay-Token` header, or a `?token=` query
+   parameter), so no other local application can read or inject WebChat
+   traffic. Extensions without the token receive `401 unauthorized`.
+6. ⚠️: Keep a ChatGPT tab open in your browser. A green dot in Zotero means the extension and ChatGPT tab are connected. Make sure the tab and Zotero stay in the same monitor. No minimization or backgrounding, or the connection may drop.
 
 ## Privacy and Data Flow
 

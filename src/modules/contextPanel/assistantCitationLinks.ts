@@ -63,6 +63,10 @@ import {
   warmPageTextCache,
   warmQuoteLocationCacheForAttachment,
 } from "./livePdfSelectionLocator";
+import {
+  isEpubContextAttachmentId,
+  navigateToQuoteInEpubReader,
+} from "./epubQuoteLocator";
 import { resolveConversationBaseItem } from "./portalScope";
 import { searchPaperCandidates } from "./paperSearch";
 import { resolveQuoteCitationLookupText } from "./quoteNavigationText";
@@ -1445,9 +1449,9 @@ async function openReaderForItem(
 ): Promise<any | null> {
   const normalizedTargetItemId = Math.floor(targetItemId);
 
-  // Guard: only attempt to open items that Zotero's Reader can handle (PDFs).
-  // Non-PDF attachments (EPUB, HTML snapshot, etc.) cause "Unsupported
-  // attachment type" errors from the Reader API.
+  // Guard: only attempt to open items that Zotero's Reader can handle
+  // (PDFs and EPUBs). Other attachments (HTML snapshot, etc.) cause
+  // "Unsupported attachment type" errors from the Reader API.
   // When the target is a regular (non-attachment) item, resolve to its first
   // PDF child attachment so Zotero.Reader.open() doesn't pick a non-PDF.
   let effectiveTargetItemId = normalizedTargetItemId;
@@ -1456,7 +1460,8 @@ async function openReaderForItem(
     if (
       targetItem.isAttachment?.() &&
       targetItem.attachmentContentType &&
-      targetItem.attachmentContentType !== "application/pdf"
+      targetItem.attachmentContentType !== "application/pdf" &&
+      targetItem.attachmentContentType !== "application/epub+zip"
     ) {
       return null;
     }
@@ -2604,6 +2609,61 @@ function resolveAuthoritativeNonPdfCitationCandidate(input: {
 export const resolveAuthoritativeNonPdfCitationCandidateForTests =
   resolveAuthoritativeNonPdfCitationCandidate;
 
+/**
+ * Handle citation clicks whose resolved source is an EPUB attachment: open
+ * the attachment in Zotero's reader and scroll to the cited passage via DOM
+ * text search. Returns false when the candidate is not an EPUB so the
+ * caller can fall through to its generic non-PDF error message.
+ */
+async function attemptEpubCitationNavigation(params: {
+  candidate: AssistantCitationPaperCandidate;
+  quoteTexts: string[];
+  status: HTMLElement | null;
+}): Promise<boolean> {
+  const contextItemId = Math.floor(Number(params.candidate.contextItemId));
+  if (!isEpubContextAttachmentId(contextItemId)) return false;
+
+  const quoteTexts = params.quoteTexts
+    .map((text) => sanitizeText(text || "").trim())
+    .filter(Boolean);
+  if (params.status) {
+    setStatus(
+      params.status,
+      quoteTexts.length
+        ? "Locating cited passage in EPUB..."
+        : "Opening cited EPUB...",
+      "sending",
+    );
+  }
+  const result = await navigateToQuoteInEpubReader(contextItemId, quoteTexts);
+  ztoolkit.log("LLM citation EPUB navigation", {
+    contextItemId,
+    opened: result.opened,
+    matched: result.matched,
+    queryUsed: result.queryUsed,
+    reason: result.reason,
+  });
+  if (!result.opened) return false;
+  if (params.status) {
+    if (result.matched) {
+      setStatus(
+        params.status,
+        "Jumped to cited passage in the EPUB reader",
+        "ready",
+      );
+    } else if (!quoteTexts.length) {
+      setStatus(params.status, "Opened cited EPUB attachment.", "ready");
+    } else {
+      setStatus(
+        params.status,
+        "Opened the EPUB; the exact cited passage could not be located.",
+        "error",
+      );
+    }
+  }
+  return true;
+}
+
 async function navigateUntrustedQuoteCitation(params: {
   status: HTMLElement | null;
   button: HTMLButtonElement;
@@ -2626,6 +2686,17 @@ async function navigateUntrustedQuoteCitation(params: {
     isPdfBackedCitationCandidate(candidate),
   );
   if (!pdfCandidates.length) {
+    const epubCandidate = resolvedCandidates.find((candidate) =>
+      isEpubContextAttachmentId(Math.floor(Number(candidate.contextItemId))),
+    );
+    if (epubCandidate) {
+      const epubHandled = await attemptEpubCitationNavigation({
+        candidate: epubCandidate,
+        quoteTexts: [params.quoteText, ...params.paragraphQuoteTexts],
+        status: params.status,
+      });
+      if (epubHandled) return true;
+    }
     if (params.status) {
       setStatus(
         params.status,
@@ -2859,6 +2930,15 @@ async function resolveAndNavigateAssistantCitation(params: {
       extractedCitation,
     });
     if (nonPdfCandidate) {
+      const epubHandled = await attemptEpubCitationNavigation({
+        candidate: nonPdfCandidate,
+        quoteTexts: [normalizedQuoteText, ...paragraphQuoteTexts],
+        status,
+      });
+      if (epubHandled) {
+        timingOutcome = "epub-quote";
+        return;
+      }
       if (status)
         setStatus(
           status,

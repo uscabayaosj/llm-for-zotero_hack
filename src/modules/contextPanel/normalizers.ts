@@ -294,6 +294,7 @@ function normalizePaperContentSourceMode(
     case "html":
     case "txt":
     case "docx":
+    case "epub":
       return normalized;
     default:
       return undefined;

@@ -628,6 +628,11 @@ describe("Codex app-server native client", function () {
     }> = [];
     const originalSpawn = CodexAppServerProcess.spawn;
     const restorePrefs = installDirectPathTestPrefs("native");
+    // Simulates macOS's /tmp -> /private/tmp symlink so the listed skill path
+    // diverges from the expected one; the alias reconciliation this exercises
+    // (normalizeMacOsPrivatePathAlias) only runs when Zotero.isMac is true, so
+    // it must be mocked here to make the scenario meaningful on Linux CI.
+    (globalThis as any).Zotero.isMac = true;
     const expectedCwd = getUserSkillsRuntimeRootDir();
     const writeNoteSkillPath = `${expectedCwd}/.agents/skills/write-note/SKILL.md`;
     const listedWriteNoteSkillPath = writeNoteSkillPath.replace(

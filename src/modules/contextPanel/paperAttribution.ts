@@ -158,7 +158,11 @@ export function isTextLikeAttachmentSourceMode(
   mode: PaperContentSourceMode | undefined | null,
 ): mode is TextAttachmentSourceMode {
   return (
-    mode === "markdown" || mode === "html" || mode === "txt" || mode === "docx"
+    mode === "markdown" ||
+    mode === "html" ||
+    mode === "txt" ||
+    mode === "docx" ||
+    mode === "epub"
   );
 }
 

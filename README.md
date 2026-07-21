@@ -55,9 +55,10 @@ Documentation:
 
 ## At a Glance
 
-- Chat with the current PDF, selected text, figures, screenshots, and uploaded
-  documents directly inside Zotero.
-- Get grounded answers with citations that jump back to the source passage.
+- Chat with the current PDF or EPUB, selected text, figures, screenshots, and
+  uploaded documents directly inside Zotero.
+- Get grounded answers with citations that jump back to the source passage —
+  page-level paragraph jumps in PDFs, passage search in EPUBs.
 - Compare multiple open papers or add external files as extra context.
 - Save answers, full conversations, and research notes to Zotero notes or local
   Markdown folders such as Obsidian and Logseq.
@@ -71,6 +72,10 @@ Documentation:
 
 ## What's New
 
+- **EPUB grounding** — EPUB attachments are now first-class sources: their
+  text is extracted locally in spine order for chat context and agent reads,
+  and clicking a citation opens the EPUB in Zotero's reader and jumps to the
+  cited passage. See `doc/GROUNDED_ASSISTANT_REBUILD.md`.
 - **Codex App Server** is the recommended Codex path for ChatGPT Plus users.
   It runs through the local `codex app-server` runtime and is configured from
   the **Agent** tab.

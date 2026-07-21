@@ -322,7 +322,8 @@ function cachedContextMatchesSourceMode(
     sourceMode === "markdown" ||
     sourceMode === "html" ||
     sourceMode === "txt" ||
-    sourceMode === "docx"
+    sourceMode === "docx" ||
+    sourceMode === "epub"
   ) {
     return cached.sourceType === sourceTypeForTextAttachment(sourceMode);
   }
@@ -411,7 +412,8 @@ async function cachePDFText(
       options?.sourceMode === "markdown" ||
       options?.sourceMode === "html" ||
       options?.sourceMode === "txt" ||
-      options?.sourceMode === "docx"
+      options?.sourceMode === "docx" ||
+      options?.sourceMode === "epub"
         ? options.sourceMode
         : null;
     const inferredTextAttachmentMode = resolveTextAttachmentSourceMode(item);

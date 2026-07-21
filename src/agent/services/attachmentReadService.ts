@@ -272,9 +272,10 @@ export class AttachmentReadService {
         ...baseWithPath,
         textContent: truncated,
         wordCount: truncated.split(/\s+/).filter(Boolean).length,
-        ...(sourceMode === "docx" && !truncated.trim()
+        ...((sourceMode === "docx" || sourceMode === "epub") &&
+        !truncated.trim()
           ? {
-              note: "No plain text could be extracted from this DOCX attachment.",
+              note: `No plain text could be extracted from this ${sourceMode.toUpperCase()} attachment.`,
             }
           : {}),
       };

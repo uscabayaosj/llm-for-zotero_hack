@@ -1,6 +1,7 @@
 import { config } from "../../package.json";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
+import { getOrCreateWebChatRelayToken } from "../webchat/relayAuth";
 import {
   DEFAULT_MAX_TOKENS,
   DEFAULT_SYSTEM_PROMPT,
@@ -1061,6 +1062,55 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         authModeSelect,
         el(doc, "span", HELPER_STYLE, authModeHelperText),
       );
+
+      // ── WebChat relay access token ──────────────────────────────
+      // The relay endpoints on Zotero's HTTP server require this bearer
+      // token; the user pastes it into the browser extension's options.
+      if (group.authMode === "webchat") {
+        const relayTokenWrap = el(
+          doc,
+          "div",
+          "display: flex; flex-direction: column;",
+        );
+        const relayTokenLabel = el(
+          doc,
+          "label",
+          LABEL_STYLE,
+          t("Relay Access Token"),
+        );
+        const relayTokenInput = el(
+          doc,
+          "input",
+          INPUT_STYLE,
+        ) as HTMLInputElement;
+        relayTokenInput.id = `${config.addonRef}-relay-token-${group.id}`;
+        relayTokenLabel.setAttribute("for", relayTokenInput.id);
+        relayTokenInput.readOnly = true;
+        try {
+          relayTokenInput.value = getOrCreateWebChatRelayToken();
+        } catch (err) {
+          relayTokenInput.value = "";
+          relayTokenInput.placeholder = String(
+            err instanceof Error ? err.message : err,
+          );
+        }
+        relayTokenInput.addEventListener("focus", () =>
+          relayTokenInput.select(),
+        );
+        relayTokenWrap.append(
+          relayTokenLabel,
+          relayTokenInput,
+          el(
+            doc,
+            "span",
+            HELPER_STYLE,
+            t(
+              "Copy this token into the browser extension's options. Requests without it are rejected, so no other local app can read or inject WebChat traffic.",
+            ),
+          ),
+        );
+        authModeWrap.append(relayTokenWrap);
+      }
 
       const selectedPresetId: ProviderPresetId =
         group.authMode === "codex_auth" ||

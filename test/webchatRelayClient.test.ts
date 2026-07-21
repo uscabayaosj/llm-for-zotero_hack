@@ -22,25 +22,34 @@ describe("webchat relay/client", function () {
   let relayServer: RelayServerModule;
   let client: WebChatClientModule;
 
-  const invokeEndpoint = async (
+  const invokeEndpointRaw = async (
     path: string,
     method: "GET" | "POST",
     data?: unknown,
-  ): Promise<Record<string, unknown>> => {
+    headers?: Record<string, string>,
+  ): Promise<EndpointReply | number> => {
     const EndpointClass = (
       globalThis.Zotero.Server.Endpoints as Record<string, any>
     )[path];
     assert.isFunction(EndpointClass, `Missing endpoint class for ${path}`);
     const endpoint = new EndpointClass();
-    return parseJsonReply(
-      await endpoint.init({
-        method,
-        pathname: path,
-        query: {},
-        headers: {},
-        data: data ?? null,
-      }),
-    );
+    return endpoint.init({
+      method,
+      pathname: path,
+      query: {},
+      headers: headers ?? {
+        Authorization: `Bearer ${relayServer.getOrCreateWebChatRelayToken()}`,
+      },
+      data: data ?? null,
+    });
+  };
+
+  const invokeEndpoint = async (
+    path: string,
+    method: "GET" | "POST",
+    data?: unknown,
+  ): Promise<Record<string, unknown>> => {
+    return parseJsonReply(await invokeEndpointRaw(path, method, data));
   };
 
   before(async function () {
@@ -74,6 +83,37 @@ describe("webchat relay/client", function () {
     (
       globalThis as typeof globalThis & { ztoolkit?: typeof originalToolkit }
     ).ztoolkit = originalToolkit;
+  });
+
+  it("rejects requests without a valid relay auth token", async function () {
+    const missingAuth = await invokeEndpointRaw(
+      "/llm-for-zotero/webchat/poll_query",
+      "GET",
+      undefined,
+      {},
+    );
+    assert.isArray(missingAuth);
+    assert.equal((missingAuth as EndpointReply)[0], 401);
+
+    const wrongToken = await invokeEndpointRaw(
+      "/llm-for-zotero/webchat/poll_query",
+      "GET",
+      undefined,
+      { Authorization: `Bearer ${"0".repeat(64)}` },
+    );
+    assert.isArray(wrongToken);
+    assert.equal((wrongToken as EndpointReply)[0], 401);
+
+    const lowercaseHeader = await invokeEndpointRaw(
+      "/llm-for-zotero/webchat/poll_query",
+      "GET",
+      undefined,
+      {
+        authorization: `Bearer ${relayServer.getOrCreateWebChatRelayToken()}`,
+      },
+    );
+    assert.isArray(lowercaseHeader);
+    assert.equal((lowercaseHeader as EndpointReply)[0], 200);
   });
 
   it("tracks per-site history freshness without wiping other sites on empty updates", async function () {

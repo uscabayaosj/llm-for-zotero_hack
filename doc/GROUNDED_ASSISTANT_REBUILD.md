@@ -5,8 +5,10 @@ assistant for examining library items (PDFs and EPUBs) in Zotero** that
 grounds every claim in the actual source text, cites it accurately, and can
 show you exactly where an answer came from.
 
-This document records the EPUB grounding work and how it fits into the
-existing citation-verification pipeline.
+This document records the EPUB grounding work and the security hardening
+that shipped alongside it, mapped to the findings of the independent
+security audit (`MIMO_AUDIT_REPORT`, 2026-07-07), and how it all fits into
+the existing citation-verification pipeline.
 
 ## How grounding works
 
@@ -53,6 +55,23 @@ citation clicks refused to open them. Now:
   the reader's find bar is primed with the quote so near-matches are one
   keypress away, and the status line says so honestly.
 
+## Security hardening (audit Priority 1)
+
+A grounded assistant is only trustworthy if a prompt-injected paper cannot
+hijack it. These changes closed the audit's critical gaps:
+
+| Audit ID | Fix                                                                                                                                                                                                                                                                                                             |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C-01     | `run_command` now requires explicit user confirmation for **every** command (the regex-based "destructive command" heuristic remains only to describe _why_ in the confirmation card). Execution is also refused at the tool level unless approval was applied, even if a caller bypasses the registry flow.    |
+| C-02     | `zotero_script` now requires confirmation in **both** read and write mode, with a script preview card. Read-mode scripts run in the privileged Gecko runtime and could previously exfiltrate data with zero user interaction. Unapproved execution is refused at the tool level.                                |
+| C-03     | All WebChat relay endpoints on Zotero's HTTP server now require a per-installation bearer token (`src/webchat/relayAuth.ts`). The token is generated with `crypto.getRandomValues`, stored in prefs, surfaced in the WebChat preferences UI, and compared in constant time. Unauthenticated requests get `401`. |
+| H-03     | The MCP server's token generator no longer falls back to `Math.random()`; it throws if a CSPRNG is unavailable. The relay token generator was written the same way.                                                                                                                                             |
+
+Confirmation-gating for other privileged agent tools and MCP write tools is
+handled independently in `src/agent/mcp/server.ts` (see
+`MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY` and related machinery) and is out
+of scope for this document.
+
 ## Roadmap
 
 - CFI-based deep links so EPUB citations can restore an exact reading
@@ -60,10 +79,15 @@ citation clicks refused to open them. Now:
   page labels).
 - Multi-candidate disambiguation when a quote matches more than one open
   EPUB, mirroring the existing PDF behavior.
-
-## Note on agent tool confirmation
-
-Confirmation-gating for privileged agent tools (`run_command`,
-`zotero_script`, and related MCP write tools) is handled independently in
-`src/agent/mcp/server.ts` (see `MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY` and
-related machinery) and is out of scope for this document.
+- **C-04** — path allowlisting for `file_io` (restrict to the Zotero data
+  directory and the configured notes directory; confirmation for reads
+  outside them).
+- **H-05** — block private IP ranges (127.0.0.0/8, 10.0.0.0/8,
+  169.254.0.0/16, 192.168.0.0/16) for user-configured `apiBase` URLs.
+- **H-04** — parameterize/validate all SQL construction in
+  `conversationMessageSql.ts`.
+- **H-01 / H-02** — OS keychain storage for API keys and Codex tokens; at
+  minimum `0600` permissions on `~/.codex/auth.json` and a plaintext
+  warning in preferences.
+- **M-01** — warn when Zotero's HTTP server is bound to a non-loopback
+  address.

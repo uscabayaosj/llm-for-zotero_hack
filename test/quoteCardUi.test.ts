@@ -271,6 +271,46 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "wrapper.dataset.quoteOccurrenceId");
   });
 
+  it("starts a cited legacy quote occurrence verified and clickable", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const untrustedStart = renderSource.indexOf(
+      'navigationMode: "untrusted-quote"',
+      renderSource.indexOf("function createQuoteRenderOccurrenceElement"),
+    );
+    const untrustedEnd = renderSource.indexOf(
+      "function textContainsQuoteCitationPlaceholder",
+      untrustedStart,
+    );
+    const untrustedBranch = renderSource.slice(untrustedStart, untrustedEnd);
+
+    assert.isAtLeast(untrustedStart, 0);
+    assert.isAbove(untrustedEnd, untrustedStart);
+    assert.include(untrustedBranch, 'status: "verified"');
+    assert.notInclude(untrustedBranch, 'status: "unverified"');
+  });
+
+  it("starts a cited legacy fallback blockquote verified and clickable", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const fallbackStart = renderSource.indexOf(
+      "function createFallbackQuoteCardElement",
+    );
+    const fallbackEnd = renderSource.indexOf(
+      "function createQuoteCitationAnchorElement",
+      fallbackStart,
+    );
+    const fallbackRenderer = renderSource.slice(fallbackStart, fallbackEnd);
+
+    assert.isAtLeast(fallbackStart, 0);
+    assert.isAbove(fallbackEnd, fallbackStart);
+    assert.include(renderSource, 'const status = params.status || "verified"');
+    assert.notInclude(fallbackRenderer, 'status: "unverified"');
+    assert.notInclude(fallbackRenderer, 'status: "not-source"');
+  });
+
   it("lifts rendered quote cards out of markdown paragraphs", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",

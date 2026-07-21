@@ -189,6 +189,54 @@ describe("minimal source-match quote gate workflow", function () {
     );
   });
 
+  it("keeps the searchable Asabuki page-4 quote verified after background authentication", async function () {
+    const quote =
+      "For excitatory synapses, errors between excitatory drive and the output of the cell provide feedback to the synapses... All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation–inhibition balance.";
+    const pageText =
+      "For excitatory synapses, errors between the excitatory drive and the output of the cell provide feedback to the synapses (dashed arrow) and modulate plasticity (blue square; exc. error). All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation-inhibition balance (orange square; inh. error).";
+    const asabukiPaper: PaperContextRef = {
+      ...paper,
+      title:
+        "Intrinsic representational drift from predictive excitatory-inhibitory plasticity",
+      firstCreator: "Asabuki and Clopath",
+      year: "",
+    };
+    const source = installPdfSource(contextItemId, pageText);
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Explain predictive E/I plasticity.",
+      timestamp: 1,
+      paperContexts: [asabukiPaper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: `> ${quote}\n>\n> (Asabuki and Clopath, page 4)`,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+
+    assert.isUndefined(assistantMessage.quoteDisplayOverride);
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.match(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      /\[\[quote:Q_[a-z0-9]+\]\]/,
+    );
+    assert.notInclude(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "Not a source quote",
+    );
+    assert.isNotEmpty(
+      assistantMessage.quoteDisplayOverride?.quoteCitations || [],
+    );
+  });
+
   it("extracts and computes once for repeated quote and source scopes", async function () {
     resetQuoteValidationDecisionCacheForTests();
     const quote =
@@ -354,7 +402,7 @@ describe("minimal source-match quote gate workflow", function () {
     assert.isUndefined(staleAssistant.quoteDisplayOverride);
   });
 
-  it("binds the largest unique source span for a partial source match", async function () {
+  it("rejects a partial source match when the complete displayed quote is absent", async function () {
     const sourceSentence =
       "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
     const quote = `${sourceSentence} This explanatory sentence was added by the model.`;
@@ -379,26 +427,11 @@ describe("minimal source-match quote gate workflow", function () {
     });
     await waitForAssistantQuoteValidationForTests(conversationKey);
 
-    const displayCitation =
-      assistantMessage.quoteDisplayOverride?.quoteCitations?.[0];
-    assert.isDefined(displayCitation);
-    assert.equal(displayCitation?.quoteText, quote);
     assert.equal(
-      displayCitation?.sourceMatchText,
-      sourceSentence.replace(/\.$/, ""),
+      assistantMessage.quoteDisplayOverride?.markdown,
+      `> ${quote}\n>\n> Not a source quote`,
     );
-    assert.equal(displayCitation?.sourceMatchKind, "raw-prefix");
-    assert.equal(displayCitation?.sourceMatchSource, "pdf-page-text");
-    assert.equal(displayCitation?.contextItemId, contextItemId);
-    assert.equal(displayCitation?.pageHintIndex, 0);
-    assert.include(
-      assistantMessage.quoteDisplayOverride?.markdown || "",
-      "[[quote:",
-    );
-    assert.notInclude(
-      assistantMessage.quoteDisplayOverride?.markdown || "",
-      "Not a source quote",
-    );
+    assert.isUndefined(assistantMessage.quoteDisplayOverride?.quoteCitations);
     assert.equal(assistantMessage.text, `> ${quote}`);
   });
 
@@ -473,6 +506,45 @@ describe("minimal source-match quote gate workflow", function () {
     await waitForAssistantQuoteValidationForTests(conversationKey);
 
     assert.equal(assistantMessage.text, raw);
+    assert.equal(
+      assistantMessage.quoteDisplayOverride?.markdown,
+      `> ${quote}\n>\n> Not a source quote`,
+    );
+    assert.notInclude(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "Eppler",
+    );
+    assert.isUndefined(assistantMessage.quoteDisplayOverride?.quoteCitations);
+  });
+
+  it("turns the exact persisted I-k card yellow and strips its label", async function () {
+    const quote =
+      "**Iₖ = the set of neuron-pair indices that fall into the k-th SC bin on day t.**";
+    const raw = `> ${quote}\n>\n> (Eppler et al., 2026)`;
+    const source = installPdfSource(
+      contextItemId,
+      "For each SC bin k, we computed the mean across pairwise NC Yi. Where Ik is the set of pairs in bin k.",
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Please explain I_k.",
+      timestamp: 1,
+      paperContexts: [paper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: raw,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
     assert.equal(
       assistantMessage.quoteDisplayOverride?.markdown,
       `> ${quote}\n>\n> Not a source quote`,

@@ -1052,7 +1052,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].contextItemId, 23);
   });
 
-  it("navigates by the largest unique source span when a blockquote has an unsupported tail", function () {
+  it("keeps an unsupported-tail blockquote unverified despite a large source span", function () {
     const sourceText =
       "We hypothesized that some brain states are easier for people to generate, and that tailoring training to these brain states will facilitate BCI learning.";
     const finalized = finalizeAssistantQuoteCitations({
@@ -1069,19 +1069,15 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.include(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].sourceMatchText,
-      sourceText.replace(/\.$/, ""),
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
     assert.include(
-      finalized.quoteCitations[0].quoteText,
+      finalized.markdown,
       "This added sentence is not source text",
     );
   });
 
-  it("navigates by a strong unique interior source span", function () {
+  it("keeps a blockquote unverified when only an interior span is sourced", function () {
     const sourceText =
       "The encoder learned a nonlinear mapping from brain activity to the manifold in real time.";
     const finalized = finalizeAssistantQuoteCitations({
@@ -1098,16 +1094,9 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.include(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].sourceMatchText,
-      sourceText.replace(/\.$/, ""),
-    );
-    assert.include(
-      finalized.quoteCitations[0].quoteText,
-      "unsupported wording",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "unsupported wording");
   });
 
   it("splits ordered ellipsized source fragments into page-bounded cards", function () {
@@ -1226,7 +1215,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, "> BCI learning");
   });
 
-  it("uses the unique source sentence when a displayed quote adds a supplementary-table tail", function () {
+  it("does not verify a displayed quote with an unsupported supplementary-table tail", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> ...successful learning occurred without explicit awareness and using highly idiosyncratic mental strategies across participants (Supplementary Table 1).",
@@ -1242,20 +1231,12 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.include(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.include(
-      finalized.quoteCitations[0].sourceMatchText || "",
-      "successful learning occurred without explicit awareness",
-    );
-    const exported = replaceQuoteCitationPlaceholdersForMarkdown(
-      finalized.markdown,
-      finalized.quoteCitations,
-    );
-    assert.include(exported, "Supplementary Table 1");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "Supplementary Table 1");
   });
 
-  it("uses the unique source sentence when a displayed quote adds a figure-caption tail", function () {
+  it("does not verify a displayed quote with an unsupported figure-caption tail", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> T-PHATE embeddings of fMRI data show the correspondence between brain activity and the video game arena environment. (Fig. 1b caption)",
@@ -1271,17 +1252,9 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.include(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].sourceMatchText,
-      "T-PHATE embeddings of fMRI data show the correspondence between brain activity and the video game arena environment",
-    );
-    const exported = replaceQuoteCitationPlaceholdersForMarkdown(
-      finalized.markdown,
-      finalized.quoteCitations,
-    );
-    assert.include(exported, "Fig. 1b caption");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "Fig. 1b caption");
   });
 
   it("finalizes same-line citation commentary by splitting the citation label", function () {
@@ -1819,7 +1792,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].sourceChunkKind, "body");
   });
 
-  it("uses the largest unique source suffix when the displayed quote starts inside a source token", function () {
+  it("does not verify a displayed quote that starts inside a source token", function () {
     const quote = "Dynamic states are controlled by training across sessions.";
     const finalized = finalizeAssistantQuoteCitations({
       markdown: `> ${quote}\n\n(Smith et al., 2024)`,
@@ -1835,13 +1808,9 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.include(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(finalized.quoteCitations[0].quoteText, quote);
-    assert.equal(
-      finalized.quoteCitations[0].sourceMatchText,
-      "states are controlled by training across sessions.",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, quote);
   });
 
   it("preserves displayed typography after verifying the complete source span", function () {
@@ -2009,7 +1978,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].pageHintIndex, 9);
   });
 
-  it("uses a strong unique CJK locator without applying English token thresholds", function () {
+  it("does not verify CJK text with unsupported model prefixes and suffixes", function () {
     const displayQuote =
       "模型补充开头。Eisenberger 等发现自我报告疼痛程度与 dACC 激活强度成正相关关系，与 RVPFC 激活强度成负相关关系；模型补充结尾。";
     const sourceText =
@@ -2029,13 +1998,9 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.include(finalized.markdown, "[[quote:");
-    assert.equal(finalized.quoteCitations[0].quoteText, displayQuote);
-    assert.include(
-      finalized.quoteCitations[0].sourceMatchText || "",
-      "dACC 激活强度成正相关关系",
-    );
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, displayQuote);
   });
 
   it("does not treat a non-letter symbol as a CJK partial-search signal", function () {
@@ -2344,7 +2309,36 @@ describe("quoteCitations", function () {
     assert.lengthOf(finalized.quoteCitations, 0);
   });
 
-  it("defers an ambiguous partial quote when the overlap meets the trusted threshold", function () {
+  it("rejects the persisted I-k paraphrase despite related notation in the paper", function () {
+    const quote =
+      "**Iₖ = the set of neuron-pair indices that fall into the k-th SC bin on day t.**";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "For each SC bin k, we computed the mean across pairwise NC Yi. Where Ik is the set of pairs in bin k.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3097,
+            itemId: 3096,
+            pageHintIndex: 9,
+            pageHintLabel: "10",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("rejects an ambiguous partial quote after exhaustive complete-text review", function () {
     const sharedSourceText =
       "Noise correlations remained stable for neuron pairs with consistently high signal correlations";
     const quote = `${sharedSourceText} because the model imposed a causal balancing mechanism.`;
@@ -2366,11 +2360,12 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.equal(finalized.markdown, markdown);
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
     assert.lengthOf(finalized.quoteCitations, 0);
   });
 
-  it("navigates a unique partial PDF match while preserving the displayed wording", function () {
+  it("rejects a unique partial PDF match when the complete displayed wording is absent", function () {
     const sourceSentence =
       "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
     const quote = `${sourceSentence} This interpretation was added by the model and is not source wording.`;
@@ -2393,13 +2388,8 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.include(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].sourceMatchText,
-      sourceSentence.replace(/\.$/, ""),
-    );
-    assert.include(finalized.quoteCitations[0].quoteText, "not source wording");
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.lengthOf(finalized.quoteCitations, 0);
   });
 
   it("keeps exact unique source navigation even when prose heuristics reject the display text", function () {
@@ -2430,7 +2420,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0]?.sourceMatchText, quote);
   });
 
-  it("keeps a strong unique page-backed partial when the displayed quote contains math hazards", function () {
+  it("rejects a page-backed partial when unsupported math wording remains", function () {
     const quote =
       "The baseline F₀ used to compute the ΔF/F₀ was defined as a moving rank order filter, the 30th percentile of the 200 surrounding frames (100 before and 100 after). This ΔF/F₀ was then deconvolved using the algorithm published by Vogelstein et al. (2010).";
     const source =
@@ -2456,12 +2446,8 @@ describe("quoteCitations", function () {
       },
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.include(
-      finalized.quoteCitations[0]?.sourceMatchText || "",
-      "rank order filter",
-    );
-    assert.equal(finalized.quoteCitations[0]?.pageHintIndex, 4);
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.lengthOf(finalized.quoteCitations, 0);
   });
 
   it("fails closed when the complete quote appears on multiple PDF pages", function () {
@@ -2623,6 +2609,66 @@ describe("quoteCitations", function () {
     );
   });
 
+  it("authenticates the searchable Asabuki page-4 quote across its ellipsis", function () {
+    const quote =
+      "For excitatory synapses, errors between excitatory drive and the output of the cell provide feedback to the synapses... All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation–inhibition balance.";
+    const pageText =
+      "For excitatory synapses, errors between the excitatory drive and the output of the cell provide feedback to the synapses (dashed arrow) and modulate plasticity (blue square; exc. error). All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation-inhibition balance (orange square; inh. error).";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n> (Asabuki and Clopath, page 4)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: pageText,
+            sourceLabel: "(Asabuki and Clopath)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3617,
+            itemId: 3618,
+            pageHintIndex: 3,
+            pageHintLabel: "4",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isNotEmpty(finalized.quoteCitations);
+    assert.equal(finalized.quoteCitations[0]?.pageHintLabel, "4");
+  });
+
+  it("strips an author-only citation with a page suffix after exhaustive absence", function () {
+    const quote =
+      "This complete invented quote is absent from every page in the authenticated paper.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n> (Asabuki and Clopath, page 4)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The complete paper instead contains unrelated source wording.",
+            sourceLabel: "(Asabuki and Clopath)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3617,
+            itemId: 3618,
+            pageHintIndex: 3,
+            pageHintLabel: "4",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Asabuki");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
   it("splits exact ellipsis segments and uses the largest unique span when another segment is invented", function () {
     const first =
       "Representational geometry remained stable across repeated recording sessions";
@@ -2672,13 +2718,9 @@ describe("quoteCitations", function () {
       reordered.quoteCitations.map((citation) => citation.quoteText),
       [`${second}.`, `${first},`],
     );
-    assert.include(inventedShortSegment.markdown, "[[quote:");
-    assert.lengthOf(inventedShortSegment.quoteCitations, 1);
-    assert.equal(inventedShortSegment.quoteCitations[0].sourceMatchText, first);
-    assert.include(
-      inventedShortSegment.quoteCitations[0].quoteText,
-      "definitely causal",
-    );
+    assert.notInclude(inventedShortSegment.markdown, "[[quote:");
+    assert.include(inventedShortSegment.markdown, "Not a source quote");
+    assert.lengthOf(inventedShortSegment.quoteCitations, 0);
   });
 
   it("accepts line-wrap hyphenation as full-span normalization", function () {

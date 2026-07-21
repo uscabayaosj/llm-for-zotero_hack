@@ -42,6 +42,7 @@ const FENCED_CODE_PATTERN = /^[ \t]*(```|~~~)/;
 const MIN_AUTO_TRUSTED_QUOTE_NORMALIZED_CHARS = 36;
 const MIN_AUTO_TRUSTED_QUOTE_TOKENS = 6;
 const MIN_AUTO_TRUSTED_NON_ASCII_QUOTE_CHARS = 16;
+const MIN_COMPLETE_LAYOUT_ARTIFACT_SUPPORT_COVERAGE = 0.7;
 const MARKDOWN_IMAGE_PATTERN = /!\[[^\]\n]*\]\([^)\n]+\)/g;
 const COMPLETE_TRAILING_SOURCE_LOCATOR_PATTERN =
   /(\((?:(?:supplementary|supp\.?)\s+)?(?:fig(?:ure)?|table|eq(?:uation)?|appendix)\b[^()\n]{0,120}\)[.!?。！？]+["'”’]?)$/iu;
@@ -1682,7 +1683,7 @@ export function resolvePageBoundedDisplayedQuoteCitations(params: {
   return resolved;
 }
 
-function quoteContainsPartialSearchHazards(value: string): boolean {
+function quoteContainsLayoutArtifactHazards(value: string): boolean {
   const text = normalizeMultilineText(value);
   if (!text) return false;
   if (splitQuoteAtEllipsisInOrder(stripOuterQuoteDelimiters(text)).length > 1) {
@@ -1698,14 +1699,23 @@ function quoteContainsPartialSearchHazards(value: string): boolean {
   return /[^\x00-\x7f]/u.test(semanticNonAscii);
 }
 
-function isTrustedPartialQuoteAnchor(match: QuoteTextAnchorMatch): boolean {
+/**
+ * Treat distributed source support as a complete match only when PDF layout
+ * artifacts explain the gaps and both ends of the displayed quote are present.
+ * A normal prose overlap, added prefix, or added tail is never sufficient.
+ */
+function hasCompleteDisplayedQuoteSupport(
+  match: QuoteTextAnchorMatch,
+  quoteText: string,
+): boolean {
   if (match.matchKind === "exact") return true;
-  const normalizedQuery = normalizeLocatorText(match.query);
-  const semanticNonAscii = normalizedQuery.replace(/[^\p{L}]/gu, "");
-  if (/[^\x00-\x7f]/u.test(semanticNonAscii)) {
-    return normalizedQuery.length >= 12;
-  }
-  return match.matchedTokenCount >= 5 && normalizedQuery.length >= 30;
+  return (
+    quoteContainsLayoutArtifactHazards(quoteText) &&
+    match.quoteStartTokenSupported &&
+    match.quoteEndTokenSupported &&
+    match.quoteTokenSupportCoverage >=
+      MIN_COMPLETE_LAYOUT_ARTIFACT_SUPPORT_COVERAGE
+  );
 }
 
 function filterQuoteAnchorSources(params: {
@@ -1801,7 +1811,10 @@ function resolveUniqueDisplayedQuoteAnchorCitation(params: {
     quoteText: displayedQuoteText,
     requireUnique: true,
   });
-  if (!resolved || !isTrustedPartialQuoteAnchor(resolved.match)) {
+  if (
+    !resolved ||
+    !hasCompleteDisplayedQuoteSupport(resolved.match, displayedQuoteText)
+  ) {
     return undefined;
   }
   const sourceMatchText = normalizeMultilineText(resolved.match.query);
@@ -1840,8 +1853,8 @@ function resolveDisplayedQuoteCitations(params: {
 }): QuoteCitation[] {
   const complete = resolvePageBoundedDisplayedQuoteCitations(params);
   if (complete.length) return complete;
-  const anchor = resolveUniqueDisplayedQuoteAnchorCitation(params);
-  return anchor ? [anchor] : [];
+  const layoutArtifactMatch = resolveUniqueDisplayedQuoteAnchorCitation(params);
+  return layoutArtifactMatch ? [layoutArtifactMatch] : [];
 }
 
 function stripOuterQuoteDelimiters(value: string): string {
@@ -1927,7 +1940,7 @@ function resolveExactDisplayedQuoteCitationsWithLabelFallback(params: {
   return resolveDisplayedQuoteCitations(params);
 }
 
-function hasTrustedDisplayedQuoteSourceOverlap(params: {
+function hasCompleteDisplayedQuoteSourceMatch(params: {
   quoteText: string;
   sourceIndex: QuoteSourceIndex;
 }): boolean {
@@ -1936,7 +1949,10 @@ function hasTrustedDisplayedQuoteSourceOverlap(params: {
     sourceIndex: params.sourceIndex,
     requireUnique: false,
   });
-  return Boolean(resolved && isTrustedPartialQuoteAnchor(resolved.match));
+  return Boolean(
+    resolved &&
+    hasCompleteDisplayedQuoteSupport(resolved.match, params.quoteText),
+  );
 }
 
 function isHighConfidenceNonSourceQuote(params: {
@@ -1946,13 +1962,7 @@ function isHighConfidenceNonSourceQuote(params: {
 }): boolean {
   if (!params.sourceEvidenceComplete) return false;
   if (isObviousNonSourceBlockquoteText(params.quoteText)) return true;
-  if (
-    quoteContainsPartialSearchHazards(params.quoteText) ||
-    !isSubstantiveAutoTrustedQuoteText(params.quoteText)
-  ) {
-    return false;
-  }
-  return !hasTrustedDisplayedQuoteSourceOverlap({
+  return !hasCompleteDisplayedQuoteSourceMatch({
     quoteText: params.quoteText,
     sourceIndex: params.sourceIndex,
   });
@@ -1974,11 +1984,8 @@ export function classifyDisplayedQuoteSource(params: {
   if (quoteCitations.length) {
     return { kind: "matched", quoteCitations };
   }
-  if (!isQuoteWorthySourceText(quoteText)) {
-    return { kind: "defer" };
-  }
   if (
-    hasTrustedDisplayedQuoteSourceOverlap({
+    hasCompleteDisplayedQuoteSourceMatch({
       quoteText,
       sourceIndex: params.sourceIndex,
     })
